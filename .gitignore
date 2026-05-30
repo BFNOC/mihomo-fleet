@@ -1,0 +1,8 @@
+/.mihomo-fleet/
+/mihomo-fleet
+/.ccg/
+/.antigravitycli/
+/.claude/
+/.codex/
+*.log
+.DS_Store
