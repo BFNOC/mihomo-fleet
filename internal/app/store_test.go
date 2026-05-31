@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -191,6 +192,88 @@ func TestStoreSuggestPortsReturnsDistinctPortsWhenMixedRangeUnavailable(t *testi
 	}
 	if mixed != 29000 || controller != 29001 {
 		t.Fatalf("SuggestPorts() = (%d, %d), want (29000, 29001)", mixed, controller)
+	}
+}
+
+func TestStoreCloneCopiesProfileSelectionAndAllocatesNextPorts(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Main", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.Create("US", profile.ID, "", 28010, 29010)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetSelection(source.ID, "Proxy", "US-01"); err != nil {
+		t.Fatal(err)
+	}
+
+	clone, err := store.Clone(source.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone.ID == source.ID || clone.Secret == source.Secret {
+		t.Fatal("clone should have a distinct id and secret")
+	}
+	if clone.ProfileID != source.ProfileID || clone.UserConfigPath != source.UserConfigPath {
+		t.Fatalf("clone profile = %q/%q, want shared %q/%q", clone.ProfileID, clone.UserConfigPath, source.ProfileID, source.UserConfigPath)
+	}
+	if clone.RuntimeConfigPath == source.RuntimeConfigPath {
+		t.Fatal("clone should have a distinct runtime config path")
+	}
+	if clone.MixedPort != 28011 || clone.ControllerPort != 29011 {
+		t.Fatalf("clone ports = (%d, %d), want (28011, 29011)", clone.MixedPort, clone.ControllerPort)
+	}
+	if clone.SelectedGroup != "Proxy" || clone.SelectedProxy != "US-01" || clone.SelectedProxies["Proxy"] != "US-01" {
+		t.Fatalf("clone selections = %#v/%q/%q, want copied selection", clone.SelectedProxies, clone.SelectedGroup, clone.SelectedProxy)
+	}
+}
+
+func TestStoreCloneRejectsExplicitPortConflict(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.Create("US", "", defaultUserConfig, 28010, 29010)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Clone(source.ID, "US conflict", 28010, 29011); err == nil {
+		t.Fatal("expected clone with conflicting mixed port to fail")
+	}
+}
+
+func TestStoreCloneReportsTypedMissingSource(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Clone("missing", "", 0, 0); !errors.Is(err, errInstanceNotFound) {
+		t.Fatalf("Clone() error = %v, want errInstanceNotFound", err)
+	}
+}
+
+func TestStoreCloneRejectsSameMixedAndControllerPort(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.Create("US", "", defaultUserConfig, 28010, 29010)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Clone(source.ID, "US same port", 28011, 28011); err == nil || err.Error() != "mixed and controller ports must differ" {
+		t.Fatalf("Clone() error = %v, want mixed/controller differ error", err)
 	}
 }
 

@@ -15,6 +15,20 @@ import (
 
 const portSuggestMaxStart = 60535
 
+var errInstanceNotFound = errors.New("instance not found")
+
+type instanceNotFoundError struct {
+	id string
+}
+
+func (err instanceNotFoundError) Error() string {
+	return fmt.Sprintf("instance %q not found", err.id)
+}
+
+func (err instanceNotFoundError) Is(target error) bool {
+	return target == errInstanceNotFound
+}
+
 type Store struct {
 	mu        sync.RWMutex
 	dataDir   string
@@ -29,6 +43,19 @@ type ProfilePatch struct {
 	SubscriptionURL       *string
 	AutoUpdate            *bool
 	UpdateIntervalMinutes *int
+}
+
+type createInstanceOptions struct {
+	Name            string
+	ProfileID       string
+	Config          string
+	MixedPort       int
+	ControllerPort  int
+	MixedStart      int
+	ControllerStart int
+	SelectedProxies map[string]string
+	SelectedGroup   string
+	SelectedProxy   string
 }
 
 func NewStore(dataDir string) (*Store, error) {
@@ -348,55 +375,112 @@ func (s *Store) Create(name, profileID, config string, mixedPort, controllerPort
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.createInstanceLocked(createInstanceOptions{
+		Name:            name,
+		ProfileID:       profileID,
+		Config:          config,
+		MixedPort:       mixedPort,
+		ControllerPort:  controllerPort,
+		MixedStart:      28000,
+		ControllerStart: 29000,
+	})
+}
+
+func (s *Store) Clone(id, name string, mixedPort, controllerPort int) (*Instance, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	source, ok := s.items[id]
+	if !ok {
+		return nil, instanceNotFoundError{id: id}
+	}
+	if strings.TrimSpace(name) == "" {
+		name = source.Name + " copy"
+	}
+	// 克隆复用配置档和已保存节点选择，但必须生成新的端口、secret 与运行配置。
+	return s.createInstanceLocked(createInstanceOptions{
+		Name:            name,
+		ProfileID:       source.ProfileID,
+		MixedPort:       mixedPort,
+		ControllerPort:  controllerPort,
+		MixedStart:      nextClonePortStart(source.MixedPort, 28000),
+		ControllerStart: nextClonePortStart(source.ControllerPort, 29000),
+		SelectedProxies: cloneStringMap(source.SelectedProxies),
+		SelectedGroup:   source.SelectedGroup,
+		SelectedProxy:   source.SelectedProxy,
+	})
+}
+
+func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, error) {
 	now := time.Now().UTC()
-	id := uniqueID(name, s.items)
+	id := uniqueID(opts.Name, s.items)
 	used := s.usedPortsLocked("")
-	if mixedPort == 0 {
-		mixedPort = allocatePort(28000, used)
-	} else if used[mixedPort] || !isPortFree(mixedPort) {
-		return nil, fmt.Errorf("mixed proxy port %d is unavailable", mixedPort)
+	if opts.MixedStart == 0 {
+		opts.MixedStart = 28000
 	}
-	used[mixedPort] = true
-	if controllerPort == 0 {
-		controllerPort = allocatePort(29000, used)
-	} else if used[controllerPort] || !isPortFree(controllerPort) {
-		return nil, fmt.Errorf("controller port %d is unavailable", controllerPort)
+	if opts.ControllerStart == 0 {
+		opts.ControllerStart = 29000
 	}
-	if mixedPort == 0 || controllerPort == 0 {
+	if opts.MixedPort > 0 && opts.MixedPort == opts.ControllerPort {
+		return nil, errors.New("mixed and controller ports must differ")
+	}
+	if opts.MixedPort == 0 {
+		opts.MixedPort = allocatePort(opts.MixedStart, used)
+	} else if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
+		return nil, fmt.Errorf("mixed proxy port %d is unavailable", opts.MixedPort)
+	}
+	used[opts.MixedPort] = true
+	if opts.ControllerPort == 0 {
+		opts.ControllerPort = allocatePort(opts.ControllerStart, used)
+	} else if used[opts.ControllerPort] || !isPortFree(opts.ControllerPort) {
+		return nil, fmt.Errorf("controller port %d is unavailable", opts.ControllerPort)
+	}
+	if opts.MixedPort == 0 || opts.ControllerPort == 0 {
 		return nil, errors.New("unable to allocate local ports")
 	}
-	if profileID == "" {
-		profile, err := s.createProfileLocked(name+" profile", config)
+	var createdProfile *Profile
+	if opts.ProfileID == "" {
+		profile, err := s.createProfileRecordLocked(opts.Name+" profile", opts.Config)
 		if err != nil {
 			return nil, err
 		}
-		profileID = profile.ID
+		createdProfile = profile
+		opts.ProfileID = profile.ID
 	}
-	profile, ok := s.profiles[profileID]
+	cleanupCreatedProfile := func() {
+		if createdProfile != nil {
+			delete(s.profiles, createdProfile.ID)
+			_ = os.RemoveAll(filepath.Dir(createdProfile.ConfigPath))
+		}
+	}
+	profile, ok := s.profiles[opts.ProfileID]
 	if !ok {
-		return nil, fmt.Errorf("profile %q not found", profileID)
+		cleanupCreatedProfile()
+		return nil, fmt.Errorf("profile %q not found", opts.ProfileID)
 	}
 	secret, err := randomToken()
 	if err != nil {
+		cleanupCreatedProfile()
 		return nil, err
 	}
 	dir := filepath.Join(s.dataDir, "instances", id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		cleanupCreatedProfile()
 		return nil, err
 	}
 	_ = os.Chmod(dir, 0o700)
-	if config == "" {
-		config = defaultUserConfig
-	}
 	item := &Instance{
 		ID:                id,
-		Name:              name,
-		ProfileID:         profileID,
-		MixedPort:         mixedPort,
-		ControllerPort:    controllerPort,
+		Name:              opts.Name,
+		ProfileID:         opts.ProfileID,
+		MixedPort:         opts.MixedPort,
+		ControllerPort:    opts.ControllerPort,
 		Secret:            secret,
 		UserConfigPath:    profile.ConfigPath,
 		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		SelectedProxies:   cloneStringMap(opts.SelectedProxies),
+		SelectedGroup:     opts.SelectedGroup,
+		SelectedProxy:     opts.SelectedProxy,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -406,11 +490,20 @@ func (s *Store) Create(name, profileID, config string, mixedPort, controllerPort
 	s.items[item.ID] = item
 	if err := s.saveLocked(); err != nil {
 		delete(s.items, item.ID)
+		_ = os.RemoveAll(dir)
+		cleanupCreatedProfile()
 		return nil, err
 	}
 	copy := *item
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
+}
+
+func nextClonePortStart(sourcePort, fallback int) int {
+	if sourcePort > 0 && sourcePort < 65535 {
+		return sourcePort + 1
+	}
+	return fallback
 }
 
 func (s *Store) SuggestPorts() (int, int) {

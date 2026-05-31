@@ -36,6 +36,7 @@ const state = {
   latencyBatchRunning: false,
   latencyBatchToken: 0,
   bulkRunning: false,
+  cloneRunning: false,
 };
 
 const statusLabels = {
@@ -124,6 +125,7 @@ const el = {
   startBtn: document.querySelector("#startBtn"),
   stopBtn: document.querySelector("#stopBtn"),
   restartBtn: document.querySelector("#restartBtn"),
+  cloneBtn: document.querySelector("#cloneBtn"),
   deleteBtn: document.querySelector("#deleteBtn"),
   overviewMixed: document.querySelector("#overviewMixed"),
   overviewController: document.querySelector("#overviewController"),
@@ -560,6 +562,7 @@ function renderPanels(selected) {
   el.startBtn.disabled = state.bulkRunning || selected.status === "running" || selected.status === "starting";
   el.stopBtn.disabled = state.bulkRunning || selected.status !== "running";
   el.restartBtn.disabled = state.bulkRunning;
+  el.cloneBtn.disabled = state.bulkRunning || state.cloneRunning;
   el.deleteBtn.disabled = state.bulkRunning;
   updateLatencyControls();
   renderSubscriptionSettings(selected);
@@ -668,19 +671,23 @@ async function fillSuggestedPorts() {
   }
 }
 
+function clearActiveDetailCache() {
+  el.configEditor.value = "";
+  el.configEditor.dataset.id = "";
+  el.configEditor.dataset.profileId = "";
+  el.configEditor.dataset.dirty = "";
+  el.subscriptionSettings.dataset.profileId = "";
+  el.subscriptionSettings.dataset.dirty = "";
+  state.proxyGroups = [];
+  state.proxyApply = false;
+  state.latencyBatchRunning = false;
+  state.latencyBatchToken += 1;
+}
+
 function selectInstance(id) {
   if (state.activeId !== id) {
     clearLatencyStateForInstance(state.activeId);
-    el.configEditor.value = "";
-    el.configEditor.dataset.id = "";
-    el.configEditor.dataset.profileId = "";
-    el.configEditor.dataset.dirty = "";
-    el.subscriptionSettings.dataset.profileId = "";
-    el.subscriptionSettings.dataset.dirty = "";
-    state.proxyGroups = [];
-    state.proxyApply = false;
-    state.latencyBatchRunning = false;
-    state.latencyBatchToken += 1;
+    clearActiveDetailCache();
   }
   state.activeId = id;
   state.creating = false;
@@ -1082,11 +1089,9 @@ el.createSubmit.addEventListener("click", async () => {
       body: JSON.stringify(payload),
     });
     state.activeId = created.id;
+    localStorage.setItem("activeInstance", created.id);
     state.creating = false;
-    el.configEditor.value = "";
-    el.configEditor.dataset.id = "";
-    el.configEditor.dataset.profileId = "";
-    el.configEditor.dataset.dirty = "";
+    clearActiveDetailCache();
     showMessage("实例已创建。");
     await refresh();
   } catch (err) {
@@ -1109,6 +1114,31 @@ el.restartBtn.addEventListener("click", () => {
   if (selected) runAction(`/api/instances/${selected.id}/restart`, "已请求重启。");
 });
 
+el.cloneBtn.addEventListener("click", async () => {
+  const selected = active();
+  if (!selected || state.cloneRunning) return;
+  try {
+    state.cloneRunning = true;
+    el.cloneBtn.disabled = true;
+    const created = await api(`/api/instances/${selected.id}/clone`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.activeId = created.id;
+    localStorage.setItem("activeInstance", created.id);
+    state.creating = false;
+    clearLatencyStateForInstance(selected.id);
+    clearActiveDetailCache();
+    showMessage(`已克隆 ${selected.name}。`);
+    await refresh();
+  } catch (err) {
+    showMessage(err.message, "error");
+  } finally {
+    state.cloneRunning = false;
+    render();
+  }
+});
+
 el.deleteBtn.addEventListener("click", async () => {
   const selected = active();
   if (!selected) return;
@@ -1116,10 +1146,7 @@ el.deleteBtn.addEventListener("click", async () => {
   try {
     await api(`/api/instances/${selected.id}`, { method: "DELETE" });
     state.activeId = "";
-    el.configEditor.value = "";
-    el.configEditor.dataset.id = "";
-    el.configEditor.dataset.profileId = "";
-    el.configEditor.dataset.dirty = "";
+    clearActiveDetailCache();
     showMessage("实例已删除。");
     await refresh();
   } catch (err) {

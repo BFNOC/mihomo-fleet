@@ -460,6 +460,8 @@ func (c *Controller) handleInstance(w http.ResponseWriter, r *http.Request) {
 		c.handleAction(w, r, id, "stop")
 	case "restart":
 		c.handleAction(w, r, id, "restart")
+	case "clone":
+		c.handleClone(w, r, id)
 	case "logs":
 		c.handleLogs(w, r, id)
 	case "selection":
@@ -541,6 +543,39 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (c *Controller) handleClone(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req struct {
+		Name           string `json:"name"`
+		MixedPort      int    `json:"mixedPort"`
+		ControllerPort int    `json:"controllerPort"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	item, err := c.store.Clone(id, req.Name, req.MixedPort, req.ControllerPort)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errInstanceNotFound) {
+			status = http.StatusNotFound
+		} else if isPortUnavailableError(err) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err)
+		return
+	}
+	view, ok := c.manager.View(item.ID)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("instance %q not available after clone", item.ID))
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, view)
 }
 
 func (c *Controller) handleSelection(w http.ResponseWriter, r *http.Request, id string) {

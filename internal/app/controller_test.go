@@ -287,6 +287,53 @@ func TestHandleInstanceUpdateReportsPortConflict(t *testing.T) {
 	}
 }
 
+func TestHandleInstanceCloneCreatesStoppedCopy(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	source := postInstanceJSON(t, c, `{"name":"Source","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+	if _, err := c.store.SetSelection(source.ID, "Proxy", "UK-01"); err != nil {
+		t.Fatal(err)
+	}
+
+	clone := postCloneJSON(t, c, source.ID, `{}`, http.StatusCreated)
+	if clone.ID == source.ID {
+		t.Fatal("clone should have a distinct id")
+	}
+	if clone.Status != "stopped" {
+		t.Fatalf("clone status = %q, want stopped", clone.Status)
+	}
+	if clone.ProfileID != source.ProfileID || clone.UserConfigPath != source.UserConfigPath {
+		t.Fatalf("clone profile = %q/%q, want shared %q/%q", clone.ProfileID, clone.UserConfigPath, source.ProfileID, source.UserConfigPath)
+	}
+	if clone.MixedPort != 28001 || clone.ControllerPort != 29001 {
+		t.Fatalf("clone ports = (%d, %d), want (28001, 29001)", clone.MixedPort, clone.ControllerPort)
+	}
+	if clone.SelectedProxies["Proxy"] != "UK-01" || clone.SelectedGroup != "Proxy" || clone.SelectedProxy != "UK-01" {
+		t.Fatalf("clone selection = %#v/%q/%q, want copied selection", clone.SelectedProxies, clone.SelectedGroup, clone.SelectedProxy)
+	}
+}
+
+func TestHandleInstanceCloneReportsMissingSource(t *testing.T) {
+	c := newBatchTestController(t)
+	postCloneJSON(t, c, "missing", `{}`, http.StatusNotFound)
+}
+
+func TestHandleInstanceCloneReportsPortConflict(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	source := postInstanceJSON(t, c, `{"name":"Source","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+
+	postCloneJSON(t, c, source.ID, `{"mixedPort":28000,"controllerPort":29001}`, http.StatusConflict)
+}
+
+func TestHandleInstanceCloneRejectsSameMixedAndControllerPort(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	source := postInstanceJSON(t, c, `{"name":"Source","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+
+	postCloneJSON(t, c, source.ID, `{"mixedPort":28001,"controllerPort":28001}`, http.StatusBadRequest)
+}
+
 type batchResponse struct {
 	InstanceBatchResult
 	Instances []InstanceView `json:"instances"`
@@ -340,6 +387,24 @@ func postInstanceJSON(t *testing.T, c *Controller, body string, wantStatus int) 
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	c.handleInstances(rec, req)
+	if rec.Code != wantStatus {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var view InstanceView
+	if rec.Code == http.StatusCreated {
+		if err := json.NewDecoder(rec.Body).Decode(&view); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return view
+}
+
+func postCloneJSON(t *testing.T, c *Controller, id, body string, wantStatus int) InstanceView {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+id+"/clone", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstance(rec, req)
 	if rec.Code != wantStatus {
 		t.Fatalf("status = %d, want %d, body: %s", rec.Code, wantStatus, rec.Body.String())
 	}
