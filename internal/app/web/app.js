@@ -20,6 +20,12 @@ const latencyKinds = {
   url: "url",
   real: "real",
 };
+const proxyCopyDefs = [
+  { id: "addr", label: "地址", title: "复制主机和端口" },
+  { id: "http", label: "HTTP", title: "复制 HTTP 代理地址" },
+  { id: "socks", label: "SOCKS", title: "复制 SOCKS5 代理地址" },
+  { id: "env", label: "ENV", title: "复制终端环境变量" },
+];
 
 const state = {
   system: null,
@@ -92,6 +98,8 @@ const el = {
   systemWarning: document.querySelector("#systemWarning"),
   instanceSelect: document.querySelector("#instanceSelect"),
   instanceList: document.querySelector("#instanceList"),
+  portMatrixCount: document.querySelector("#portMatrixCount"),
+  portMatrixList: document.querySelector("#portMatrixList"),
   message: document.querySelector("#message"),
   newBtn: document.querySelector("#newBtn"),
   startAllBtn: document.querySelector("#startAllBtn"),
@@ -466,6 +474,7 @@ function render() {
   renderSystem();
   renderSelector(selected);
   renderList(selected);
+  renderPortMatrix(selected);
   updateBulkControls();
   renderPanels(selected);
   updateCreateProfileControls();
@@ -525,6 +534,144 @@ function renderList(selected) {
     button.querySelector(".row-meta").textContent = `混合端口 ${item.mixedPort} · ${profile}${choice}`;
     button.addEventListener("click", () => selectInstance(item.id));
     el.instanceList.append(button);
+  }
+}
+
+function renderPortMatrix(selected) {
+  const focusedKey = el.portMatrixList.contains(document.activeElement)
+    ? document.activeElement.dataset.portFocus
+    : "";
+  el.portMatrixCount.textContent = `${state.instances.length} 个出口`;
+  el.portMatrixList.innerHTML = "";
+  if (!state.instances.length) {
+    const empty = document.createElement("div");
+    empty.className = "port-empty";
+    empty.textContent = "暂无端口";
+    el.portMatrixList.append(empty);
+    return;
+  }
+
+  for (const item of state.instances) {
+    const row = document.createElement("div");
+    row.className = `port-row ${selected && selected.id === item.id ? "active" : ""}`;
+
+    const selectButton = document.createElement("button");
+    selectButton.className = "port-row-select";
+    selectButton.type = "button";
+    selectButton.dataset.portFocus = `select:${item.id}`;
+    selectButton.setAttribute("aria-label", `${item.name}，${statusText(item.status)}，${proxyEndpointText(item.mixedPort)}`);
+    if (selected && selected.id === item.id) selectButton.setAttribute("aria-current", "true");
+    selectButton.addEventListener("click", () => selectInstance(item.id));
+
+    const top = document.createElement("span");
+    top.className = "port-row-top";
+    const name = document.createElement("span");
+    name.className = "port-row-name";
+    name.textContent = item.name;
+    const status = document.createElement("span");
+    status.className = `status ${statusClass(item.status)}`;
+    status.textContent = statusText(item.status);
+    top.append(name, status);
+
+    const address = document.createElement("span");
+    address.className = "port-address";
+    address.textContent = proxyEndpointText(item.mixedPort);
+    selectButton.append(top, address);
+
+    const tools = document.createElement("div");
+    tools.className = "copy-tools";
+    const actions = Number(item.mixedPort) > 0 ? proxyCopyActions(item) : proxyCopyPlaceholders();
+    for (const action of actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = action.label;
+      button.title = action.title;
+      button.disabled = !action.value;
+      button.dataset.portFocus = `copy:${item.id}:${action.id}`;
+      button.setAttribute("aria-label", `${action.title}：${item.name}`);
+      if (action.value) {
+        button.addEventListener("click", async () => {
+          await copyProxyValue(action.value, action.message);
+        });
+      }
+      tools.append(button);
+    }
+
+    row.append(selectButton, tools);
+    el.portMatrixList.append(row);
+  }
+
+  // 自动刷新会重建列表；恢复端口矩阵内的焦点，避免键盘用户每 4 秒被打断。
+  if (focusedKey) {
+    const focused = [...el.portMatrixList.querySelectorAll("[data-port-focus]")]
+      .find((node) => node.dataset.portFocus === focusedKey);
+    focused?.focus({ preventScroll: true });
+  }
+}
+
+function proxyEndpoint(port) {
+  return `127.0.0.1:${port}`;
+}
+
+function proxyEndpointText(port) {
+  return Number(port) > 0 ? proxyEndpoint(port) : "端口未分配";
+}
+
+function proxyCopyPlaceholders() {
+  return proxyCopyDefs.map((action) => ({ ...action, value: "" }));
+}
+
+function proxyCopyActions(item) {
+  const endpoint = proxyEndpoint(item.mixedPort);
+  const http = `http://${endpoint}`;
+  const socks = `socks5://${endpoint}`;
+  const values = {
+    addr: endpoint,
+    http,
+    socks,
+    env: `HTTP_PROXY=${http} HTTPS_PROXY=${http} ALL_PROXY=${socks}`,
+  };
+  const messages = {
+    addr: `已复制 ${item.name} 地址。`,
+    http: `已复制 ${item.name} HTTP。`,
+    socks: `已复制 ${item.name} SOCKS。`,
+    env: `已复制 ${item.name} 环境变量。`,
+  };
+  return proxyCopyDefs.map((action) => ({
+    ...action,
+    value: values[action.id],
+    message: messages[action.id],
+  }));
+}
+
+async function copyProxyValue(value, success) {
+  try {
+    await writeClipboard(value);
+    showMessage(success);
+  } catch (err) {
+    console.warn("Unable to copy proxy value.", err);
+    showMessage("复制失败，请检查浏览器剪贴板权限。", "error");
+  }
+}
+
+async function writeClipboard(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  // 兼容非安全上下文或旧浏览器，localhost 以外也能复制端口文本。
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.className = "clipboard-buffer";
+  document.body.append(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("复制失败。");
+    }
+  } finally {
+    textarea.remove();
   }
 }
 

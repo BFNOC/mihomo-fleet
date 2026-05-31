@@ -252,6 +252,114 @@ label span {
   background: var(--accent-soft);
 }
 
+.port-matrix {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.port-matrix-head,
+.port-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.port-matrix-head span,
+.port-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.port-matrix-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.port-row {
+  width: 100%;
+  min-height: 112px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.port-row:hover {
+  border-color: oklch(0.74 0.035 175);
+}
+
+.port-row-select {
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.port-row-select:hover {
+  border-color: transparent;
+}
+
+.port-row-select:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+}
+
+.port-row.active {
+  border-color: oklch(0.68 0.07 178);
+  background: var(--accent-soft);
+}
+
+.port-row-name,
+.port-address {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.port-row-name {
+  font-weight: 700;
+}
+
+.port-address {
+  display: block;
+  color: var(--accent-strong);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.copy-tools {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.copy-tools button {
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 6px;
+  font-size: 11px;
+  text-align: center;
+}
+
+.clipboard-buffer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .row-main {
   display: flex;
   align-items: center;
