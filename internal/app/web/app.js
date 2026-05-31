@@ -258,6 +258,62 @@ function currentLatencyTarget(group) {
   return name;
 }
 
+function alignProxyNamesToProfileOrder(names, profileGroup) {
+  if (!profileGroup || !Array.isArray(profileGroup.all) || !profileGroup.all.length) return names;
+  const order = new Map();
+  profileGroup.all.forEach((name, index) => {
+    if (!order.has(name)) order.set(name, index);
+  });
+  return names
+    .map((name, index) => ({ name, index }))
+    .sort((left, right) => {
+      const leftOrder = order.get(left.name);
+      const rightOrder = order.get(right.name);
+      if (leftOrder !== undefined && rightOrder !== undefined) return leftOrder - rightOrder;
+      if (leftOrder !== undefined) return -1;
+      if (rightOrder !== undefined) return 1;
+      return left.index - right.index;
+    })
+    .map((item) => item.name);
+}
+
+function alignProxyGroupsToProfileOrder(runtimeGroups, profileGroups) {
+  if (!Array.isArray(profileGroups) || !profileGroups.length) return runtimeGroups;
+  const profileByName = new Map(profileGroups.map((group, index) => [group.name, { ...group, index }]));
+  return runtimeGroups
+    .map((group, index) => {
+      const profileGroup = profileByName.get(group.name);
+      const all = Array.isArray(group.all) ? alignProxyNamesToProfileOrder(group.all, profileGroup) : group.all;
+      return { ...group, all, _runtimeIndex: index };
+    })
+    .sort((left, right) => {
+      const leftProfile = profileByName.get(left.name);
+      const rightProfile = profileByName.get(right.name);
+      if (leftProfile && rightProfile) return leftProfile.index - rightProfile.index;
+      if (leftProfile) return -1;
+      if (rightProfile) return 1;
+      return left._runtimeIndex - right._runtimeIndex;
+    })
+    .map(({ _runtimeIndex, ...group }) => group);
+}
+
+async function loadProfileProxyGroups(selected) {
+  if (!selected?.profileId) return [];
+  const profileId = encodeURIComponent(selected.profileId);
+  const instanceId = encodeURIComponent(selected.id);
+  const payload = await api(`/api/profiles/${profileId}/proxies?instanceId=${instanceId}`);
+  return payload.groups || [];
+}
+
+async function loadProfileProxyGroupsForRuntime(selected) {
+  try {
+    return await loadProfileProxyGroups(selected);
+  } catch (err) {
+    console.warn("Unable to load profile proxy order; using mihomo runtime order.", err);
+    return [];
+  }
+}
+
 function formatLatencyValue(result, running) {
   if (running) return "测速中";
   if (!result) return "—";
@@ -665,14 +721,16 @@ async function refreshProxies() {
     let groups = [];
     let apply = false;
     if (selected.status === "running") {
-      const payload = await api(`/api/mihomo/${selected.id}/proxies`);
+      const [payload, profileGroups] = await Promise.all([
+        api(`/api/mihomo/${selected.id}/proxies`),
+        loadProfileProxyGroupsForRuntime(selected),
+      ]);
       const proxies = payload.proxies || {};
-      groups = Object.values(proxies).filter((item) => Array.isArray(item.all));
+      groups = alignProxyGroupsToProfileOrder(Object.values(proxies).filter((item) => Array.isArray(item.all)), profileGroups);
       apply = true;
       el.proxySource.textContent = "当前读取运行中的 mihomo 节点，选择后立即应用并保存。";
     } else {
-      const payload = await api(`/api/profiles/${selected.profileId}/proxies?instanceId=${encodeURIComponent(selected.id)}`);
-      groups = payload.groups || [];
+      groups = await loadProfileProxyGroups(selected);
       el.proxySource.textContent = "当前读取缓存配置，选择会保存到实例，下次启动后自动恢复。";
     }
     state.proxyGroups = groups;
