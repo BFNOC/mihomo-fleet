@@ -515,17 +515,31 @@ label,
 }
 
 .proxy-group-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: minmax(96px, 0.8fr) minmax(0, 2fr) auto;
+  gap: 8px 12px;
   align-items: center;
   margin-bottom: 10px;
-  flex-wrap: wrap;
 }
 
-.proxy-group-head span {
+.proxy-group-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-group-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.proxy-group-meta > span:first-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -544,7 +558,7 @@ label,
 
 .proxy-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 8px;
 }
 
@@ -555,7 +569,7 @@ label,
   padding: 0 10px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   overflow: hidden;
 }
@@ -573,6 +587,10 @@ label,
   gap: 4px;
 }
 
+.latency-chips.current {
+  align-items: center;
+}
+
 .latency-chip {
   min-width: 52px;
   padding: 2px 5px;
@@ -581,6 +599,11 @@ label,
   color: var(--muted);
   font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   text-align: center;
+}
+
+.latency-chip.idle {
+  background: var(--soft);
+  color: var(--muted);
 }
 
 .latency-chip.good {
@@ -663,5 +686,18 @@ label,
   .actions {
     align-items: stretch;
     flex-wrap: wrap;
+  }
+
+  .proxy-group-head {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .proxy-group-actions {
+    flex-wrap: wrap;
+  }
+
+  .proxy-grid {
+    grid-template-columns: 1fr;
   }
 }
