@@ -7,11 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +28,8 @@ type Controller struct {
 	manager        *Manager
 	mihomoPath     string
 	mihomoFound    bool
+	mihomoSource   string
+	appVersion     string
 	version        string
 	proxyTransport http.RoundTripper
 }
@@ -38,16 +44,13 @@ func NewController(opts Options) (*Controller, error) {
 	if opts.DataDir == "" {
 		opts.DataDir = ".mihomo-fleet"
 	}
+	if opts.AppVersion == "" {
+		opts.AppVersion = "dev"
+	}
 
-	mihomoPath := opts.MihomoPath
-	if mihomoPath == "" {
-		if found, err := exec.LookPath("mihomo"); err == nil {
-			mihomoPath = found
-		}
-	} else if found, err := exec.LookPath(mihomoPath); err == nil {
-		mihomoPath = found
-	} else {
-		mihomoPath = ""
+	mihomoPath, mihomoSource := resolveMihomoPath(opts.MihomoPath, os.Executable, filepath.EvalSymlinks, exec.LookPath)
+	if opts.MihomoPath != "" && mihomoPath == "" {
+		log.Printf("mihomo binary %q from -mihomo was not found or is not executable", opts.MihomoPath)
 	}
 
 	store, err := NewStore(opts.DataDir)
@@ -59,10 +62,12 @@ func NewController(opts Options) (*Controller, error) {
 		KeepAlive: 30 * time.Second,
 	}
 	c := &Controller{
-		opts:        opts,
-		store:       store,
-		mihomoPath:  mihomoPath,
-		mihomoFound: mihomoPath != "",
+		opts:         opts,
+		store:        store,
+		mihomoPath:   mihomoPath,
+		mihomoFound:  mihomoPath != "",
+		mihomoSource: mihomoSource,
+		appVersion:   opts.AppVersion,
 		proxyTransport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           dialer.DialContext,
@@ -214,9 +219,10 @@ func (c *Controller) handleSystem(w http.ResponseWriter, r *http.Request) {
 		Bind:         c.opts.Bind,
 		Port:         c.opts.Port,
 		DataDir:      c.opts.DataDir,
+		AppVersion:   c.appVersion,
 		MihomoPath:   c.mihomoPath,
 		MihomoFound:  c.mihomoFound,
-		MihomoSource: mihomoSource(c.opts.MihomoPath, c.mihomoPath),
+		MihomoSource: c.mihomoSource,
 		Version:      c.version,
 	})
 }
@@ -491,14 +497,44 @@ func detectVersion(binary string) string {
 	return strings.TrimSpace(string(bytes.TrimSpace(out)))
 }
 
-func mihomoSource(flagPath, resolved string) string {
-	if resolved == "" {
-		return "missing"
-	}
+func resolveMihomoPath(flagPath string, executablePath func() (string, error), evalSymlinks func(string) (string, error), lookPath func(string) (string, error)) (string, string) {
 	if flagPath != "" {
-		return "flag"
+		if found, err := lookPath(flagPath); err == nil {
+			return found, "flag"
+		}
+		return "", "missing"
 	}
-	return "PATH"
+	if found := resolveMihomoSameDir(executablePath, evalSymlinks, lookPath, mihomoBinaryNames()); found != "" {
+		return found, "same-dir"
+	}
+	if found, err := lookPath("mihomo"); err == nil {
+		return found, "PATH"
+	}
+	return "", "missing"
+}
+
+func resolveMihomoSameDir(executablePath func() (string, error), evalSymlinks func(string) (string, error), lookPath func(string) (string, error), names []string) string {
+	exePath, err := executablePath()
+	if err != nil {
+		return ""
+	}
+	if evaluated, err := evalSymlinks(exePath); err == nil {
+		exePath = evaluated
+	}
+	exeDir := filepath.Dir(exePath)
+	for _, name := range names {
+		if found, err := lookPath(filepath.Join(exeDir, name)); err == nil {
+			return found
+		}
+	}
+	return ""
+}
+
+func mihomoBinaryNames() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"mihomo.exe", "mihomo"}
+	}
+	return []string{"mihomo"}
 }
 
 func readJSON(r *http.Request, out any) error {

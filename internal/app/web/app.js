@@ -23,6 +23,40 @@ const state = {
   creating: false,
 };
 
+const statusLabels = {
+  stopped: "已停止",
+  starting: "启动中",
+  running: "运行中",
+  error: "异常",
+};
+
+const errorLabels = {
+  "mihomo binary not found. Install mihomo or start with -mihomo /path/to/mihomo": "未找到 mihomo 可执行文件。请安装 mihomo，或使用 -mihomo /path/to/mihomo 指定路径。",
+  "stop the instance before changing ports": "修改端口前请先停止该实例。",
+  "stop the instance before changing profile": "修改配置档前请先停止该实例。",
+  "profileId and config cannot be changed in the same request": "不能在同一次请求中同时修改配置档和配置内容。",
+  "group and proxy are required": "必须选择节点组和节点。",
+  "method not allowed": "请求方法不允许。",
+  "invalid host header": "Host 请求头无效。",
+  "missing X-Mihomo-Fleet header": "缺少 X-Mihomo-Fleet 请求头。",
+  "Content-Type must be application/json": "Content-Type 必须是 application/json。",
+  "unable to allocate local ports": "无法自动分配本地端口。",
+};
+
+const errorPatterns = [
+  [/^profile "(.+)" not found$/, (match) => `配置档 ${match[1]} 不存在。`],
+  [/^instance "(.+)" not found$/, (match) => `实例 ${match[1]} 不存在。`],
+  [/^mixed proxy port (\d+) is unavailable$/, (match) => `混合端口 ${match[1]} 不可用。`],
+  [/^controller port (\d+) is unavailable$/, (match) => `控制端口 ${match[1]} 不可用。`],
+  [/^mixed proxy port (\d+) is already in use$/, (match) => `混合端口 ${match[1]} 已被占用。`],
+  [/^controller port (\d+) is already in use$/, (match) => `控制端口 ${match[1]} 已被占用。`],
+  [/^process "(.+)" did not exit after force kill$/, (match) => `进程 ${match[1]} 强制结束后仍未退出。`],
+  [/^mihomo config test failed: (.+)$/, (match) => `mihomo 配置测试失败：${match[1]}`],
+  [/^mihomo controller unreachable: (.+)$/, (match) => `无法连接 mihomo 控制器：${match[1]}`],
+  [/^mihomo returned (.+)$/, (match) => `mihomo 返回错误：${match[1]}`],
+  [/^parse user config: (.+)$/, (match) => `解析用户配置失败：${match[1]}`],
+];
+
 const el = {
   systemLine: document.querySelector("#systemLine"),
   systemWarning: document.querySelector("#systemWarning"),
@@ -77,6 +111,24 @@ function profileById(id) {
   return state.profiles.find((profile) => profile.id === id) || null;
 }
 
+function statusText(status) {
+  return statusLabels[status] || status || "未知";
+}
+
+function statusClass(status) {
+  return statusLabels[status] ? status : "unknown";
+}
+
+function localizedMessage(message) {
+  const text = String(message || "");
+  if (errorLabels[text]) return errorLabels[text];
+  for (const [pattern, render] of errorPatterns) {
+    const match = text.match(pattern);
+    if (match) return render(match);
+  }
+  return text;
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json", "X-Mihomo-Fleet": "1", ...(options.headers || {}) },
@@ -88,7 +140,7 @@ async function api(path, options = {}) {
       const body = await res.json();
       if (body.error) message = body.error;
     } catch {
-      // keep status message
+      // 保留状态消息
     }
     throw new Error(message);
   }
@@ -102,7 +154,7 @@ function showMessage(text, kind = "info") {
     el.message.textContent = "";
     return;
   }
-  el.message.textContent = text;
+  el.message.textContent = localizedMessage(text);
   el.message.className = `message ${kind === "error" ? "error" : ""}`;
 }
 
@@ -142,11 +194,12 @@ function render() {
 function renderSystem() {
   if (!state.system) return;
   const found = state.system.mihomoFound;
+  const appVersion = `Mihomo Fleet v${state.system.appVersion || "dev"}`;
   el.systemLine.textContent = found
-    ? `Controller 127.0.0.1:${state.system.port}, mihomo ${state.system.version || "detected"}`
-    : `Controller 127.0.0.1:${state.system.port}, mihomo missing`;
+    ? `${appVersion}，控制器 127.0.0.1:${state.system.port}，mihomo ${state.system.version || "已检测到"}`
+    : `${appVersion}，控制器 127.0.0.1:${state.system.port}，未找到 mihomo`;
   if (!found) {
-    el.systemWarning.textContent = "mihomo was not found in PATH. You can create instances, but Start needs the binary or the -mihomo flag.";
+    el.systemWarning.textContent = "未在 Mihomo Fleet 同目录或 PATH 中找到 mihomo。你仍然可以创建实例，但启动需要同目录二进制文件，或通过 -mihomo 参数指定路径。";
     el.systemWarning.classList.remove("hidden");
   } else {
     el.systemWarning.classList.add("hidden");
@@ -157,7 +210,7 @@ function renderSelector(selected) {
   el.instanceSelect.innerHTML = "";
   if (!state.instances.length) {
     const opt = document.createElement("option");
-    opt.textContent = "No instances";
+    opt.textContent = "暂无实例";
     opt.value = "";
     el.instanceSelect.append(opt);
     return;
@@ -165,7 +218,7 @@ function renderSelector(selected) {
   for (const item of state.instances) {
     const opt = document.createElement("option");
     opt.value = item.id;
-    opt.textContent = `${item.name} (${item.status})`;
+    opt.textContent = `${item.name}（${statusText(item.status)}）`;
     opt.selected = selected && selected.id === item.id;
     el.instanceSelect.append(opt);
   }
@@ -177,17 +230,18 @@ function renderList(selected) {
     const button = document.createElement("button");
     button.className = `instance-row ${selected && selected.id === item.id ? "active" : ""}`;
     button.type = "button";
-    const profile = item.profileName || item.profileId || "no profile";
+    const profile = item.profileName || item.profileId || "未选择配置档";
     const choice = item.selectedProxy ? ` · ${item.selectedGroup}/${item.selectedProxy}` : "";
     button.innerHTML = `
       <div class="row-main">
         <span class="row-name"></span>
-        <span class="status ${item.status}">${item.status}</span>
+        <span class="status ${statusClass(item.status)}"></span>
       </div>
       <div class="row-meta"></div>
     `;
     button.querySelector(".row-name").textContent = item.name;
-    button.querySelector(".row-meta").textContent = `mixed ${item.mixedPort} · ${profile}${choice}`;
+    button.querySelector(".status").textContent = statusText(item.status);
+    button.querySelector(".row-meta").textContent = `混合端口 ${item.mixedPort} · ${profile}${choice}`;
     button.addEventListener("click", () => selectInstance(item.id));
     el.instanceList.append(button);
   }
@@ -200,17 +254,17 @@ function renderPanels(selected) {
   if (!selected) return;
 
   el.detailName.textContent = selected.name;
-  el.detailMeta.textContent = selected.lastError || `${selected.status} · ${selected.id}`;
-  el.metricStatus.textContent = selected.status;
-  el.metricPid.textContent = selected.pid || "none";
+  el.detailMeta.textContent = selected.lastError ? localizedMessage(selected.lastError) : `${statusText(selected.status)} · ${selected.id}`;
+  el.metricStatus.textContent = statusText(selected.status);
+  el.metricPid.textContent = selected.pid || "无";
   el.metricMixed.textContent = selected.mixedPort;
   el.metricController.textContent = selected.controllerPort;
   el.overviewMixed.textContent = `127.0.0.1:${selected.mixedPort}`;
   el.overviewController.textContent = `127.0.0.1:${selected.controllerPort}`;
-  el.overviewProfile.textContent = selected.profileName || selected.profileId || "none";
+  el.overviewProfile.textContent = selected.profileName || selected.profileId || "无";
   el.overviewUserConfig.textContent = selected.profileConfigPath || selected.userConfigPath;
   el.overviewRuntimeConfig.textContent = selected.runtimeConfigPath;
-  el.overviewSelection.textContent = selected.selectedProxy ? `${selected.selectedGroup} -> ${selected.selectedProxy}` : "none";
+  el.overviewSelection.textContent = selected.selectedProxy ? `${selected.selectedGroup} -> ${selected.selectedProxy}` : "无";
   el.editName.value = selected.name;
   renderProfileOptions(el.editProfile, selected.profileId, false);
   el.editMixedPort.value = selected.mixedPort;
@@ -226,7 +280,7 @@ function renderProfileOptions(select, selectedId, allowNew) {
   if (allowNew) {
     const opt = document.createElement("option");
     opt.value = newProfileValue;
-    opt.textContent = "Create new profile";
+    opt.textContent = "创建新配置档";
     select.append(opt);
   }
   for (const profile of state.profiles) {
@@ -262,7 +316,7 @@ async function updateCreateProfileControls() {
     const payload = await api(`/api/profiles/${selectedProfile.id}/config`);
     el.createConfig.value = payload.config || "";
   } catch (err) {
-    el.createConfig.value = err.message;
+    el.createConfig.value = localizedMessage(err.message);
   }
 }
 
@@ -321,10 +375,10 @@ async function refreshLogs() {
   if (!selected) return;
   try {
     const payload = await api(`/api/instances/${selected.id}/logs`);
-    el.logs.textContent = (payload.lines || []).join("\n") || "No process logs yet.";
+    el.logs.textContent = (payload.lines || []).join("\n") || "还没有进程日志。";
     el.logs.scrollTop = el.logs.scrollHeight;
   } catch (err) {
-    el.logs.textContent = err.message;
+    el.logs.textContent = localizedMessage(err.message);
   }
 }
 
@@ -332,7 +386,7 @@ async function refreshProxies() {
   const selected = active();
   if (!selected) return;
   if (selected.status !== "running") {
-    el.proxiesList.innerHTML = `<div class="warning">Start this instance to query mihomo proxies.</div>`;
+    el.proxiesList.innerHTML = `<div class="warning">启动该实例后才能读取 mihomo 节点。</div>`;
     return;
   }
   try {
@@ -340,7 +394,7 @@ async function refreshProxies() {
     const proxies = payload.proxies || {};
     const groups = Object.values(proxies).filter((item) => Array.isArray(item.all));
     if (!groups.length) {
-      el.proxiesList.innerHTML = `<div class="warning">No proxy groups returned by mihomo.</div>`;
+      el.proxiesList.innerHTML = `<div class="warning">mihomo 没有返回可选节点组。</div>`;
       return;
     }
     el.proxiesList.innerHTML = "";
@@ -350,7 +404,7 @@ async function refreshProxies() {
       row.innerHTML = `
         <strong></strong>
         <select></select>
-        <button type="button">Select</button>
+        <button type="button">选择</button>
       `;
       row.querySelector("strong").textContent = group.name;
       const select = row.querySelector("select");
@@ -368,7 +422,7 @@ async function refreshProxies() {
             body: JSON.stringify({ group: group.name, proxy: select.value, apply: true }),
           });
           state.instances = state.instances.map((item) => (item.id === updated.id ? updated : item));
-          showMessage(`Saved ${group.name} -> ${select.value}.`);
+          showMessage(`已保存 ${group.name} -> ${select.value}。`);
           render();
           await refreshProxies();
         } catch (err) {
@@ -378,7 +432,7 @@ async function refreshProxies() {
       el.proxiesList.append(row);
     }
   } catch (err) {
-    el.proxiesList.innerHTML = `<div class="message error">${escapeHTML(err.message)}</div>`;
+    el.proxiesList.innerHTML = `<div class="message error">${escapeHTML(localizedMessage(err.message))}</div>`;
   }
 }
 
@@ -432,7 +486,7 @@ el.createSubmit.addEventListener("click", async () => {
       const profile = await api("/api/profiles", {
         method: "POST",
         body: JSON.stringify({
-          name: el.createProfileName.value.trim() || `${el.createName.value.trim() || "Instance"} profile`,
+          name: el.createProfileName.value.trim() || `${el.createName.value.trim() || "默认"}配置档`,
           config: el.createConfig.value,
         }),
       });
@@ -454,7 +508,7 @@ el.createSubmit.addEventListener("click", async () => {
     el.configEditor.dataset.id = "";
     el.configEditor.dataset.profileId = "";
     el.configEditor.dataset.dirty = "";
-    showMessage("Instance created.");
+    showMessage("实例已创建。");
     await refresh();
   } catch (err) {
     showMessage(err.message, "error");
@@ -463,23 +517,23 @@ el.createSubmit.addEventListener("click", async () => {
 
 el.startBtn.addEventListener("click", () => {
   const selected = active();
-  if (selected) runAction(`/api/instances/${selected.id}/start`, "Start requested.");
+  if (selected) runAction(`/api/instances/${selected.id}/start`, "已请求启动。");
 });
 
 el.stopBtn.addEventListener("click", () => {
   const selected = active();
-  if (selected) runAction(`/api/instances/${selected.id}/stop`, "Stop requested.");
+  if (selected) runAction(`/api/instances/${selected.id}/stop`, "已请求停止。");
 });
 
 el.restartBtn.addEventListener("click", () => {
   const selected = active();
-  if (selected) runAction(`/api/instances/${selected.id}/restart`, "Restart requested.");
+  if (selected) runAction(`/api/instances/${selected.id}/restart`, "已请求重启。");
 });
 
 el.deleteBtn.addEventListener("click", async () => {
   const selected = active();
   if (!selected) return;
-  if (!confirm(`Delete ${selected.name}?`)) return;
+  if (!confirm(`确定删除 ${selected.name}？`)) return;
   try {
     await api(`/api/instances/${selected.id}`, { method: "DELETE" });
     state.activeId = "";
@@ -487,7 +541,7 @@ el.deleteBtn.addEventListener("click", async () => {
     el.configEditor.dataset.id = "";
     el.configEditor.dataset.profileId = "";
     el.configEditor.dataset.dirty = "";
-    showMessage("Instance deleted.");
+    showMessage("实例已删除。");
     await refresh();
   } catch (err) {
     showMessage(err.message, "error");
@@ -507,7 +561,7 @@ el.saveBasics.addEventListener("click", async () => {
         controllerPort: Number(el.editControllerPort.value),
       }),
     });
-    showMessage("Basics saved.");
+    showMessage("基础信息已保存。");
     await refresh();
   } catch (err) {
     showMessage(err.message, "error");
@@ -522,7 +576,7 @@ el.saveConfig.addEventListener("click", async () => {
       method: "PUT",
       body: JSON.stringify({ config: el.configEditor.value }),
     });
-    showMessage("Profile config saved.");
+    showMessage("配置已保存。");
     el.configEditor.dataset.dirty = "";
     await refresh();
   } catch (err) {

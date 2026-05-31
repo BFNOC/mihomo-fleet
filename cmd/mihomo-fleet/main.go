@@ -14,6 +14,12 @@ import (
 	"mihomo-fleet/internal/app"
 )
 
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
 func main() {
 	var (
 		bind        = flag.String("bind", "127.0.0.1", "HTTP bind address")
@@ -21,14 +27,23 @@ func main() {
 		dataDir     = flag.String("data", ".mihomo-fleet", "runtime data directory")
 		mihomoPath  = flag.String("mihomo", "", "path to mihomo binary")
 		openBrowser = flag.Bool("open", false, "print browser URL with emphasis")
+		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("mihomo-fleet %s\n", version)
+		fmt.Printf("commit: %s\n", commit)
+		fmt.Printf("build date: %s\n", buildDate)
+		return
+	}
 
 	controller, err := app.NewController(app.Options{
 		Bind:       *bind,
 		Port:       *port,
 		DataDir:    *dataDir,
 		MihomoPath: *mihomoPath,
+		AppVersion: version,
 	})
 	if err != nil {
 		log.Fatalf("init controller: %v", err)
@@ -53,9 +68,9 @@ func main() {
 
 	url := fmt.Sprintf("http://%s:%d", *bind, *port)
 	if *openBrowser {
-		log.Printf("Mihomo Fleet ready: %s", url)
+		log.Printf("Mihomo Fleet %s ready: %s", version, url)
 	} else {
-		log.Printf("listening on %s", url)
+		log.Printf("Mihomo Fleet %s listening on %s", version, url)
 	}
 
 	signals := make(chan os.Signal, 1)

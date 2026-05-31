@@ -21,6 +21,7 @@ type Options struct {
 	Port       int
 	DataDir    string
 	MihomoPath string
+	AppVersion string
 }
 
 type Instance struct {
@@ -75,6 +76,7 @@ type SystemStatus struct {
 	Bind         string `json:"bind"`
 	Port         int    `json:"port"`
 	DataDir      string `json:"dataDir"`
+	AppVersion   string `json:"appVersion"`
 	MihomoPath   string `json:"mihomoPath"`
 	MihomoFound  bool   `json:"mihomoFound"`
 	MihomoSource string `json:"mihomoSource"`

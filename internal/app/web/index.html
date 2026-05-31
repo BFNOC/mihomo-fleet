@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,11 +13,11 @@
           <div class="mark">MF</div>
           <div>
             <h1>Mihomo Fleet</h1>
-            <p id="systemLine">Loading local controller</p>
+            <p id="systemLine">正在加载本地控制器</p>
           </div>
         </div>
         <label class="selector">
-          <span>Active instance</span>
+          <span>当前实例</span>
           <select id="instanceSelect"></select>
         </label>
       </header>
@@ -25,8 +25,8 @@
       <main class="workspace">
         <aside class="sidebar">
           <div class="side-head">
-            <h2>Fleet</h2>
-            <button id="newBtn" class="primary" type="button">New</button>
+            <h2>实例列表</h2>
+            <button id="newBtn" class="primary" type="button">新建</button>
           </div>
           <div id="systemWarning" class="warning hidden"></div>
           <div id="instanceList" class="instance-list"></div>
@@ -36,117 +36,117 @@
           <div id="message" class="message hidden"></div>
           <section id="createPanel" class="panel hidden">
             <div class="panel-title">
-              <h2>Create instance</h2>
-              <p>Ports can be left empty for automatic loopback allocation.</p>
+              <h2>新建实例</h2>
+              <p>端口可以留空，系统会自动分配本机回环端口。</p>
             </div>
             <div class="form-grid">
               <label>
-                <span>Name</span>
-                <input id="createName" placeholder="Hong Kong gateway">
+                <span>名称</span>
+                <input id="createName" placeholder="香港网关">
               </label>
               <label>
-                <span>Profile</span>
+                <span>配置档</span>
                 <select id="createProfile"></select>
               </label>
               <label>
-                <span>New profile name</span>
-                <input id="createProfileName" placeholder="My subscription">
+                <span>新配置档名称</span>
+                <input id="createProfileName" placeholder="我的订阅">
               </label>
             </div>
             <div class="form-grid two">
               <label>
-                <span>Mixed port</span>
-                <input id="createMixedPort" type="number" min="1" max="65535" placeholder="auto">
+                <span>混合端口</span>
+                <input id="createMixedPort" type="number" min="1" max="65535" placeholder="自动">
               </label>
               <label>
-                <span>Controller port</span>
-                <input id="createControllerPort" type="number" min="1" max="65535" placeholder="auto">
+                <span>控制端口</span>
+                <input id="createControllerPort" type="number" min="1" max="65535" placeholder="自动">
               </label>
             </div>
             <label class="stacked">
-              <span>Profile config</span>
+              <span>配置内容</span>
               <textarea id="createConfig" spellcheck="false"></textarea>
             </label>
             <div class="actions">
-              <button id="createSubmit" class="primary" type="button">Create</button>
-              <button id="createCancel" type="button">Cancel</button>
+              <button id="createSubmit" class="primary" type="button">创建</button>
+              <button id="createCancel" type="button">取消</button>
             </div>
           </section>
 
           <section id="emptyPanel" class="empty">
-            <h2>No instances yet</h2>
-            <p>Create one local mihomo instance. Fleet will assign ports, write a runtime config, and keep the controller bound to loopback.</p>
-            <button id="emptyCreate" class="primary" type="button">Create first instance</button>
+            <h2>还没有实例</h2>
+            <p>创建一个本地 mihomo 实例。Fleet 会分配端口、写入运行配置，并让控制器绑定到本机回环地址。</p>
+            <button id="emptyCreate" class="primary" type="button">创建第一个实例</button>
           </section>
 
           <section id="detailPanel" class="detail hidden">
             <div class="detail-head">
               <div>
-                <h2 id="detailName">Instance</h2>
-                <p id="detailMeta">Stopped</p>
+                <h2 id="detailName">实例</h2>
+                <p id="detailMeta">已停止</p>
               </div>
               <div class="actions">
-                <button id="startBtn" class="primary" type="button">Start</button>
-                <button id="stopBtn" type="button">Stop</button>
-                <button id="restartBtn" type="button">Restart</button>
-                <button id="deleteBtn" class="danger" type="button">Delete</button>
+                <button id="startBtn" class="primary" type="button">启动</button>
+                <button id="stopBtn" type="button">停止</button>
+                <button id="restartBtn" type="button">重启</button>
+                <button id="deleteBtn" class="danger" type="button">删除</button>
               </div>
             </div>
 
             <div class="metrics">
-              <div><span>Status</span><strong id="metricStatus">stopped</strong></div>
-              <div><span>PID</span><strong id="metricPid">none</strong></div>
-              <div><span>Mixed port</span><strong id="metricMixed">0</strong></div>
-              <div><span>Controller</span><strong id="metricController">0</strong></div>
+              <div><span>状态</span><strong id="metricStatus">待加载</strong></div>
+              <div><span>PID</span><strong id="metricPid">待加载</strong></div>
+              <div><span>混合端口</span><strong id="metricMixed">0</strong></div>
+              <div><span>控制端口</span><strong id="metricController">0</strong></div>
             </div>
 
             <div class="tabs" role="tablist">
-              <button class="tab active" data-tab="overview" type="button">Overview</button>
-              <button class="tab" data-tab="config" type="button">Config</button>
-              <button class="tab" data-tab="proxies" type="button">Proxies</button>
-              <button class="tab" data-tab="logs" type="button">Logs</button>
+              <button class="tab active" data-tab="overview" type="button">概览</button>
+              <button class="tab" data-tab="config" type="button">配置</button>
+              <button class="tab" data-tab="proxies" type="button">节点</button>
+              <button class="tab" data-tab="logs" type="button">日志</button>
             </div>
 
             <div id="tab-overview" class="tab-panel">
               <div class="split">
                 <section class="panel">
-                  <h3>Ports</h3>
+                  <h3>端口</h3>
                   <dl class="kv">
-                    <dt>Local proxy</dt>
+                    <dt>本地代理</dt>
                     <dd id="overviewMixed"></dd>
-                    <dt>External controller</dt>
+                    <dt>外部控制器</dt>
                     <dd id="overviewController"></dd>
-                    <dt>Profile</dt>
+                    <dt>配置档</dt>
                     <dd id="overviewProfile"></dd>
-                    <dt>Profile config</dt>
+                    <dt>配置文件</dt>
                     <dd id="overviewUserConfig"></dd>
-                    <dt>Runtime config</dt>
+                    <dt>运行配置</dt>
                     <dd id="overviewRuntimeConfig"></dd>
-                    <dt>Saved node</dt>
+                    <dt>已保存节点</dt>
                     <dd id="overviewSelection"></dd>
                   </dl>
                 </section>
                 <section class="panel">
-                  <h3>Edit basics</h3>
+                  <h3>编辑基础信息</h3>
                   <label class="stacked">
-                    <span>Name</span>
+                    <span>名称</span>
                     <input id="editName">
                   </label>
                   <label class="stacked">
-                    <span>Profile</span>
+                    <span>配置档</span>
                     <select id="editProfile"></select>
                   </label>
                   <div class="form-grid two">
                     <label>
-                      <span>Mixed port</span>
+                      <span>混合端口</span>
                       <input id="editMixedPort" type="number" min="1" max="65535">
                     </label>
                     <label>
-                      <span>Controller port</span>
+                      <span>控制端口</span>
                       <input id="editControllerPort" type="number" min="1" max="65535">
                     </label>
                   </div>
-                  <button id="saveBasics" type="button">Save basics</button>
+                  <button id="saveBasics" type="button">保存基础信息</button>
                 </section>
               </div>
             </div>
@@ -154,12 +154,12 @@
             <div id="tab-config" class="tab-panel hidden">
               <section class="panel">
                 <div class="panel-title">
-                  <h3>Profile config</h3>
-                  <p>This shared subscription config can be reused by several instances.</p>
+                  <h3>配置内容</h3>
+                  <p>这份共享订阅配置可以被多个实例复用。</p>
                 </div>
                 <textarea id="configEditor" class="code" spellcheck="false"></textarea>
                 <div class="actions">
-                  <button id="saveConfig" class="primary" type="button">Save config</button>
+                  <button id="saveConfig" class="primary" type="button">保存配置</button>
                 </div>
               </section>
             </div>
@@ -167,8 +167,8 @@
             <div id="tab-proxies" class="tab-panel hidden">
               <section class="panel">
                 <div class="panel-title">
-                  <h3>Mihomo proxies</h3>
-                  <p>Available when the selected instance is running.</p>
+                  <h3>Mihomo 节点组</h3>
+                  <p>所选实例运行后可读取。</p>
                 </div>
                 <div id="proxiesList" class="proxy-list"></div>
               </section>
@@ -177,8 +177,8 @@
             <div id="tab-logs" class="tab-panel hidden">
               <section class="panel">
                 <div class="panel-title">
-                  <h3>Process logs</h3>
-                  <p>Recent stdout and stderr lines from this instance.</p>
+                  <h3>进程日志</h3>
+                  <p>当前实例最近的标准输出和错误输出。</p>
                 </div>
                 <pre id="logs" class="logs"></pre>
               </section>
