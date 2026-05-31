@@ -6,3 +6,6 @@
 /.codex/
 *.log
 .DS_Store
+*.dat
+*.mmdb
+mihomo
