@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const portSuggestMaxStart = 60535
+
 type Store struct {
 	mu        sync.RWMutex
 	dataDir   string
@@ -354,6 +356,7 @@ func (s *Store) Create(name, profileID, config string, mixedPort, controllerPort
 	} else if used[mixedPort] || !isPortFree(mixedPort) {
 		return nil, fmt.Errorf("mixed proxy port %d is unavailable", mixedPort)
 	}
+	used[mixedPort] = true
 	if controllerPort == 0 {
 		controllerPort = allocatePort(29000, used)
 	} else if used[controllerPort] || !isPortFree(controllerPort) {
@@ -410,6 +413,27 @@ func (s *Store) Create(name, profileID, config string, mixedPort, controllerPort
 	return &copy, nil
 }
 
+func (s *Store) SuggestPorts() (int, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	used := s.usedPortsLocked("")
+	// 端口建议从当前已用端口之后继续往后扫，尽量保持新实例端口成段增长。
+	mixedStart := 28000
+	controllerStart := 29000
+	for _, item := range s.items {
+		if item.MixedPort >= mixedStart && item.MixedPort <= portSuggestMaxStart {
+			mixedStart = item.MixedPort + 1
+		}
+		if item.ControllerPort >= controllerStart && item.ControllerPort <= portSuggestMaxStart {
+			controllerStart = item.ControllerPort + 1
+		}
+	}
+	mixed := allocatePort(mixedStart, used)
+	controller := allocatePort(controllerStart, used)
+	return mixed, controller
+}
+
 func (s *Store) Update(id, name, profileID, config string, mixedPort, controllerPort int) (*Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -418,47 +442,94 @@ func (s *Store) Update(id, name, profileID, config string, mixedPort, controller
 	if !ok {
 		return nil, fmt.Errorf("instance %q not found", id)
 	}
+	nextName := item.Name
 	if name != "" {
-		item.Name = name
+		nextName = name
 	}
+	nextProfileID := item.ProfileID
+	nextUserConfigPath := item.UserConfigPath
+	clearSelection := false
 	if profileID != "" {
 		profile, ok := s.profiles[profileID]
 		if !ok {
 			return nil, fmt.Errorf("profile %q not found", profileID)
 		}
 		if item.ProfileID != profileID {
-			item.SelectedGroup = ""
-			item.SelectedProxy = ""
-			item.SelectedProxies = nil
-			item.ProfileID = profileID
-			item.UserConfigPath = profile.ConfigPath
+			nextProfileID = profileID
+			nextUserConfigPath = profile.ConfigPath
+			clearSelection = true
 		}
+	}
+	nextMixedPort := item.MixedPort
+	nextControllerPort := item.ControllerPort
+	if mixedPort > 0 {
+		nextMixedPort = mixedPort
+	}
+	if controllerPort > 0 {
+		nextControllerPort = controllerPort
+	}
+	if nextMixedPort == nextControllerPort {
+		return nil, fmt.Errorf("controller port %d is unavailable", nextControllerPort)
 	}
 	used := s.usedPortsLocked(id)
 	if mixedPort > 0 {
 		if used[mixedPort] || !isPortFree(mixedPort) {
 			return nil, fmt.Errorf("mixed proxy port %d is unavailable", mixedPort)
 		}
-		item.MixedPort = mixedPort
+		used[mixedPort] = true
 	}
 	if controllerPort > 0 {
 		if used[controllerPort] || !isPortFree(controllerPort) {
 			return nil, fmt.Errorf("controller port %d is unavailable", controllerPort)
 		}
-		item.ControllerPort = controllerPort
+		used[controllerPort] = true
 	}
+	snapshot := *item
+	snapshot.SelectedProxies = cloneStringMap(item.SelectedProxies)
+	item.Name = nextName
+	if clearSelection {
+		item.SelectedGroup = ""
+		item.SelectedProxy = ""
+		item.SelectedProxies = nil
+	}
+	item.ProfileID = nextProfileID
+	item.UserConfigPath = nextUserConfigPath
+	item.MixedPort = nextMixedPort
+	item.ControllerPort = nextControllerPort
+	var previousConfig []byte
 	if config != "" {
 		profile, ok := s.profiles[item.ProfileID]
 		if !ok {
+			*item = snapshot
+			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
 			return nil, fmt.Errorf("profile %q not found", item.ProfileID)
 		}
+		var err error
+		previousConfig, err = os.ReadFile(profile.ConfigPath)
+		if err != nil {
+			*item = snapshot
+			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
+			return nil, err
+		}
 		if err := writeFileAtomic(profile.ConfigPath, []byte(config), 0o600); err != nil {
+			*item = snapshot
+			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
 			return nil, err
 		}
 		profile.UpdatedAt = time.Now().UTC()
 	}
 	item.UpdatedAt = time.Now().UTC()
 	if err := s.saveLocked(); err != nil {
+		*item = snapshot
+		item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
+		if config != "" && previousConfig != nil {
+			profile, ok := s.profiles[nextProfileID]
+			if ok {
+				if rollbackErr := writeFileAtomic(profile.ConfigPath, previousConfig, 0o600); rollbackErr != nil {
+					log.Printf("rollback profile config %s failed: %v", nextProfileID, rollbackErr)
+				}
+			}
+		}
 		return nil, err
 	}
 	copy := *item

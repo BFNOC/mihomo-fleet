@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -225,6 +226,67 @@ func TestHandleInstancesStartAllAllowsEmptyFleet(t *testing.T) {
 	}
 }
 
+func TestHandlePortSuggest(t *testing.T) {
+	withPortFree(t, func(port int) bool { return port != 28001 && port != 29001 })
+	c := newBatchTestController(t)
+	if _, err := c.store.Create("Seed", "", defaultUserConfig, 28000, 29000); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ports/suggest", nil)
+	rec := httptest.NewRecorder()
+	c.handlePortSuggest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		MixedPort      int `json:"mixedPort"`
+		ControllerPort int `json:"controllerPort"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.MixedPort != 28002 || payload.ControllerPort != 29002 {
+		t.Fatalf("payload = %#v, want mixed 28002 controller 29002", payload)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestHandleInstancesCreateAllocatesPortsInStore(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+
+	view := postInstanceJSON(t, c, `{"name":"Auto ports"}`, http.StatusCreated)
+	if view.MixedPort != 28000 || view.ControllerPort != 29000 {
+		t.Fatalf("ports = (%d, %d), want (28000, 29000)", view.MixedPort, view.ControllerPort)
+	}
+}
+
+func TestHandleInstancesCreateReportsPortConflict(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+
+	postInstanceJSON(t, c, `{"name":"First","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+	postInstanceJSON(t, c, `{"name":"Conflict","mixedPort":28000,"controllerPort":29001}`, http.StatusConflict)
+}
+
+func TestHandleInstanceUpdateReportsPortConflict(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	first := postInstanceJSON(t, c, `{"name":"First","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+	postInstanceJSON(t, c, `{"name":"Second","mixedPort":28001,"controllerPort":29001}`, http.StatusCreated)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/instances/"+first.ID, strings.NewReader(`{"mixedPort":28001}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstance(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 type batchResponse struct {
 	InstanceBatchResult
 	Instances []InstanceView `json:"instances"`
@@ -270,6 +332,24 @@ func postInstancesBatch(t *testing.T, c *Controller, action string, wantStatus i
 		}
 	}
 	return payload
+}
+
+func postInstanceJSON(t *testing.T, c *Controller, body string, wantStatus int) InstanceView {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstances(rec, req)
+	if rec.Code != wantStatus {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var view InstanceView
+	if rec.Code == http.StatusCreated {
+		if err := json.NewDecoder(rec.Body).Decode(&view); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return view
 }
 
 func instanceStatuses(views []InstanceView) map[string]string {

@@ -657,6 +657,17 @@ async function updateCreateProfileControls() {
   }
 }
 
+async function fillSuggestedPorts() {
+  if (el.createMixedPort.value && el.createControllerPort.value) return;
+  try {
+    const ports = await api("/api/ports/suggest");
+    el.createMixedPort.placeholder = ports.mixedPort ? `建议 ${ports.mixedPort}` : "自动";
+    el.createControllerPort.placeholder = ports.controllerPort ? `建议 ${ports.controllerPort}` : "自动";
+  } catch (err) {
+    console.warn("Unable to load suggested ports.", err);
+  }
+}
+
 function selectInstance(id) {
   if (state.activeId !== id) {
     clearLatencyStateForInstance(state.activeId);
@@ -693,6 +704,7 @@ function showCreate() {
   el.createConfig.dataset.profileId = "";
   showMessage("");
   render();
+  fillSuggestedPorts();
 }
 
 async function refreshActiveDetails() {

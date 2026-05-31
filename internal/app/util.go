@@ -53,7 +53,7 @@ func randomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
-func isPortFree(port int) bool {
+var isPortFree = func(port int) bool {
 	if port <= 0 {
 		return false
 	}
@@ -66,7 +66,10 @@ func isPortFree(port int) bool {
 }
 
 func allocatePort(start int, used map[int]bool) int {
-	for port := start; port < start+5000; port++ {
+	if start < 1 {
+		start = 1
+	}
+	for port := start; port <= 65535 && port < start+5000; port++ {
 		if used[port] {
 			continue
 		}

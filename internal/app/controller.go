@@ -101,6 +101,7 @@ func (c *Controller) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system", c.handleSystem)
 	mux.HandleFunc("/api/profiles", c.handleProfiles)
 	mux.HandleFunc("/api/profiles/", c.handleProfile)
+	mux.HandleFunc("/api/ports/suggest", c.handlePortSuggest)
 	mux.HandleFunc("/api/instances", c.handleInstances)
 	mux.HandleFunc("/api/instances/", c.handleInstance)
 	mux.HandleFunc("/api/mihomo/", c.handleMihomoProxy)
@@ -379,7 +380,11 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 		}
 		item, err := c.store.Create(req.Name, req.ProfileID, req.Config, req.MixedPort, req.ControllerPort)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			status := http.StatusInternalServerError
+			if isPortUnavailableError(err) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
 			return
 		}
 		view, _ := c.manager.View(item.ID)
@@ -387,6 +392,23 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (c *Controller) handlePortSuggest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	mixed, controller := c.store.SuggestPorts()
+	if mixed == 0 || controller == 0 {
+		writeError(w, http.StatusServiceUnavailable, errors.New("unable to allocate local ports"))
+		return
+	}
+	writeJSON(w, map[string]int{
+		"mixedPort":      mixed,
+		"controllerPort": controller,
+	})
 }
 
 func (c *Controller) handleInstancesBatch(w http.ResponseWriter, r *http.Request, action string) {
@@ -500,7 +522,11 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		}
 		item, err := c.store.Update(id, req.Name, req.ProfileID, req.Config, req.MixedPort, req.ControllerPort)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			status := http.StatusBadRequest
+			if isPortUnavailableError(err) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
 			return
 		}
 		view, _ := c.manager.View(item.ID)
@@ -883,4 +909,14 @@ func writeError(w http.ResponseWriter, status int, err error) {
 
 func methodNotAllowed(w http.ResponseWriter) {
 	writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+}
+
+func isPortUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return (strings.Contains(message, "proxy port") && strings.Contains(message, "is unavailable")) ||
+		(strings.Contains(message, "controller port") && strings.Contains(message, "is unavailable")) ||
+		message == "unable to allocate local ports"
 }

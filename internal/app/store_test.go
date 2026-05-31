@@ -5,8 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+var portFreeTestMu sync.Mutex
 
 func TestStorePersistsSecretButViewDoesNotExposeIt(t *testing.T) {
 	dir := t.TempDir()
@@ -124,4 +127,120 @@ func TestStoreSharesProfileAndPersistsPerInstanceSelection(t *testing.T) {
 	if gotFirst.SelectedProxy != "HK-01" || gotSecond.SelectedProxy != "JP-01" {
 		t.Fatalf("selection was not stored per instance: %q %q", gotFirst.SelectedProxy, gotSecond.SelectedProxy)
 	}
+}
+
+func TestStoreSuggestPortsUsesNextAvailableRange(t *testing.T) {
+	withPortFree(t, func(port int) bool { return port != 28003 && port != 29003 })
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("US", "", defaultUserConfig, 28001, 29001); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("UK", "", defaultUserConfig, 28002, 29002); err != nil {
+		t.Fatal(err)
+	}
+
+	mixed, controller := store.SuggestPorts()
+	if mixed != 28004 || controller != 29004 {
+		t.Fatalf("SuggestPorts() = (%d, %d), want (28004, 29004)", mixed, controller)
+	}
+}
+
+func TestStoreSuggestPortsIgnoresPortsNearUpperLimit(t *testing.T) {
+	checked := make(map[int]bool)
+	withPortFree(t, func(port int) bool {
+		if port > 65535 {
+			t.Fatalf("checked invalid port %d", port)
+		}
+		checked[port] = true
+		return port != 28001 && port != 29001
+	})
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("High", "", defaultUserConfig, 65000, 65001); err != nil {
+		t.Fatal(err)
+	}
+
+	mixed, controller := store.SuggestPorts()
+	if mixed != 28000 || controller != 29000 {
+		t.Fatalf("SuggestPorts() = (%d, %d), want (28000, 29000)", mixed, controller)
+	}
+	if checked[65002] {
+		t.Fatal("expected high port range to be ignored for suggestions")
+	}
+}
+
+func TestStoreSuggestPortsReturnsDistinctPortsWhenMixedRangeUnavailable(t *testing.T) {
+	withPortFree(t, func(port int) bool { return port >= 29000 })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mixed, controller := store.SuggestPorts()
+	if mixed == controller {
+		t.Fatalf("SuggestPorts() returned duplicate ports: %d", mixed)
+	}
+	if mixed != 29000 || controller != 29001 {
+		t.Fatalf("SuggestPorts() = (%d, %d), want (29000, 29001)", mixed, controller)
+	}
+}
+
+func TestStoreRejectsSameMixedAndControllerPort(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("Bad", "", defaultUserConfig, 28001, 28001); err == nil {
+		t.Fatal("expected same mixed and controller port to be rejected")
+	}
+}
+
+func TestStoreUpdateRejectsSameMixedAndControllerPort(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Ports", "", defaultUserConfig, 28001, 29001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(item.ID, "", "", "", 0, 28001); err == nil {
+		t.Fatal("expected controller port matching existing mixed port to be rejected")
+	}
+	got, ok := store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected instance to remain")
+	}
+	if got.MixedPort != 28001 || got.ControllerPort != 29001 {
+		t.Fatalf("ports changed after failed update: mixed=%d controller=%d", got.MixedPort, got.ControllerPort)
+	}
+}
+
+func withPortFree(t *testing.T, fn func(int) bool) {
+	t.Helper()
+	portFreeTestMu.Lock()
+	original := isPortFree
+	isPortFree = func(port int) bool {
+		if port < 1 || port > 65535 {
+			return false
+		}
+		return fn(port)
+	}
+	t.Cleanup(func() {
+		isPortFree = original
+		portFreeTestMu.Unlock()
+	})
 }
