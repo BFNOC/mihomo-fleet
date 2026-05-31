@@ -94,6 +94,12 @@ select {
   padding: 0 10px;
 }
 
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
 textarea {
   min-height: 220px;
   padding: 10px;
@@ -393,6 +399,62 @@ label,
   gap: 6px;
 }
 
+.segmented {
+  display: inline-flex;
+  width: max-content;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  padding: 3px;
+  margin-top: 14px;
+}
+
+.segmented button {
+  border: 0;
+  min-height: 30px;
+  background: transparent;
+}
+
+.segmented button.active {
+  background: var(--surface);
+  color: var(--accent-strong);
+  box-shadow: 0 1px 4px oklch(0.48 0.02 175 / 0.12);
+}
+
+.subscription-fields {
+  grid-template-columns: minmax(0, 1fr) 180px 150px;
+  align-items: end;
+}
+
+.subscription-settings {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.checkline {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.checkline span {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.subscription-info {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .code {
   min-height: 430px;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -417,27 +479,61 @@ label,
   font-size: 12px;
 }
 
-.proxy-list {
-  display: grid;
-  gap: 8px;
+.proxy-filter {
+  width: 100%;
   margin-top: 12px;
 }
 
-.proxy-row {
+.proxy-list {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto;
-  gap: 10px;
-  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.proxy-group {
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 7px;
   padding: 10px;
   background: var(--panel);
 }
 
-.proxy-row strong {
+.proxy-group-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.proxy-group-head span {
+  color: var(--muted);
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.proxy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.proxy-choice {
+  width: 100%;
+  min-height: 38px;
+  text-align: left;
+  padding: 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-choice.selected {
+  background: var(--accent-soft);
+  border-color: oklch(0.68 0.07 178);
+  color: var(--accent-strong);
+  font-weight: 700;
 }
 
 .logs {
@@ -481,6 +577,7 @@ label,
 
   .metrics,
   .form-grid,
+  .subscription-fields,
   .form-grid.two {
     grid-template-columns: 1fr;
   }

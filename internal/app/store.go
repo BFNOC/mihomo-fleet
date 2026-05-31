@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,6 +19,14 @@ type Store struct {
 	storePath string
 	items     map[string]*Instance
 	profiles  map[string]*Profile
+}
+
+type ProfilePatch struct {
+	Name                  string
+	Config                *string
+	SubscriptionURL       *string
+	AutoUpdate            *bool
+	UpdateIntervalMinutes *int
 }
 
 func NewStore(dataDir string) (*Store, error) {
@@ -57,6 +68,7 @@ func (s *Store) load() error {
 	}
 	for _, item := range data.Instances {
 		copy := *item
+		copy.SelectedProxies = normalizeSelections(copy.SelectedProxies, copy.SelectedGroup, copy.SelectedProxy)
 		s.items[item.ID] = &copy
 	}
 	for _, profile := range data.Profiles {
@@ -89,8 +101,7 @@ func (s *Store) ListProfiles() []*Profile {
 	defer s.mu.RUnlock()
 	out := make([]*Profile, 0, len(s.profiles))
 	for _, item := range s.profiles {
-		copy := *item
-		out = append(out, &copy)
+		out = append(out, cloneProfile(item))
 	}
 	return out
 }
@@ -102,8 +113,7 @@ func (s *Store) GetProfile(id string) (*Profile, bool) {
 	if !ok {
 		return nil, false
 	}
-	copy := *item
-	return &copy, true
+	return cloneProfile(item), true
 }
 
 func (s *Store) List() []*Instance {
@@ -112,6 +122,7 @@ func (s *Store) List() []*Instance {
 	out := make([]*Instance, 0, len(s.items))
 	for _, item := range s.items {
 		copy := *item
+		copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 		out = append(out, &copy)
 	}
 	return out
@@ -125,6 +136,7 @@ func (s *Store) Get(id string) (*Instance, bool) {
 		return nil, false
 	}
 	copy := *item
+	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, true
 }
 
@@ -134,27 +146,188 @@ func (s *Store) CreateProfile(name, config string) (*Profile, error) {
 	return s.createProfileLocked(name, config)
 }
 
-func (s *Store) UpdateProfile(id, name, config string) (*Profile, error) {
+func (s *Store) CreateSubscriptionProfile(name, subscriptionURL string, autoUpdate bool, intervalMinutes int, fetched *subscriptionFetchResult) (*Profile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if fetched == nil {
+		return nil, errors.New("fetched subscription is required")
+	}
+	if name == "" {
+		name = fetched.Name
+	}
+	if name == "" {
+		name = "Remote subscription"
+	}
+	if intervalMinutes <= 0 {
+		intervalMinutes = fetched.UpdateIntervalMinutes
+	}
+	intervalMinutes = normalizeSubscriptionInterval(intervalMinutes, autoUpdate)
+
+	profile, err := s.createProfileRecordLocked(name, fetched.Config)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	profile.SubscriptionURL = subscriptionURL
+	profile.AutoUpdate = autoUpdate
+	profile.UpdateIntervalMinutes = intervalMinutes
+	profile.LastUpdatedAt = now
+	profile.LastUpdateError = ""
+	profile.HomeURL = fetched.HomeURL
+	profile.SubscriptionInfo = fetched.Info
+	profile.UpdatedAt = now
+	if err := s.saveLocked(); err != nil {
+		delete(s.profiles, profile.ID)
+		_ = os.RemoveAll(filepath.Dir(profile.ConfigPath))
+		return nil, err
+	}
+	return cloneProfile(profile), nil
+}
+
+func (s *Store) UpdateProfile(id, name, config string) (*Profile, error) {
+	var cfg *string
+	if config != "" {
+		cfg = &config
+	}
+	return s.PatchProfile(id, ProfilePatch{Name: name, Config: cfg})
+}
+
+func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	profile, ok := s.profiles[id]
 	if !ok {
 		return nil, fmt.Errorf("profile %q not found", id)
 	}
-	if name != "" {
-		profile.Name = name
-	}
-	if config != "" {
-		if err := writeFileAtomic(profile.ConfigPath, []byte(config), 0o600); err != nil {
+	original := cloneProfile(profile)
+	originalURL := profile.SubscriptionURL
+	var previousConfig []byte
+	if patch.Config != nil {
+		var err error
+		previousConfig, err = os.ReadFile(profile.ConfigPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeFileAtomic(profile.ConfigPath, []byte(*patch.Config), 0o600); err != nil {
 			return nil, err
 		}
 	}
+	if patch.Name != "" {
+		profile.Name = patch.Name
+	}
+	if patch.SubscriptionURL != nil {
+		profile.SubscriptionURL = strings.TrimSpace(*patch.SubscriptionURL)
+	}
+	if patch.SubscriptionURL != nil && profile.SubscriptionURL != originalURL {
+		profile.LastUpdatedAt = time.Time{}
+		profile.LastUpdateError = ""
+		profile.HomeURL = ""
+		profile.SubscriptionInfo = nil
+		if profile.SubscriptionURL == "" {
+			profile.AutoUpdate = false
+			profile.UpdateIntervalMinutes = 0
+		}
+	}
+	if patch.AutoUpdate != nil {
+		profile.AutoUpdate = *patch.AutoUpdate
+	}
+	if patch.UpdateIntervalMinutes != nil {
+		profile.UpdateIntervalMinutes = *patch.UpdateIntervalMinutes
+	}
+	if profile.SubscriptionURL != "" {
+		profile.UpdateIntervalMinutes = normalizeSubscriptionInterval(profile.UpdateIntervalMinutes, profile.AutoUpdate)
+	}
 	profile.UpdatedAt = time.Now().UTC()
 	if err := s.saveLocked(); err != nil {
+		*profile = *original
+		if patch.Config != nil {
+			_ = writeFileAtomic(profile.ConfigPath, previousConfig, 0o600)
+		}
 		return nil, err
 	}
-	copy := *profile
-	return &copy, nil
+	return cloneProfile(profile), nil
+}
+
+func (s *Store) ApplySubscriptionFetch(id string, fetched *subscriptionFetchResult) (*Profile, error) {
+	return s.ApplySubscriptionFetchForURL(id, "", fetched)
+}
+
+func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *subscriptionFetchResult) (*Profile, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	profile, ok := s.profiles[id]
+	if !ok {
+		return nil, fmt.Errorf("profile %q not found", id)
+	}
+	if profile.SubscriptionURL == "" {
+		return nil, fmt.Errorf("profile %q is not a subscription profile", id)
+	}
+	if expectedURL != "" && profile.SubscriptionURL != expectedURL {
+		return nil, fmt.Errorf("profile %q subscription URL changed during update", id)
+	}
+	if fetched == nil {
+		return nil, errors.New("fetched subscription is required")
+	}
+	originalProfile := cloneProfile(profile)
+	previousConfig, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	itemSnapshots := make(map[string]Instance)
+	for _, item := range s.items {
+		if item.ProfileID == id {
+			copy := *item
+			copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
+			itemSnapshots[item.ID] = copy
+		}
+	}
+	if err := writeFileAtomic(profile.ConfigPath, []byte(fetched.Config), 0o600); err != nil {
+		return nil, err
+	}
+	groups, _ := parseProfileProxyGroups(fetched.Config, nil)
+	validSelections := profileSelectionSet(groups)
+	now := time.Now().UTC()
+	if fetched.UpdateIntervalMinutes > 0 && profile.UpdateIntervalMinutes <= 0 {
+		profile.UpdateIntervalMinutes = normalizeSubscriptionInterval(fetched.UpdateIntervalMinutes, profile.AutoUpdate)
+	}
+	profile.LastUpdatedAt = now
+	profile.LastUpdateError = ""
+	profile.HomeURL = fetched.HomeURL
+	profile.SubscriptionInfo = fetched.Info
+	profile.UpdatedAt = now
+	for _, item := range s.items {
+		if item.ProfileID == id {
+			reconcileInstanceSelection(item, validSelections)
+		}
+	}
+	if err := s.saveLocked(); err != nil {
+		*profile = *originalProfile
+		for itemID, snapshot := range itemSnapshots {
+			if item, ok := s.items[itemID]; ok {
+				restored := snapshot
+				restored.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
+				*item = restored
+			}
+		}
+		_ = writeFileAtomic(profile.ConfigPath, previousConfig, 0o600)
+		return nil, err
+	}
+	return cloneProfile(profile), nil
+}
+
+func (s *Store) SetProfileUpdateError(id, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if profile, ok := s.profiles[id]; ok {
+		profile.LastUpdateError = message
+		profile.UpdatedAt = time.Now().UTC()
+		if err := s.saveLocked(); err != nil {
+			log.Printf("save subscription update error failed for profile %s: %v", id, err)
+		}
+	}
 }
 
 func (s *Store) ReadProfileConfig(id string) (string, error) {
@@ -233,6 +406,7 @@ func (s *Store) Create(name, profileID, config string, mixedPort, controllerPort
 		return nil, err
 	}
 	copy := *item
+	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
 }
 
@@ -255,6 +429,7 @@ func (s *Store) Update(id, name, profileID, config string, mixedPort, controller
 		if item.ProfileID != profileID {
 			item.SelectedGroup = ""
 			item.SelectedProxy = ""
+			item.SelectedProxies = nil
 			item.ProfileID = profileID
 			item.UserConfigPath = profile.ConfigPath
 		}
@@ -287,6 +462,7 @@ func (s *Store) Update(id, name, profileID, config string, mixedPort, controller
 		return nil, err
 	}
 	copy := *item
+	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
 }
 
@@ -297,6 +473,10 @@ func (s *Store) SetSelection(id, group, proxy string) (*Instance, error) {
 	if !ok {
 		return nil, fmt.Errorf("instance %q not found", id)
 	}
+	if item.SelectedProxies == nil {
+		item.SelectedProxies = make(map[string]string)
+	}
+	item.SelectedProxies[group] = proxy
 	item.SelectedGroup = group
 	item.SelectedProxy = proxy
 	item.UpdatedAt = time.Now().UTC()
@@ -304,6 +484,7 @@ func (s *Store) SetSelection(id, group, proxy string) (*Instance, error) {
 		return nil, err
 	}
 	copy := *item
+	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
 }
 
@@ -353,6 +534,7 @@ func (s *Store) saveLocked() error {
 	data := storedData{Instances: make([]*Instance, 0, len(s.items))}
 	for _, item := range s.items {
 		copy := *item
+		copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 		data.Instances = append(data.Instances, &copy)
 	}
 	data.Profiles = make([]*Profile, 0, len(s.profiles))
@@ -367,7 +549,86 @@ func (s *Store) saveLocked() error {
 	return writeFileAtomic(s.storePath, raw, 0o600)
 }
 
+func normalizeSelections(selections map[string]string, group, proxy string) map[string]string {
+	if len(selections) > 0 {
+		return cloneStringMap(selections)
+	}
+	if group == "" || proxy == "" {
+		return nil
+	}
+	return map[string]string{group: proxy}
+}
+
+func cloneProfile(in *Profile) *Profile {
+	if in == nil {
+		return nil
+	}
+	copy := *in
+	if in.SubscriptionInfo != nil {
+		info := *in.SubscriptionInfo
+		copy.SubscriptionInfo = &info
+	}
+	return &copy
+}
+
+func profileSelectionSet(groups []ProfileProxyGroup) map[string]map[string]bool {
+	if len(groups) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]bool, len(groups))
+	for _, group := range groups {
+		names := make(map[string]bool, len(group.All))
+		for _, name := range group.All {
+			names[name] = true
+		}
+		out[group.Name] = names
+	}
+	return out
+}
+
+func reconcileInstanceSelection(item *Instance, valid map[string]map[string]bool) {
+	if item == nil || len(valid) == 0 {
+		return
+	}
+	for group, proxy := range item.SelectedProxies {
+		if !valid[group][proxy] {
+			delete(item.SelectedProxies, group)
+		}
+	}
+	if item.SelectedGroup != "" && !valid[item.SelectedGroup][item.SelectedProxy] {
+		item.SelectedGroup = ""
+		item.SelectedProxy = ""
+		groups := make([]string, 0, len(item.SelectedProxies))
+		for group := range item.SelectedProxies {
+			groups = append(groups, group)
+		}
+		sort.Strings(groups)
+		for _, group := range groups {
+			proxy := item.SelectedProxies[group]
+			item.SelectedGroup = group
+			item.SelectedProxy = proxy
+			break
+		}
+	}
+	if len(item.SelectedProxies) == 0 {
+		item.SelectedProxies = nil
+	}
+}
+
 func (s *Store) createProfileLocked(name, config string) (*Profile, error) {
+	profile, err := s.createProfileRecordLocked(name, config)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.saveLocked(); err != nil {
+		delete(s.profiles, profile.ID)
+		_ = os.RemoveAll(filepath.Dir(profile.ConfigPath))
+		return nil, err
+	}
+	return cloneProfile(profile), nil
+}
+
+func (s *Store) createProfileRecordLocked(name, config string) (*Profile, error) {
 	now := time.Now().UTC()
 	if name == "" {
 		name = "Default profile"
@@ -392,12 +653,7 @@ func (s *Store) createProfileLocked(name, config string) (*Profile, error) {
 		return nil, err
 	}
 	s.profiles[profile.ID] = profile
-	if err := s.saveLocked(); err != nil {
-		delete(s.profiles, profile.ID)
-		return nil, err
-	}
-	copy := *profile
-	return &copy, nil
+	return profile, nil
 }
 
 func (s *Store) usedPortsLocked(exceptID string) map[int]bool {

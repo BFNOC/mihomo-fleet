@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -87,6 +88,7 @@ func viewFor(item *Instance, profile *Profile, status string, pid int) InstanceV
 		ControllerPort:    item.ControllerPort,
 		UserConfigPath:    item.UserConfigPath,
 		RuntimeConfigPath: item.RuntimeConfigPath,
+		SelectedProxies:   cloneStringMap(item.SelectedProxies),
 		SelectedGroup:     item.SelectedGroup,
 		SelectedProxy:     item.SelectedProxy,
 		CreatedAt:         item.CreatedAt,
@@ -146,6 +148,22 @@ func (m *Manager) Start(id string) error {
 		m.store.SetError(id, err.Error())
 		m.log(id).Add("start failed: " + err.Error())
 		return err
+	}
+	preparedGeodata, err := m.prepareGeodata(item)
+	if err != nil {
+		m.store.SetError(id, err.Error())
+		m.log(id).Add("geodata prepare failed: " + err.Error())
+		return err
+	}
+	if len(preparedGeodata) > 0 {
+		m.log(id).Add("geodata ready: " + strings.Join(preparedGeodata, ", "))
+	}
+	needsGeodata := configGeodataNeeds(profile)
+	if needsGeodata.site && !hasPreparedGeodata(preparedGeodata, "GeoSite.dat") {
+		m.log(id).Add("GeoSite.dat not found locally; mihomo may try to download it")
+	}
+	if needsGeodata.ip && !hasPreparedGeodata(preparedGeodata, "GeoIP.dat") {
+		m.log(id).Add("GeoIP.dat not found locally; mihomo may try to download it")
 	}
 	if err := m.testConfig(item); err != nil {
 		m.store.SetError(id, err.Error())
@@ -324,16 +342,27 @@ func (m *Manager) testConfig(item *Instance) error {
 }
 
 func (m *Manager) restoreSelection(item *Instance, buf *logBuffer) {
-	if item.SelectedGroup == "" || item.SelectedProxy == "" {
+	selections := normalizeSelections(item.SelectedProxies, item.SelectedGroup, item.SelectedProxy)
+	if len(selections) == 0 {
 		return
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := putMihomoProxy(item, item.SelectedGroup, item.SelectedProxy); err == nil {
-			buf.Add(fmt.Sprintf("restored proxy selection %s -> %s", item.SelectedGroup, item.SelectedProxy))
+		pending := 0
+		for group, proxy := range selections {
+			if err := putMihomoProxy(item, group, proxy); err != nil {
+				pending++
+			} else {
+				buf.Add(fmt.Sprintf("restored proxy selection %s -> %s", group, proxy))
+				delete(selections, group)
+			}
+		}
+		if pending == 0 {
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	buf.Add(fmt.Sprintf("proxy selection restore timed out for %s -> %s", item.SelectedGroup, item.SelectedProxy))
+	for group, proxy := range selections {
+		buf.Add(fmt.Sprintf("proxy selection restore timed out for %s -> %s", group, proxy))
+	}
 }

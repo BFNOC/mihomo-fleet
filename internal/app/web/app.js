@@ -20,6 +20,7 @@ const state = {
   instances: [],
   activeId: localStorage.getItem("activeInstance") || "",
   activeTab: "overview",
+  createSource: "manual",
   creating: false,
 };
 
@@ -35,6 +36,9 @@ const errorLabels = {
   "stop the instance before changing ports": "修改端口前请先停止该实例。",
   "stop the instance before changing profile": "修改配置档前请先停止该实例。",
   "profileId and config cannot be changed in the same request": "不能在同一次请求中同时修改配置档和配置内容。",
+  "subscriptionUrl and config cannot both be set": "订阅链接和配置内容不能同时设置。",
+  "subscription URL must start with http:// or https://": "订阅链接必须以 http:// 或 https:// 开头。",
+  "subscription profile config is refreshed from its URL": "订阅配置档的内容由链接更新，请使用手写配置档编辑 YAML。",
   "group and proxy are required": "必须选择节点组和节点。",
   "method not allowed": "请求方法不允许。",
   "invalid host header": "Host 请求头无效。",
@@ -45,6 +49,8 @@ const errorLabels = {
 
 const errorPatterns = [
   [/^profile "(.+)" not found$/, (match) => `配置档 ${match[1]} 不存在。`],
+  [/^profile "(.+)" is not a subscription profile$/, (match) => `配置档 ${match[1]} 不是订阅配置档。`],
+  [/^profile "(.+)" subscription update is already running$/, (match) => `配置档 ${match[1]} 正在更新订阅。`],
   [/^instance "(.+)" not found$/, (match) => `实例 ${match[1]} 不存在。`],
   [/^mixed proxy port (\d+) is unavailable$/, (match) => `混合端口 ${match[1]} 不可用。`],
   [/^controller port (\d+) is unavailable$/, (match) => `控制端口 ${match[1]} 不可用。`],
@@ -55,6 +61,10 @@ const errorPatterns = [
   [/^mihomo controller unreachable: (.+)$/, (match) => `无法连接 mihomo 控制器：${match[1]}`],
   [/^mihomo returned (.+)$/, (match) => `mihomo 返回错误：${match[1]}`],
   [/^parse user config: (.+)$/, (match) => `解析用户配置失败：${match[1]}`],
+  [/^subscription server returned (.+)$/, (match) => `订阅服务器返回错误：${match[1]}`],
+  [/^subscription host resolves to blocked address (.+)$/, () => "订阅链接解析到本机、内网或保留地址，已阻止。"],
+  [/^remote profile data is invalid yaml: (.+)$/, (match) => `订阅内容不是有效 YAML：${match[1]}`],
+  [/^remote profile must contain proxies or proxy-providers$/, () => "订阅内容缺少 proxies 或 proxy-providers。"],
 ];
 
 const el = {
@@ -71,8 +81,16 @@ const el = {
   createName: document.querySelector("#createName"),
   createProfile: document.querySelector("#createProfile"),
   createProfileName: document.querySelector("#createProfileName"),
+  createSourceTabs: document.querySelector("#createSourceTabs"),
+  createManualMode: document.querySelector("#createManualMode"),
+  createSubscriptionMode: document.querySelector("#createSubscriptionMode"),
+  createSubscriptionFields: document.querySelector("#createSubscriptionFields"),
+  createSubscriptionUrl: document.querySelector("#createSubscriptionUrl"),
+  createAutoUpdate: document.querySelector("#createAutoUpdate"),
+  createUpdateInterval: document.querySelector("#createUpdateInterval"),
   createMixedPort: document.querySelector("#createMixedPort"),
   createControllerPort: document.querySelector("#createControllerPort"),
+  createConfigWrap: document.querySelector("#createConfigWrap"),
   createConfig: document.querySelector("#createConfig"),
   createSubmit: document.querySelector("#createSubmit"),
   createCancel: document.querySelector("#createCancel"),
@@ -97,8 +115,18 @@ const el = {
   editMixedPort: document.querySelector("#editMixedPort"),
   editControllerPort: document.querySelector("#editControllerPort"),
   saveBasics: document.querySelector("#saveBasics"),
+  profileMeta: document.querySelector("#profileMeta"),
+  subscriptionSettings: document.querySelector("#subscriptionSettings"),
+  subscriptionUrl: document.querySelector("#subscriptionUrl"),
+  subscriptionAutoUpdate: document.querySelector("#subscriptionAutoUpdate"),
+  subscriptionInterval: document.querySelector("#subscriptionInterval"),
+  subscriptionInfo: document.querySelector("#subscriptionInfo"),
+  saveProfileSettings: document.querySelector("#saveProfileSettings"),
+  refreshSubscription: document.querySelector("#refreshSubscription"),
   configEditor: document.querySelector("#configEditor"),
   saveConfig: document.querySelector("#saveConfig"),
+  proxySource: document.querySelector("#proxySource"),
+  proxyFilter: document.querySelector("#proxyFilter"),
   proxiesList: document.querySelector("#proxiesList"),
   logs: document.querySelector("#logs"),
 };
@@ -127,6 +155,34 @@ function localizedMessage(message) {
     if (match) return render(match);
   }
   return text;
+}
+
+function formatProfileUpdate(profile) {
+  if (profile.lastUpdateError) return `上次更新失败：${localizedMessage(profile.lastUpdateError)}`;
+  if (profile.lastUpdatedAt) return `上次更新 ${new Date(profile.lastUpdatedAt).toLocaleString()}`;
+  return "尚未更新";
+}
+
+function formatSubscriptionInfo(profile) {
+  const parts = [];
+  const info = profile.subscriptionInfo || {};
+  if (info.total) parts.push(`流量 ${formatBytes((info.upload || 0) + (info.download || 0))} / ${formatBytes(info.total)}`);
+  if (info.expire) parts.push(`到期 ${new Date(info.expire * 1000).toLocaleDateString()}`);
+  if (profile.homeUrl) parts.push(`主页 ${profile.homeUrl}`);
+  if (profile.autoUpdate && profile.updateIntervalMinutes) parts.push(`每 ${profile.updateIntervalMinutes} 分钟自动更新`);
+  if (!profile.autoUpdate) parts.push("未启用自动更新");
+  return parts.join(" · ") || "暂无订阅元数据";
+}
+
+function formatBytes(value) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = Number(value) || 0;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
 async function api(path, options = {}) {
@@ -231,7 +287,8 @@ function renderList(selected) {
     button.className = `instance-row ${selected && selected.id === item.id ? "active" : ""}`;
     button.type = "button";
     const profile = item.profileName || item.profileId || "未选择配置档";
-    const choice = item.selectedProxy ? ` · ${item.selectedGroup}/${item.selectedProxy}` : "";
+    const selectedText = selectionSummary(item);
+    const choice = selectedText !== "无" ? ` · ${selectedText}` : "";
     button.innerHTML = `
       <div class="row-main">
         <span class="row-name"></span>
@@ -264,7 +321,7 @@ function renderPanels(selected) {
   el.overviewProfile.textContent = selected.profileName || selected.profileId || "无";
   el.overviewUserConfig.textContent = selected.profileConfigPath || selected.userConfigPath;
   el.overviewRuntimeConfig.textContent = selected.runtimeConfigPath;
-  el.overviewSelection.textContent = selected.selectedProxy ? `${selected.selectedGroup} -> ${selected.selectedProxy}` : "无";
+  el.overviewSelection.textContent = selectionSummary(selected);
   el.editName.value = selected.name;
   renderProfileOptions(el.editProfile, selected.profileId, false);
   el.editMixedPort.value = selected.mixedPort;
@@ -272,6 +329,40 @@ function renderPanels(selected) {
   el.startBtn.disabled = selected.status === "running";
   el.stopBtn.disabled = selected.status !== "running";
   el.restartBtn.disabled = false;
+  renderSubscriptionSettings(selected);
+}
+
+function selectionSummary(item) {
+  const entries = Object.entries(item.selectedProxies || {});
+  if (entries.length) {
+    return entries.map(([group, proxy]) => `${group} -> ${proxy}`).join("；");
+  }
+  return item.selectedProxy ? `${item.selectedGroup} -> ${item.selectedProxy}` : "无";
+}
+
+function renderSubscriptionSettings(selected) {
+  const profile = profileById(selected.profileId);
+  if (!profile) {
+    el.profileMeta.textContent = "配置档尚未加载。";
+    el.subscriptionSettings.classList.add("hidden");
+    return;
+  }
+  const isSubscription = Boolean(profile.subscriptionUrl);
+  el.profileMeta.textContent = isSubscription
+    ? `订阅缓存：${formatProfileUpdate(profile)}`
+    : "手写配置：可以直接编辑 YAML。";
+  el.subscriptionSettings.classList.toggle("hidden", !isSubscription);
+  el.saveConfig.disabled = isSubscription;
+  el.configEditor.readOnly = isSubscription;
+  if (!isSubscription) return;
+  const editing = el.subscriptionSettings.dataset.dirty === "1" && el.subscriptionSettings.dataset.profileId === profile.id;
+  el.subscriptionSettings.dataset.profileId = profile.id;
+  if (!editing) {
+    el.subscriptionUrl.value = profile.subscriptionUrl || "";
+    el.subscriptionAutoUpdate.checked = Boolean(profile.autoUpdate);
+    el.subscriptionInterval.value = profile.updateIntervalMinutes || "";
+  }
+  el.subscriptionInfo.textContent = formatSubscriptionInfo(profile);
 }
 
 function renderProfileOptions(select, selectedId, allowNew) {
@@ -303,8 +394,21 @@ async function updateCreateProfileControls() {
     renderProfileOptions(el.createProfile, el.createProfile.value, true);
   }
   const createNew = el.createProfile.value === newProfileValue || state.profiles.length === 0;
+  const subscriptionMode = state.createSource === "subscription" && createNew;
+  el.createSourceTabs.classList.toggle("hidden", !createNew);
+  el.createManualMode.classList.toggle("active", state.createSource === "manual");
+  el.createSubscriptionMode.classList.toggle("active", state.createSource === "subscription");
+  el.createSubscriptionFields.classList.toggle("hidden", !subscriptionMode);
+  el.createConfigWrap.classList.toggle("hidden", subscriptionMode);
   el.createProfileName.disabled = !createNew;
-  el.createConfig.disabled = !createNew;
+  el.createConfig.disabled = !createNew || subscriptionMode;
+  el.createSubscriptionUrl.disabled = !subscriptionMode;
+  el.createAutoUpdate.disabled = !subscriptionMode;
+  el.createUpdateInterval.disabled = !subscriptionMode;
+  if (subscriptionMode) {
+    if (!el.createUpdateInterval.value) el.createUpdateInterval.value = "360";
+    return;
+  }
   if (createNew) {
     if (!el.createConfig.value) el.createConfig.value = defaultConfig;
     return;
@@ -326,6 +430,8 @@ function selectInstance(id) {
     el.configEditor.dataset.id = "";
     el.configEditor.dataset.profileId = "";
     el.configEditor.dataset.dirty = "";
+    el.subscriptionSettings.dataset.profileId = "";
+    el.subscriptionSettings.dataset.dirty = "";
   }
   state.activeId = id;
   state.creating = false;
@@ -336,11 +442,15 @@ function selectInstance(id) {
 
 function showCreate() {
   state.creating = true;
+  state.createSource = "manual";
   el.createName.value = "";
   el.createMixedPort.value = "";
   el.createControllerPort.value = "";
   renderProfileOptions(el.createProfile, state.profiles[0]?.id || newProfileValue, true);
   el.createProfileName.value = "";
+  el.createSubscriptionUrl.value = "";
+  el.createAutoUpdate.checked = true;
+  el.createUpdateInterval.value = "360";
   el.createConfig.value = defaultConfig;
   el.createConfig.dataset.profileId = "";
   showMessage("");
@@ -385,54 +495,80 @@ async function refreshLogs() {
 async function refreshProxies() {
   const selected = active();
   if (!selected) return;
-  if (selected.status !== "running") {
-    el.proxiesList.innerHTML = `<div class="warning">启动该实例后才能读取 mihomo 节点。</div>`;
-    return;
-  }
   try {
-    const payload = await api(`/api/mihomo/${selected.id}/proxies`);
-    const proxies = payload.proxies || {};
-    const groups = Object.values(proxies).filter((item) => Array.isArray(item.all));
+    let groups = [];
+    let apply = false;
+    if (selected.status === "running") {
+      const payload = await api(`/api/mihomo/${selected.id}/proxies`);
+      const proxies = payload.proxies || {};
+      groups = Object.values(proxies).filter((item) => Array.isArray(item.all));
+      apply = true;
+      el.proxySource.textContent = "当前读取运行中的 mihomo 节点，选择后立即应用并保存。";
+    } else {
+      const payload = await api(`/api/profiles/${selected.profileId}/proxies?instanceId=${encodeURIComponent(selected.id)}`);
+      groups = payload.groups || [];
+      el.proxySource.textContent = "当前读取缓存配置，选择会保存到实例，下次启动后自动恢复。";
+    }
     if (!groups.length) {
-      el.proxiesList.innerHTML = `<div class="warning">mihomo 没有返回可选节点组。</div>`;
+      el.proxiesList.innerHTML = `<div class="warning">没有可显示的节点组。使用 proxy-providers 的订阅需要启动实例后读取 mihomo 运行态节点。</div>`;
       return;
     }
-    el.proxiesList.innerHTML = "";
-    for (const group of groups) {
-      const row = document.createElement("div");
-      row.className = "proxy-row";
-      row.innerHTML = `
-        <strong></strong>
-        <select></select>
-        <button type="button">选择</button>
-      `;
-      row.querySelector("strong").textContent = group.name;
-      const select = row.querySelector("select");
-      for (const name of group.all) {
-        const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = name;
-        opt.selected = group.now === name;
-        select.append(opt);
-      }
-      row.querySelector("button").addEventListener("click", async () => {
-        try {
-          const updated = await api(`/api/instances/${selected.id}/selection`, {
-            method: "POST",
-            body: JSON.stringify({ group: group.name, proxy: select.value, apply: true }),
-          });
-          state.instances = state.instances.map((item) => (item.id === updated.id ? updated : item));
-          showMessage(`已保存 ${group.name} -> ${select.value}。`);
-          render();
-          await refreshProxies();
-        } catch (err) {
-          showMessage(err.message, "error");
-        }
-      });
-      el.proxiesList.append(row);
-    }
+    renderProxyGroups(groups, apply);
   } catch (err) {
     el.proxiesList.innerHTML = `<div class="message error">${escapeHTML(localizedMessage(err.message))}</div>`;
+  }
+}
+
+function renderProxyGroups(groups, apply) {
+  const filter = el.proxyFilter.value.trim().toLowerCase();
+  el.proxiesList.innerHTML = "";
+  for (const group of groups) {
+    const names = (group.all || []).filter((name) => !filter || name.toLowerCase().includes(filter) || group.name.toLowerCase().includes(filter));
+    if (!names.length) continue;
+    const section = document.createElement("section");
+    section.className = "proxy-group";
+
+    const head = document.createElement("div");
+    head.className = "proxy-group-head";
+    const title = document.createElement("strong");
+    title.textContent = group.name;
+    const meta = document.createElement("span");
+    meta.textContent = group.now ? `当前 ${group.now}` : `${names.length} 个节点`;
+    head.append(title, meta);
+
+    const grid = document.createElement("div");
+    grid.className = "proxy-grid";
+    for (const name of names) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `proxy-choice ${group.now === name ? "selected" : ""}`;
+      button.textContent = name;
+      button.title = name;
+      button.addEventListener("click", () => selectProxy(group.name, name, apply));
+      grid.append(button);
+    }
+    section.append(head, grid);
+    el.proxiesList.append(section);
+  }
+  if (!el.proxiesList.children.length) {
+    el.proxiesList.innerHTML = `<div class="warning">没有匹配的节点。</div>`;
+  }
+}
+
+async function selectProxy(group, proxy, apply) {
+  const selected = active();
+  if (!selected) return;
+  try {
+    const updated = await api(`/api/instances/${selected.id}/selection`, {
+      method: "POST",
+      body: JSON.stringify({ group, proxy, apply }),
+    });
+    state.instances = state.instances.map((item) => (item.id === updated.id ? updated : item));
+    showMessage(apply ? `已应用并保存 ${group} -> ${proxy}。` : `已保存 ${group} -> ${proxy}。`);
+    render();
+    await refreshProxies();
+  } catch (err) {
+    showMessage(err.message, "error");
   }
 }
 
@@ -474,6 +610,14 @@ el.createProfile.addEventListener("change", () => {
   el.createConfig.dataset.profileId = "";
   updateCreateProfileControls();
 });
+el.createManualMode.addEventListener("click", () => {
+  state.createSource = "manual";
+  updateCreateProfileControls();
+});
+el.createSubscriptionMode.addEventListener("click", () => {
+  state.createSource = "subscription";
+  updateCreateProfileControls();
+});
 el.createCancel.addEventListener("click", () => {
   state.creating = false;
   render();
@@ -483,11 +627,15 @@ el.createSubmit.addEventListener("click", async () => {
   try {
     let profileId = el.createProfile.value;
     if (profileId === newProfileValue || state.profiles.length === 0) {
+      const isSubscription = state.createSource === "subscription";
       const profile = await api("/api/profiles", {
         method: "POST",
         body: JSON.stringify({
           name: el.createProfileName.value.trim() || `${el.createName.value.trim() || "默认"}配置档`,
-          config: el.createConfig.value,
+          config: isSubscription ? "" : el.createConfig.value,
+          subscriptionUrl: isSubscription ? el.createSubscriptionUrl.value.trim() : "",
+          autoUpdate: isSubscription ? el.createAutoUpdate.checked : false,
+          updateIntervalMinutes: isSubscription ? Number(el.createUpdateInterval.value) || 0 : 0,
         }),
       });
       profileId = profile.id;
@@ -584,8 +732,64 @@ el.saveConfig.addEventListener("click", async () => {
   }
 });
 
+el.saveProfileSettings.addEventListener("click", async () => {
+  const selected = active();
+  if (!selected) return;
+  try {
+    const profile = await api(`/api/profiles/${selected.profileId}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        subscriptionUrl: el.subscriptionUrl.value.trim(),
+        autoUpdate: el.subscriptionAutoUpdate.checked,
+        updateIntervalMinutes: Number(el.subscriptionInterval.value) || 0,
+      }),
+    });
+    state.profiles = state.profiles.map((item) => (item.id === profile.id ? profile : item));
+    el.subscriptionSettings.dataset.dirty = "";
+    showMessage("订阅设置已保存。");
+    render();
+  } catch (err) {
+    showMessage(err.message, "error");
+  }
+});
+
+el.refreshSubscription.addEventListener("click", async () => {
+  const selected = active();
+  if (!selected) return;
+  try {
+    el.refreshSubscription.disabled = true;
+    const profile = await api(`/api/profiles/${selected.profileId}/refresh`, { method: "POST" });
+    state.profiles = state.profiles.map((item) => (item.id === profile.id ? profile : item));
+    el.subscriptionSettings.dataset.dirty = "";
+    showMessage("订阅已更新。运行中的实例需要重启后使用新的缓存配置。");
+    el.configEditor.value = "";
+    el.configEditor.dataset.id = "";
+    el.configEditor.dataset.profileId = "";
+    el.configEditor.dataset.dirty = "";
+    render();
+    await refreshActiveDetails();
+  } catch (err) {
+    showMessage(err.message, "error");
+  } finally {
+    el.refreshSubscription.disabled = false;
+  }
+});
+
 el.configEditor.addEventListener("input", () => {
   el.configEditor.dataset.dirty = "1";
+});
+
+for (const input of [el.subscriptionUrl, el.subscriptionAutoUpdate, el.subscriptionInterval]) {
+  input.addEventListener("input", () => {
+    el.subscriptionSettings.dataset.dirty = "1";
+  });
+  input.addEventListener("change", () => {
+    el.subscriptionSettings.dataset.dirty = "1";
+  });
+}
+
+el.proxyFilter.addEventListener("input", () => {
+  if (state.activeTab === "proxies") refreshProxies();
 });
 
 el.createConfig.value = defaultConfig;

@@ -19,19 +19,24 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Controller struct {
-	opts           Options
-	store          *Store
-	manager        *Manager
-	mihomoPath     string
-	mihomoFound    bool
-	mihomoSource   string
-	appVersion     string
-	version        string
-	proxyTransport http.RoundTripper
+	opts                Options
+	store               *Store
+	manager             *Manager
+	mihomoPath          string
+	mihomoFound         bool
+	mihomoSource        string
+	appVersion          string
+	version             string
+	proxyTransport      http.RoundTripper
+	subscriptionClient  *http.Client
+	subscriptionCancel  context.CancelFunc
+	subscriptionMu      sync.Mutex
+	subscriptionRunning map[string]bool
 }
 
 func NewController(opts Options) (*Controller, error) {
@@ -61,28 +66,34 @@ func NewController(opts Options) (*Controller, error) {
 		Timeout:   2 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
+	transport := &http.Transport{
+		DialContext:           dialer.DialContext,
+		ResponseHeaderTimeout: 5 * time.Second,
+		IdleConnTimeout:       30 * time.Second,
+	}
 	c := &Controller{
-		opts:         opts,
-		store:        store,
-		mihomoPath:   mihomoPath,
-		mihomoFound:  mihomoPath != "",
-		mihomoSource: mihomoSource,
-		appVersion:   opts.AppVersion,
-		proxyTransport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           dialer.DialContext,
-			ResponseHeaderTimeout: 5 * time.Second,
-			IdleConnTimeout:       30 * time.Second,
-		},
+		opts:                opts,
+		store:               store,
+		mihomoPath:          mihomoPath,
+		mihomoFound:         mihomoPath != "",
+		mihomoSource:        mihomoSource,
+		appVersion:          opts.AppVersion,
+		proxyTransport:      transport,
+		subscriptionClient:  newSubscriptionHTTPClient(),
+		subscriptionRunning: make(map[string]bool),
 	}
 	c.version = detectVersion(mihomoPath)
 	c.manager = NewManager(store, mihomoPath)
+	c.startSubscriptionScheduler()
 	return c, nil
 }
 
 func (c *Controller) Shutdown(ctx context.Context) {
 	if c.manager != nil {
 		c.manager.Shutdown(ctx)
+	}
+	if c.subscriptionCancel != nil {
+		c.subscriptionCancel()
 	}
 }
 
@@ -106,11 +117,38 @@ func (c *Controller) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"profiles": profiles})
 	case http.MethodPost:
 		var req struct {
-			Name   string `json:"name"`
-			Config string `json:"config"`
+			Name                  string `json:"name"`
+			Config                string `json:"config"`
+			SubscriptionURL       string `json:"subscriptionUrl"`
+			AutoUpdate            *bool  `json:"autoUpdate"`
+			UpdateIntervalMinutes int    `json:"updateIntervalMinutes"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if strings.TrimSpace(req.SubscriptionURL) != "" && strings.TrimSpace(req.Config) != "" {
+			writeError(w, http.StatusBadRequest, errors.New("subscriptionUrl and config cannot both be set"))
+			return
+		}
+		if strings.TrimSpace(req.SubscriptionURL) != "" {
+			autoUpdate := true
+			if req.AutoUpdate != nil {
+				autoUpdate = *req.AutoUpdate
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+			defer cancel()
+			fetched, err := fetchSubscription(ctx, c.subscriptionClient, req.SubscriptionURL, c.subscriptionUserAgent())
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			profile, err := c.store.CreateSubscriptionProfile(req.Name, strings.TrimSpace(req.SubscriptionURL), autoUpdate, req.UpdateIntervalMinutes, fetched)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSONStatus(w, http.StatusCreated, profile)
 			return
 		}
 		profile, err := c.store.CreateProfile(req.Name, req.Config)
@@ -132,18 +170,59 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
-	if len(parts) > 1 && parts[1] == "config" {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
+	if len(parts) > 1 {
+		switch parts[1] {
+		case "config":
+			if r.Method != http.MethodGet {
+				methodNotAllowed(w)
+				return
+			}
+			cfg, err := c.store.ReadProfileConfig(id)
+			if err != nil {
+				writeError(w, http.StatusNotFound, err)
+				return
+			}
+			writeJSON(w, map[string]string{"config": cfg})
+			return
+		case "refresh":
+			if r.Method != http.MethodPost {
+				methodNotAllowed(w)
+				return
+			}
+			profile, err := c.refreshProfileSubscription(r.Context(), id)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, profile)
+			return
+		case "proxies":
+			if r.Method != http.MethodGet {
+				methodNotAllowed(w)
+				return
+			}
+			cfg, err := c.store.ReadProfileConfig(id)
+			if err != nil {
+				writeError(w, http.StatusNotFound, err)
+				return
+			}
+			var selections map[string]string
+			if instanceID := r.URL.Query().Get("instanceId"); instanceID != "" {
+				item, ok := c.store.Get(instanceID)
+				if !ok {
+					writeError(w, http.StatusNotFound, fmt.Errorf("instance %q not found", instanceID))
+					return
+				}
+				selections = normalizeSelections(item.SelectedProxies, item.SelectedGroup, item.SelectedProxy)
+			}
+			groups, err := parseProfileProxyGroups(cfg, selections)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, map[string]any{"groups": groups})
 			return
 		}
-		cfg, err := c.store.ReadProfileConfig(id)
-		if err != nil {
-			writeError(w, http.StatusNotFound, err)
-			return
-		}
-		writeJSON(w, map[string]string{"config": cfg})
-		return
 	}
 
 	switch r.Method {
@@ -156,17 +235,61 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, profile)
 	case http.MethodPut:
 		var req struct {
-			Name   string `json:"name"`
-			Config string `json:"config"`
+			Name                  string  `json:"name"`
+			Config                *string `json:"config"`
+			SubscriptionURL       *string `json:"subscriptionUrl"`
+			AutoUpdate            *bool   `json:"autoUpdate"`
+			UpdateIntervalMinutes *int    `json:"updateIntervalMinutes"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		profile, err := c.store.UpdateProfile(id, req.Name, req.Config)
+		current, ok := c.store.GetProfile(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("profile %q not found", id))
+			return
+		}
+		if req.Config != nil && current.SubscriptionURL != "" {
+			writeError(w, http.StatusBadRequest, errors.New("subscription profile config is refreshed from its URL"))
+			return
+		}
+		var fetched *subscriptionFetchResult
+		if req.SubscriptionURL != nil && strings.TrimSpace(*req.SubscriptionURL) != "" {
+			nextURL := strings.TrimSpace(*req.SubscriptionURL)
+			parsed, err := url.Parse(nextURL)
+			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+				writeError(w, http.StatusBadRequest, errors.New("subscription URL must start with http:// or https://"))
+				return
+			}
+			if current.SubscriptionURL != nextURL {
+				ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+				defer cancel()
+				var err error
+				fetched, err = fetchSubscription(ctx, c.subscriptionClient, nextURL, c.subscriptionUserAgent())
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+			}
+		}
+		profile, err := c.store.PatchProfile(id, ProfilePatch{
+			Name:                  req.Name,
+			Config:                req.Config,
+			SubscriptionURL:       req.SubscriptionURL,
+			AutoUpdate:            req.AutoUpdate,
+			UpdateIntervalMinutes: req.UpdateIntervalMinutes,
+		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
+		}
+		if fetched != nil {
+			profile, err = c.store.ApplySubscriptionFetchForURL(id, strings.TrimSpace(*req.SubscriptionURL), fetched)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
 		writeJSON(w, profile)
 	default:
@@ -333,6 +456,17 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusBadRequest, errors.New("profileId and config cannot be changed in the same request"))
 			return
 		}
+		if req.Config != "" {
+			profile, ok := c.store.GetProfile(current.ProfileID)
+			if !ok {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("profile %q not found", current.ProfileID))
+				return
+			}
+			if profile.SubscriptionURL != "" {
+				writeError(w, http.StatusBadRequest, errors.New("subscription profile config is refreshed from its URL"))
+				return
+			}
+		}
 		item, err := c.store.Update(id, req.Name, req.ProfileID, req.Config, req.MixedPort, req.ControllerPort)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -477,6 +611,94 @@ func (c *Controller) handleMihomoProxy(w http.ResponseWriter, r *http.Request) {
 
 func (c *Controller) handleStatic(w http.ResponseWriter, r *http.Request) {
 	serveStatic(w, r)
+}
+
+func (c *Controller) subscriptionUserAgent() string {
+	return "clash-verge/v" + c.appVersion
+}
+
+func (c *Controller) refreshProfileSubscription(ctx context.Context, id string) (*Profile, error) {
+	profile, ok := c.store.GetProfile(id)
+	if !ok {
+		return nil, fmt.Errorf("profile %q not found", id)
+	}
+	if profile.SubscriptionURL == "" {
+		return nil, fmt.Errorf("profile %q is not a subscription profile", id)
+	}
+	if !c.beginSubscriptionUpdate(id) {
+		return nil, fmt.Errorf("profile %q subscription update is already running", id)
+	}
+	defer c.endSubscriptionUpdate(id)
+
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	fetched, err := fetchSubscription(ctx, c.subscriptionClient, profile.SubscriptionURL, c.subscriptionUserAgent())
+	if err != nil {
+		c.store.SetProfileUpdateError(id, err.Error())
+		return nil, err
+	}
+	return c.store.ApplySubscriptionFetchForURL(id, profile.SubscriptionURL, fetched)
+}
+
+func (c *Controller) beginSubscriptionUpdate(id string) bool {
+	c.subscriptionMu.Lock()
+	defer c.subscriptionMu.Unlock()
+	if c.subscriptionRunning[id] {
+		return false
+	}
+	c.subscriptionRunning[id] = true
+	return true
+}
+
+func (c *Controller) endSubscriptionUpdate(id string) {
+	c.subscriptionMu.Lock()
+	defer c.subscriptionMu.Unlock()
+	delete(c.subscriptionRunning, id)
+}
+
+func (c *Controller) startSubscriptionScheduler() {
+	ctx, cancel := context.WithCancel(context.Background())
+	c.subscriptionCancel = cancel
+	go func() {
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				c.refreshDueSubscriptions(ctx)
+			case <-ticker.C:
+				c.refreshDueSubscriptions(ctx)
+			}
+		}
+	}()
+}
+
+func (c *Controller) refreshDueSubscriptions(ctx context.Context) {
+	now := time.Now().UTC()
+	for _, profile := range c.store.ListProfiles() {
+		if !profileSubscriptionDue(profile, now) {
+			continue
+		}
+		if c.subscriptionUpdateRunning(profile.ID) {
+			continue
+		}
+		profileID := profile.ID
+		go func() {
+			if _, err := c.refreshProfileSubscription(ctx, profileID); err != nil {
+				log.Printf("subscription update failed for profile %s: %v", profileID, err)
+			}
+		}()
+	}
+}
+
+func (c *Controller) subscriptionUpdateRunning(id string) bool {
+	c.subscriptionMu.Lock()
+	defer c.subscriptionMu.Unlock()
+	return c.subscriptionRunning[id]
 }
 
 func detectVersion(binary string) string {

@@ -56,7 +56,7 @@ func TestWriteRuntimeConfigInjectsLoopbackFields(t *testing.T) {
 		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
 		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
 	}
-	user := "mixed-port: 1\nport: 8080\nsocks-port: 7891\nredir-port: 7892\ntproxy-port: 7893\nexternal-controller: 0.0.0.0:9999\nsecret: bad\nallow-lan: true\n"
+	user := "mixed-port: 1\nport: 8080\nsocks-port: 7891\nredir-port: 7892\ntproxy-port: 7893\nexternal-controller: 0.0.0.0:9999\nexternal-ui: ui\ntun:\n  enable: true\nlisteners:\n  - name: test\nsecret: bad\nallow-lan: true\n"
 	if err := os.WriteFile(item.UserConfigPath, []byte(user), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestWriteRuntimeConfigInjectsLoopbackFields(t *testing.T) {
 			t.Fatalf("runtime config missing %q:\n%s", want, got)
 		}
 	}
-	for _, blocked := range []string{"port: 8080", "socks-port:", "redir-port:", "tproxy-port:"} {
+	for _, blocked := range []string{"port: 8080", "socks-port:", "redir-port:", "tproxy-port:", "external-ui:", "tun:", "listeners:"} {
 		if strings.Contains(got, blocked) {
 			t.Fatalf("runtime config kept conflicting port key %q:\n%s", blocked, got)
 		}

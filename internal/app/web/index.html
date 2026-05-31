@@ -53,6 +53,24 @@
                 <input id="createProfileName" placeholder="我的订阅">
               </label>
             </div>
+            <div id="createSourceTabs" class="segmented" role="group" aria-label="配置来源">
+              <button id="createManualMode" class="active" data-source="manual" type="button">手写配置</button>
+              <button id="createSubscriptionMode" data-source="subscription" type="button">订阅链接</button>
+            </div>
+            <div id="createSubscriptionFields" class="form-grid subscription-fields hidden">
+              <label>
+                <span>订阅链接</span>
+                <input id="createSubscriptionUrl" placeholder="https://example.com/sub">
+              </label>
+              <label>
+                <span>更新间隔（分钟）</span>
+                <input id="createUpdateInterval" type="number" min="15" placeholder="360">
+              </label>
+              <label class="checkline">
+                <input id="createAutoUpdate" type="checkbox" checked>
+                <span>自动更新</span>
+              </label>
+            </div>
             <div class="form-grid two">
               <label>
                 <span>混合端口</span>
@@ -63,7 +81,7 @@
                 <input id="createControllerPort" type="number" min="1" max="65535" placeholder="自动">
               </label>
             </div>
-            <label class="stacked">
+            <label id="createConfigWrap" class="stacked">
               <span>配置内容</span>
               <textarea id="createConfig" spellcheck="false"></textarea>
             </label>
@@ -154,8 +172,29 @@
             <div id="tab-config" class="tab-panel hidden">
               <section class="panel">
                 <div class="panel-title">
-                  <h3>配置内容</h3>
-                  <p>这份共享订阅配置可以被多个实例复用。</p>
+                  <h3>配置档</h3>
+                  <p id="profileMeta">这份共享配置可以被多个实例复用。</p>
+                </div>
+                <div id="subscriptionSettings" class="subscription-settings hidden">
+                  <label class="stacked">
+                    <span>订阅链接</span>
+                    <input id="subscriptionUrl">
+                  </label>
+                  <div class="form-grid subscription-fields">
+                    <label>
+                      <span>更新间隔（分钟）</span>
+                      <input id="subscriptionInterval" type="number" min="15" placeholder="360">
+                    </label>
+                    <label class="checkline">
+                      <input id="subscriptionAutoUpdate" type="checkbox">
+                      <span>自动更新</span>
+                    </label>
+                    <div id="subscriptionInfo" class="subscription-info"></div>
+                  </div>
+                  <div class="actions">
+                    <button id="saveProfileSettings" type="button">保存订阅设置</button>
+                    <button id="refreshSubscription" class="primary" type="button">立即更新</button>
+                  </div>
                 </div>
                 <textarea id="configEditor" class="code" spellcheck="false"></textarea>
                 <div class="actions">
@@ -168,8 +207,9 @@
               <section class="panel">
                 <div class="panel-title">
                   <h3>Mihomo 节点组</h3>
-                  <p>所选实例运行后可读取。</p>
+                  <p id="proxySource">运行时读取 mihomo，停止时读取缓存配置。</p>
                 </div>
+                <input id="proxyFilter" class="proxy-filter" placeholder="筛选节点">
                 <div id="proxiesList" class="proxy-list"></div>
               </section>
             </div>

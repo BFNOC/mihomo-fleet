@@ -41,6 +41,20 @@ http://127.0.0.1:47890
 每个受管 mihomo 实例会引用一个 Profile，同时拥有自己生成的运行时配置、
 代理端口、external-controller 端口、随机控制器密钥，以及已保存的节点选择。
 
+Profile 可以有两种来源：
+
+- 手写配置：直接编辑 YAML，作为最基础、最可控的使用方式。
+- 订阅链接：填写 HTTP(S) 订阅地址后，Mihomo Fleet 会下载并缓存 Clash/Mihomo
+  YAML。订阅 Profile 支持手动“立即更新”，也可以设置自动更新间隔。
+  为避免订阅链接通过 DNS 重绑定访问本机或内网，订阅下载会直连并拒绝本机、
+  内网、链路本地和保留地址，不读取系统代理环境变量。
+  订阅 Profile 的 YAML 内容来自远端缓存；需要手动编辑 YAML 时，请使用手写配置。
+
+多个实例可以引用同一个订阅 Profile，并分别保存自己的节点选择。例如一个实例的
+混合端口固定选择美国节点，另一个实例的混合端口固定选择日本节点。实例运行时会
+通过 mihomo external-controller 立即应用选择；实例停止时也可以先从缓存配置里选择，
+下次启动后会自动恢复。
+
 ## mihomo 二进制文件放置
 
 推荐把 `mihomo` 和 `mihomo-fleet` 放在同一个执行目录中，不需要放进全局 `PATH`：
@@ -84,6 +98,9 @@ mihomo-fleet/
 ```text
 .mihomo-fleet/
   instances.json
+  geo/
+    GeoSite.dat
+    GeoIP.dat
   profiles/
     <id>/
       config.yaml
@@ -97,3 +114,10 @@ mihomo-fleet/
 ```bash
 ./mihomo-fleet -data /path/to/runtime
 ```
+
+如果订阅规则使用 `GEOSITE` 或 `GEOIP`，需要让 mihomo 能读到 geodata 文件。
+推荐把 `GeoSite.dat` 和 `GeoIP.dat` 放进 `.mihomo-fleet/geo/`；程序启动实例前会自动
+把它们链接到对应实例目录。为了兼容本地调试，也会从 `mihomo-fleet` 可执行文件所在目录、
+启动时当前目录、以及 `mihomo` 二进制文件所在目录查找 `GeoSite.dat` / `geosite.dat` 和
+`GeoIP.dat` / `geoip.dat`。查找顺序是：数据目录的 `geo/`、数据目录、Fleet 可执行文件
+目录、启动时当前目录、`mihomo` 二进制文件目录。

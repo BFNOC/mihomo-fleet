@@ -28,6 +28,11 @@ func writeRuntimeConfig(item *Instance, profile *Profile) error {
 		"tproxy-port",
 		"external-controller-tls",
 		"external-controller-cors-allow-origins",
+		"external-ui",
+		"external-ui-name",
+		"external-ui-url",
+		"listeners",
+		"tun",
 	} {
 		delete(cfg, key)
 	}
