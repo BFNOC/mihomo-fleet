@@ -13,6 +13,13 @@ rules:
 `;
 
 const newProfileValue = "__new__";
+const defaultLatencyUrl = "https://www.gstatic.com/generate_204";
+const defaultLatencyTimeout = 5000;
+const latencyKeySeparator = "\u001f";
+const latencyKinds = {
+  url: "url",
+  real: "real",
+};
 
 const state = {
   system: null,
@@ -22,6 +29,12 @@ const state = {
   activeTab: "overview",
   createSource: "manual",
   creating: false,
+  proxyGroups: [],
+  proxyApply: false,
+  latencyResults: {},
+  latencyRunning: new Set(),
+  latencyBatchRunning: false,
+  latencyBatchToken: 0,
 };
 
 const statusLabels = {
@@ -45,6 +58,11 @@ const errorLabels = {
   "missing X-Mihomo-Fleet header": "缺少 X-Mihomo-Fleet 请求头。",
   "Content-Type must be application/json": "Content-Type 必须是 application/json。",
   "unable to allocate local ports": "无法自动分配本地端口。",
+  "instance must be running to test latency": "请先启动实例再测速。",
+  "proxy is required": "请选择要测速的节点。",
+  "proxy is required for real latency": "真延迟需要指定单个节点。",
+  "latency kind must be url or real": "测速类型无效。",
+  "latency test URL must start with http:// or https://": "测试 URL 必须以 http:// 或 https:// 开头。",
 };
 
 const errorPatterns = [
@@ -126,6 +144,10 @@ const el = {
   configEditor: document.querySelector("#configEditor"),
   saveConfig: document.querySelector("#saveConfig"),
   proxySource: document.querySelector("#proxySource"),
+  latencyUrl: document.querySelector("#latencyUrl"),
+  latencyTimeout: document.querySelector("#latencyTimeout"),
+  testAllLatency: document.querySelector("#testAllLatency"),
+  testAllRealLatency: document.querySelector("#testAllRealLatency"),
   proxyFilter: document.querySelector("#proxyFilter"),
   proxiesList: document.querySelector("#proxiesList"),
   logs: document.querySelector("#logs"),
@@ -183,6 +205,159 @@ function formatBytes(value) {
     unit += 1;
   }
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function latencySettings() {
+  const url = (el.latencyUrl.value || defaultLatencyUrl).trim();
+  const timeoutMs = Math.min(15000, Math.max(500, Number(el.latencyTimeout.value) || defaultLatencyTimeout));
+  el.latencyTimeout.value = String(timeoutMs);
+  localStorage.setItem("fleetLatencyUrl", url);
+  localStorage.setItem("fleetLatencyTimeout", String(timeoutMs));
+  return { url, timeoutMs };
+}
+
+function latencyKey(instanceId, group, proxy, kind) {
+  return [instanceId, group, proxy, kind].join(latencyKeySeparator);
+}
+
+function setLatencyResult(instanceId, group, proxy, kind, patch) {
+  const key = latencyKey(instanceId, group, proxy, kind);
+  state.latencyResults[key] = {
+    ...(state.latencyResults[key] || {}),
+    ...patch,
+    updatedAt: Date.now(),
+  };
+}
+
+function latencyResult(instanceId, group, proxy, kind) {
+  return state.latencyResults[latencyKey(instanceId, group, proxy, kind)] || null;
+}
+
+function setLatencyRunning(instanceId, group, proxy, kind, running) {
+  const key = latencyKey(instanceId, group, proxy, kind);
+  if (running) {
+    state.latencyRunning.add(key);
+  } else {
+    state.latencyRunning.delete(key);
+  }
+}
+
+function isLatencyRunning(instanceId, group, proxy, kind) {
+  return state.latencyRunning.has(latencyKey(instanceId, group, proxy, kind));
+}
+
+function isTestableProxy(name, ownerGroupName = "") {
+  const text = String(name || "");
+  if (["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL"].includes(text.toUpperCase())) return false;
+  return !state.proxyGroups.some((group) => group.name === text && group.name !== ownerGroupName);
+}
+
+function formatLatencyValue(result, running) {
+  if (running) return "测速中";
+  if (!result) return "—";
+  if (result.error) return "失败";
+  if (result.delay === 0) return "不可用";
+  if (typeof result.delay === "number") return `${result.delay}ms`;
+  return "—";
+}
+
+function latencyTone(result, running) {
+  if (running) return "running";
+  if (!result) return "empty";
+  if (result.error || result.delay === 0) return "bad";
+  if (result.delay >= 500) return "warn";
+  return "good";
+}
+
+function latencyLabel(kind) {
+  return kind === latencyKinds.real ? "真" : "测";
+}
+
+function latencyTitle(kind) {
+  return kind === latencyKinds.real ? "真延迟" : "URL 延迟";
+}
+
+function proxyChoiceLabel(selected, groupName, proxyName) {
+  const parts = [proxyName];
+  for (const kind of [latencyKinds.url, latencyKinds.real]) {
+    const running = selected ? isLatencyRunning(selected.id, groupName, proxyName, kind) : false;
+    const result = selected ? latencyResult(selected.id, groupName, proxyName, kind) : null;
+    parts.push(`${latencyTitle(kind)} ${formatLatencyValue(result, running)}`);
+  }
+  return parts.join("，");
+}
+
+function updateProxyChoiceLabel(button, selected, groupName, proxyName) {
+  if (!button) return;
+  button.setAttribute("aria-label", proxyChoiceLabel(selected, groupName, proxyName));
+}
+
+function applyLatencyChipState(chip, selected, groupName, proxyName, kind) {
+  const running = selected ? isLatencyRunning(selected.id, groupName, proxyName, kind) : false;
+  const result = selected ? latencyResult(selected.id, groupName, proxyName, kind) : null;
+  const value = formatLatencyValue(result, running);
+  chip.className = `latency-chip ${latencyTone(result, running)}`;
+  chip.textContent = `${latencyLabel(kind)} ${value}`;
+  chip.setAttribute("aria-hidden", "true");
+  updateProxyChoiceLabel(chip.closest(".proxy-choice"), selected, groupName, proxyName);
+}
+
+function updateLatencyChip(instanceId, groupName, proxyName, kind) {
+  if (state.activeId !== instanceId || state.activeTab !== "proxies") return;
+  const selected = active();
+  for (const chip of el.proxiesList.querySelectorAll(".latency-chip")) {
+    if (
+      chip.dataset.instanceId === instanceId &&
+      chip.dataset.groupName === groupName &&
+      chip.dataset.proxyName === proxyName &&
+      chip.dataset.kind === kind
+    ) {
+      applyLatencyChipState(chip, selected, groupName, proxyName, kind);
+    }
+  }
+}
+
+function updateLatencyChips(instanceId, groupName, names, kind) {
+  for (const name of names) {
+    updateLatencyChip(instanceId, groupName, name, kind);
+  }
+}
+
+function clearLatencyStateForInstance(instanceId) {
+  const prefix = `${instanceId}${latencyKeySeparator}`;
+  for (const key of Object.keys(state.latencyResults)) {
+    if (key.startsWith(prefix)) delete state.latencyResults[key];
+  }
+  for (const key of [...state.latencyRunning]) {
+    if (key.startsWith(prefix)) state.latencyRunning.delete(key);
+  }
+}
+
+function setLatencyBatchRunning(running) {
+  state.latencyBatchRunning = running;
+  updateLatencyControls();
+}
+
+function beginLatencyBatch() {
+  state.latencyBatchToken += 1;
+  setLatencyBatchRunning(true);
+  return state.latencyBatchToken;
+}
+
+function endLatencyBatch(batchToken) {
+  if (state.latencyBatchToken === batchToken) {
+    setLatencyBatchRunning(false);
+  }
+}
+
+function updateLatencyControls() {
+  const selected = active();
+  const disabled = !selected || selected.status !== "running" || !state.proxyApply || state.latencyBatchRunning;
+  el.testAllLatency.disabled = disabled;
+  el.testAllRealLatency.disabled = disabled;
+  for (const button of el.proxiesList.querySelectorAll(".proxy-group-actions button")) {
+    button.disabled = disabled;
+  }
 }
 
 async function api(path, options = {}) {
@@ -329,6 +504,7 @@ function renderPanels(selected) {
   el.startBtn.disabled = selected.status === "running";
   el.stopBtn.disabled = selected.status !== "running";
   el.restartBtn.disabled = false;
+  updateLatencyControls();
   renderSubscriptionSettings(selected);
 }
 
@@ -426,12 +602,17 @@ async function updateCreateProfileControls() {
 
 function selectInstance(id) {
   if (state.activeId !== id) {
+    clearLatencyStateForInstance(state.activeId);
     el.configEditor.value = "";
     el.configEditor.dataset.id = "";
     el.configEditor.dataset.profileId = "";
     el.configEditor.dataset.dirty = "";
     el.subscriptionSettings.dataset.profileId = "";
     el.subscriptionSettings.dataset.dirty = "";
+    state.proxyGroups = [];
+    state.proxyApply = false;
+    state.latencyBatchRunning = false;
+    state.latencyBatchToken += 1;
   }
   state.activeId = id;
   state.creating = false;
@@ -509,6 +690,9 @@ async function refreshProxies() {
       groups = payload.groups || [];
       el.proxySource.textContent = "当前读取缓存配置，选择会保存到实例，下次启动后自动恢复。";
     }
+    state.proxyGroups = groups;
+    state.proxyApply = apply;
+    updateLatencyControls();
     if (!groups.length) {
       el.proxiesList.innerHTML = `<div class="warning">没有可显示的节点组。使用 proxy-providers 的订阅需要启动实例后读取 mihomo 运行态节点。</div>`;
       return;
@@ -520,6 +704,7 @@ async function refreshProxies() {
 }
 
 function renderProxyGroups(groups, apply) {
+  const selected = active();
   const filter = el.proxyFilter.value.trim().toLowerCase();
   el.proxiesList.innerHTML = "";
   for (const group of groups) {
@@ -534,7 +719,20 @@ function renderProxyGroups(groups, apply) {
     title.textContent = group.name;
     const meta = document.createElement("span");
     meta.textContent = group.now ? `当前 ${group.now}` : `${names.length} 个节点`;
-    head.append(title, meta);
+    const actions = document.createElement("div");
+    actions.className = "proxy-group-actions";
+    const latencyButton = document.createElement("button");
+    latencyButton.type = "button";
+    latencyButton.textContent = "测速";
+    latencyButton.disabled = !apply || state.latencyBatchRunning;
+    latencyButton.addEventListener("click", () => testGroupLatency(group, latencyKinds.url));
+    const realLatencyButton = document.createElement("button");
+    realLatencyButton.type = "button";
+    realLatencyButton.textContent = "真延迟";
+    realLatencyButton.disabled = !apply || state.latencyBatchRunning;
+    realLatencyButton.addEventListener("click", () => testGroupLatency(group, latencyKinds.real));
+    actions.append(latencyButton, realLatencyButton);
+    head.append(title, meta, actions);
 
     const grid = document.createElement("div");
     grid.className = "proxy-grid";
@@ -542,16 +740,156 @@ function renderProxyGroups(groups, apply) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `proxy-choice ${group.now === name ? "selected" : ""}`;
-      button.textContent = name;
       button.title = name;
       button.addEventListener("click", () => selectProxy(group.name, name, apply));
-      grid.append(button);
-    }
+      const nameLabel = document.createElement("span");
+      nameLabel.className = "proxy-name";
+      nameLabel.textContent = name;
+    const chips = document.createElement("span");
+    chips.className = "latency-chips";
+    chips.append(
+      renderLatencyChip(selected, group.name, name, latencyKinds.url),
+      renderLatencyChip(selected, group.name, name, latencyKinds.real),
+    );
+    button.append(nameLabel, chips);
+    updateProxyChoiceLabel(button, selected, group.name, name);
+    grid.append(button);
+  }
     section.append(head, grid);
     el.proxiesList.append(section);
   }
   if (!el.proxiesList.children.length) {
     el.proxiesList.innerHTML = `<div class="warning">没有匹配的节点。</div>`;
+  }
+}
+
+function renderLatencyChip(selected, groupName, proxyName, kind) {
+  const chip = document.createElement("span");
+  chip.dataset.instanceId = selected?.id || "";
+  chip.dataset.groupName = groupName;
+  chip.dataset.proxyName = proxyName;
+  chip.dataset.kind = kind;
+  applyLatencyChipState(chip, selected, groupName, proxyName, kind);
+  return chip;
+}
+
+async function testGroupLatency(group, kind) {
+  if (state.latencyBatchRunning) return;
+  const batchToken = beginLatencyBatch();
+  try {
+    await runGroupLatency(group, kind, batchToken);
+  } finally {
+    endLatencyBatch(batchToken);
+  }
+}
+
+async function runGroupLatency(group, kind, batchToken) {
+  const selected = active();
+  if (!selected) return;
+  if (selected.status !== "running") {
+    showMessage("instance must be running to test latency", "error");
+    return;
+  }
+  const names = (group.all || []).filter((name) => isTestableProxy(name, group.name));
+  if (!names.length) return;
+  const { url, timeoutMs } = latencySettings();
+  if (kind === latencyKinds.url) {
+    await testGroupURLLatency(selected, group.name, names, url, timeoutMs, batchToken);
+  } else {
+    await testGroupRealLatency(selected, group.name, names, url, timeoutMs, batchToken);
+  }
+}
+
+async function testGroupURLLatency(selected, groupName, names, url, timeoutMs, batchToken) {
+  for (const name of names) {
+    setLatencyRunning(selected.id, groupName, name, latencyKinds.url, true);
+  }
+  updateLatencyChips(selected.id, groupName, names, latencyKinds.url);
+  try {
+    const payload = await api(`/api/instances/${selected.id}/latency`, {
+      method: "POST",
+      body: JSON.stringify({ group: groupName, kind: latencyKinds.url, url, timeoutMs }),
+    });
+    const delays = payload.delays || {};
+    for (const name of names) {
+      if (state.activeId !== selected.id || state.latencyBatchToken !== batchToken) continue;
+      if (Object.prototype.hasOwnProperty.call(delays, name)) {
+        setLatencyResult(selected.id, groupName, name, latencyKinds.url, { delay: Number(delays[name]) || 0, error: "" });
+      } else {
+        setLatencyResult(selected.id, groupName, name, latencyKinds.url, { delay: 0, error: "" });
+      }
+    }
+  } catch (err) {
+    for (const name of names) {
+      if (state.activeId !== selected.id || state.latencyBatchToken !== batchToken) continue;
+      setLatencyResult(selected.id, groupName, name, latencyKinds.url, { delay: 0, error: err.message });
+    }
+    showMessage(err.message, "error");
+  } finally {
+    for (const name of names) {
+      setLatencyRunning(selected.id, groupName, name, latencyKinds.url, false);
+    }
+    updateLatencyChips(selected.id, groupName, names, latencyKinds.url);
+  }
+}
+
+async function testGroupRealLatency(selected, groupName, names, url, timeoutMs, batchToken) {
+  const queue = [...names];
+  const workers = [];
+  const concurrency = Math.min(4, queue.length);
+  for (const name of names) {
+    setLatencyRunning(selected.id, groupName, name, latencyKinds.real, true);
+  }
+  updateLatencyChips(selected.id, groupName, names, latencyKinds.real);
+  let firstError = "";
+  async function worker() {
+    while (queue.length && state.activeId === selected.id && state.latencyBatchRunning && state.latencyBatchToken === batchToken) {
+      const name = queue.shift();
+      try {
+        const payload = await api(`/api/instances/${selected.id}/latency`, {
+          method: "POST",
+          body: JSON.stringify({ group: groupName, proxy: name, kind: latencyKinds.real, url, timeoutMs }),
+        });
+        if (state.activeId === selected.id && state.latencyBatchToken === batchToken) {
+          setLatencyResult(selected.id, groupName, name, latencyKinds.real, { delay: Number(payload.delay) || 0, error: "" });
+        }
+      } catch (err) {
+        if (state.activeId === selected.id && state.latencyBatchToken === batchToken) {
+          firstError ||= err.message;
+          setLatencyResult(selected.id, groupName, name, latencyKinds.real, { delay: 0, error: err.message });
+        }
+      } finally {
+        setLatencyRunning(selected.id, groupName, name, latencyKinds.real, false);
+        updateLatencyChip(selected.id, groupName, name, latencyKinds.real);
+      }
+    }
+  }
+  for (let i = 0; i < concurrency; i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  if (firstError && state.activeId === selected.id) {
+    showMessage(firstError, "error");
+  }
+}
+
+async function testAllLatency(kind) {
+  const selected = active();
+  if (!selected) return;
+  if (selected.status !== "running") {
+    showMessage("instance must be running to test latency", "error");
+    return;
+  }
+  if (state.latencyBatchRunning) return;
+  const batchToken = beginLatencyBatch();
+  try {
+    const groups = state.proxyGroups.filter((group) => Array.isArray(group.all) && group.all.some((name) => isTestableProxy(name, group.name)));
+    for (const group of groups) {
+      if (state.activeId !== selected.id || state.latencyBatchToken !== batchToken) return;
+      await runGroupLatency(group, kind, batchToken);
+    }
+  } finally {
+    endLatencyBatch(batchToken);
   }
 }
 
@@ -791,6 +1129,13 @@ for (const input of [el.subscriptionUrl, el.subscriptionAutoUpdate, el.subscript
 el.proxyFilter.addEventListener("input", () => {
   if (state.activeTab === "proxies") refreshProxies();
 });
+
+el.latencyUrl.value = localStorage.getItem("fleetLatencyUrl") || defaultLatencyUrl;
+el.latencyTimeout.value = localStorage.getItem("fleetLatencyTimeout") || String(defaultLatencyTimeout);
+el.latencyUrl.addEventListener("change", latencySettings);
+el.latencyTimeout.addEventListener("change", latencySettings);
+el.testAllLatency.addEventListener("click", () => testAllLatency(latencyKinds.url));
+el.testAllRealLatency.addEventListener("click", () => testAllLatency(latencyKinds.real));
 
 el.createConfig.value = defaultConfig;
 refresh();

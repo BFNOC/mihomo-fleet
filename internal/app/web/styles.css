@@ -484,6 +484,18 @@ label,
   font-size: 12px;
 }
 
+.proxy-tools {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 110px auto auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.latency-timeout input {
+  text-align: right;
+}
+
 .proxy-filter {
   width: 100%;
   margin-top: 12px;
@@ -508,6 +520,7 @@ label,
   gap: 10px;
   align-items: center;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .proxy-group-head span {
@@ -518,9 +531,20 @@ label,
   white-space: nowrap;
 }
 
+.proxy-group-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.proxy-group-actions button {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
 .proxy-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 8px;
 }
 
@@ -529,9 +553,54 @@ label,
   min-height: 38px;
   text-align: left;
   padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.proxy-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.latency-chips {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.latency-chip {
+  min-width: 52px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--soft);
+  color: var(--muted);
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: center;
+}
+
+.latency-chip.good {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.latency-chip.warn {
+  background: var(--warn-soft);
+  color: oklch(0.36 0.055 78);
+}
+
+.latency-chip.bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.latency-chip.running {
+  background: var(--panel);
+  color: var(--accent-strong);
 }
 
 .proxy-choice.selected {
@@ -582,6 +651,7 @@ label,
 
   .metrics,
   .form-grid,
+  .proxy-tools,
   .subscription-fields,
   .form-grid.two {
     grid-template-columns: 1fr;

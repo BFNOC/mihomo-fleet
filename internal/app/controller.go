@@ -413,6 +413,8 @@ func (c *Controller) handleInstance(w http.ResponseWriter, r *http.Request) {
 		c.handleLogs(w, r, id)
 	case "selection":
 		c.handleSelection(w, r, id)
+	case "latency":
+		c.handleLatency(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
@@ -521,6 +523,76 @@ func (c *Controller) handleSelection(w http.ResponseWriter, r *http.Request, id 
 	}
 	view, _ := c.manager.View(id)
 	writeJSON(w, view)
+}
+
+func (c *Controller) handleLatency(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req struct {
+		Group     string `json:"group"`
+		Proxy     string `json:"proxy"`
+		Kind      string `json:"kind"`
+		URL       string `json:"url"`
+		TimeoutMS int    `json:"timeoutMs"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Kind == "" {
+		req.Kind = "url"
+	}
+	if req.Kind != "url" && req.Kind != "real" {
+		writeError(w, http.StatusBadRequest, errors.New("latency kind must be url or real"))
+		return
+	}
+	testURL, err := normalizeLatencyRequestURL(strings.TrimSpace(req.URL))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	timeoutMS := clampLatencyTimeoutMS(req.TimeoutMS)
+	item, ok := c.store.Get(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if c.manager.state(id) == nil {
+		writeError(w, http.StatusConflict, errors.New("instance must be running to test latency"))
+		return
+	}
+	if req.Group != "" && req.Proxy == "" && req.Kind == "real" {
+		writeError(w, http.StatusBadRequest, errors.New("proxy is required for real latency"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(latencyRequestBudgetMS(req.Kind, timeoutMS))*time.Millisecond)
+	defer cancel()
+	if req.Group != "" && req.Proxy == "" && req.Kind == "url" {
+		delays, err := mihomoGroupDelay(ctx, item, strings.TrimSpace(req.Group), testURL, timeoutMS)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, map[string]any{"delays": delays, "url": testURL, "timeoutMs": timeoutMS})
+		return
+	}
+	if strings.TrimSpace(req.Proxy) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("proxy is required"))
+		return
+	}
+	var delay int
+	if req.Kind == "real" {
+		delay, err = mihomoRealProxyDelay(ctx, item, strings.TrimSpace(req.Proxy), testURL, timeoutMS)
+	} else {
+		delay, err = mihomoProxyDelay(ctx, item, strings.TrimSpace(req.Proxy), testURL, timeoutMS)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, map[string]any{"delay": delay, "url": testURL, "timeoutMs": timeoutMS})
 }
 
 func (c *Controller) handleConfig(w http.ResponseWriter, r *http.Request, id string) {
