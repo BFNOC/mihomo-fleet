@@ -1,7 +1,11 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 )
@@ -153,4 +157,125 @@ func TestResolveMihomoSameDirFallsBackToSecondCandidate(t *testing.T) {
 	if got != secondCandidate {
 		t.Fatalf("resolveMihomoSameDir() = %q, want %q", got, secondCandidate)
 	}
+}
+
+func TestHandleInstancesStartAllReportsPartialFailure(t *testing.T) {
+	c := newBatchTestController(t)
+	starting := createTestInstance(t, c, "Already starting")
+	failing := createTestInstance(t, c, "Needs binary")
+	c.manager.mu.Lock()
+	c.manager.starting[starting.ID] = true
+	c.manager.mu.Unlock()
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.starting, starting.ID)
+		c.manager.mu.Unlock()
+	})
+
+	payload := postInstancesBatch(t, c, "start-all", http.StatusOK)
+	if payload.Total != 2 || payload.Success != 1 || payload.Failed != 1 {
+		t.Fatalf("batch result = total:%d success:%d failed:%d, want 2/1/1", payload.Total, payload.Success, payload.Failed)
+	}
+	if len(payload.Errors) != 1 || payload.Errors[0].ID != failing.ID {
+		t.Fatalf("errors = %#v, want one error for %q", payload.Errors, failing.ID)
+	}
+	if payload.Errors[0].Error != "mihomo binary not found. Install mihomo or start with -mihomo /path/to/mihomo" {
+		t.Fatalf("unexpected error: %q", payload.Errors[0].Error)
+	}
+
+	statuses := instanceStatuses(payload.Instances)
+	if statuses[starting.ID] != "starting" {
+		t.Fatalf("starting instance status = %q, want starting", statuses[starting.ID])
+	}
+	if statuses[failing.ID] != "error" {
+		t.Fatalf("failing instance status = %q, want error", statuses[failing.ID])
+	}
+}
+
+func TestHandleInstancesStopAllTreatsStoppedInstancesAsSuccess(t *testing.T) {
+	c := newBatchTestController(t)
+	first := createTestInstance(t, c, "First")
+	second := createTestInstance(t, c, "Second")
+
+	payload := postInstancesBatch(t, c, "stop-all", http.StatusOK)
+	if payload.Total != 2 || payload.Success != 2 || payload.Failed != 0 {
+		t.Fatalf("batch result = total:%d success:%d failed:%d, want 2/2/0", payload.Total, payload.Success, payload.Failed)
+	}
+
+	statuses := instanceStatuses(payload.Instances)
+	if statuses[first.ID] != "stopped" || statuses[second.ID] != "stopped" {
+		t.Fatalf("statuses = %#v, want both stopped", statuses)
+	}
+}
+
+func TestHandleInstancesRejectsUnknownBatchAction(t *testing.T) {
+	c := newBatchTestController(t)
+	postInstancesBatch(t, c, "restart-all", http.StatusBadRequest)
+}
+
+func TestHandleInstancesStartAllAllowsEmptyFleet(t *testing.T) {
+	c := newBatchTestController(t)
+
+	payload := postInstancesBatch(t, c, "start-all", http.StatusOK)
+	if payload.Total != 0 || payload.Success != 0 || payload.Failed != 0 {
+		t.Fatalf("batch result = total:%d success:%d failed:%d, want 0/0/0", payload.Total, payload.Success, payload.Failed)
+	}
+	if len(payload.Instances) != 0 {
+		t.Fatalf("instances = %d, want 0", len(payload.Instances))
+	}
+}
+
+type batchResponse struct {
+	InstanceBatchResult
+	Instances []InstanceView `json:"instances"`
+}
+
+func newBatchTestController(t *testing.T) *Controller {
+	t.Helper()
+	c, err := NewController(Options{
+		DataDir:    t.TempDir(),
+		MihomoPath: filepath.Join(t.TempDir(), "missing-mihomo"),
+		AppVersion: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c.Shutdown(context.Background())
+	})
+	return c
+}
+
+func createTestInstance(t *testing.T, c *Controller, name string) *Instance {
+	t.Helper()
+	item, err := c.store.Create(name, "", defaultUserConfig, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func postInstancesBatch(t *testing.T, c *Controller, action string, wantStatus int) batchResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/instances?action="+action, nil)
+	rec := httptest.NewRecorder()
+	c.handleInstances(rec, req)
+	if rec.Code != wantStatus {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var payload batchResponse
+	if rec.Code == http.StatusOK {
+		if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return payload
+}
+
+func instanceStatuses(views []InstanceView) map[string]string {
+	out := make(map[string]string, len(views))
+	for _, view := range views {
+		out[view.ID] = view.Status
+	}
+	return out
 }

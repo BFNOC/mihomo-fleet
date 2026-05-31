@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,22 +20,37 @@ type processState struct {
 	logs    *logBuffer
 }
 
+type InstanceBatchError struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+type InstanceBatchResult struct {
+	Total   int                  `json:"total"`
+	Success int                  `json:"success"`
+	Failed  int                  `json:"failed"`
+	Errors  []InstanceBatchError `json:"errors,omitempty"`
+}
+
 type Manager struct {
-	mu         sync.RWMutex
-	store      *Store
-	mihomoPath string
-	procs      map[string]*processState
-	starting   map[string]bool
-	logs       map[string]*logBuffer
+	mu            sync.RWMutex
+	store         *Store
+	mihomoPath    string
+	procs         map[string]*processState
+	starting      map[string]bool
+	reservedPorts map[int]string
+	logs          map[string]*logBuffer
 }
 
 func NewManager(store *Store, mihomoPath string) *Manager {
 	return &Manager{
-		store:      store,
-		mihomoPath: mihomoPath,
-		procs:      make(map[string]*processState),
-		starting:   make(map[string]bool),
-		logs:       make(map[string]*logBuffer),
+		store:         store,
+		mihomoPath:    mihomoPath,
+		procs:         make(map[string]*processState),
+		starting:      make(map[string]bool),
+		reservedPorts: make(map[int]string),
+		logs:          make(map[string]*logBuffer),
 	}
 }
 
@@ -106,6 +122,13 @@ func viewFor(item *Instance, profile *Profile, status string, pid int) InstanceV
 }
 
 func (m *Manager) Start(id string) error {
+	return m.StartContext(context.Background(), id)
+}
+
+func (m *Manager) StartContext(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	item, ok := m.store.Get(id)
 	if !ok {
 		return fmt.Errorf("instance %q not found", id)
@@ -119,11 +142,34 @@ func (m *Manager) Start(id string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	// reservedPorts 只覆盖启动准备窗口；已运行实例仍由持久化端口唯一性和系统 bind 结果兜底。
+	if owner := m.reservedPorts[item.ControllerPort]; owner != "" && owner != id {
+		m.mu.Unlock()
+		err := fmt.Errorf("controller port %d is already in use", item.ControllerPort)
+		m.store.SetError(id, err.Error())
+		m.log(id).Add("start failed: " + err.Error())
+		return err
+	}
+	if owner := m.reservedPorts[item.MixedPort]; owner != "" && owner != id {
+		m.mu.Unlock()
+		err := fmt.Errorf("mixed proxy port %d is already in use", item.MixedPort)
+		m.store.SetError(id, err.Error())
+		m.log(id).Add("start failed: " + err.Error())
+		return err
+	}
 	m.starting[id] = true
+	m.reservedPorts[item.ControllerPort] = id
+	m.reservedPorts[item.MixedPort] = id
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
 		delete(m.starting, id)
+		if m.reservedPorts[item.ControllerPort] == id {
+			delete(m.reservedPorts, item.ControllerPort)
+		}
+		if m.reservedPorts[item.MixedPort] == id {
+			delete(m.reservedPorts, item.MixedPort)
+		}
 		m.mu.Unlock()
 	}()
 	if m.mihomoPath == "" {
@@ -165,7 +211,7 @@ func (m *Manager) Start(id string) error {
 	if needsGeodata.ip && !hasPreparedGeodata(preparedGeodata, "GeoIP.dat") {
 		m.log(id).Add("GeoIP.dat not found locally; mihomo may try to download it")
 	}
-	if err := m.testConfig(item); err != nil {
+	if err := m.testConfig(ctx, item); err != nil {
 		m.store.SetError(id, err.Error())
 		m.log(id).Add("config test failed: " + err.Error())
 		return err
@@ -218,34 +264,51 @@ func (m *Manager) Start(id string) error {
 }
 
 func (m *Manager) Stop(id string) error {
+	return m.StopContext(context.Background(), id)
+}
+
+func (m *Manager) StopContext(ctx context.Context, id string) error {
 	ps := m.state(id)
 	if ps == nil {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ps.logs.Add("stopping mihomo")
 	_ = stopProcess(ps.cmd)
 
-	deadline := time.After(3 * time.Second)
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-deadline:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
 			ps.logs.Add("force killing mihomo")
 			if err := killProcess(ps.cmd); err != nil {
 				return err
 			}
-			killDeadline := time.After(1 * time.Second)
-			for {
-				select {
-				case <-killDeadline:
-					return fmt.Errorf("process %q did not exit after force kill", id)
-				case <-ticker.C:
-					if m.state(id) == nil {
-						return nil
-					}
-				}
+			return m.waitAfterForceKill(ctx, id, ticker)
+		case <-ticker.C:
+			if m.state(id) == nil {
+				return nil
 			}
+		}
+	}
+}
+
+func (m *Manager) waitAfterForceKill(ctx context.Context, id string, ticker *time.Ticker) error {
+	killDeadline := time.NewTimer(1 * time.Second)
+	defer killDeadline.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-killDeadline.C:
+			return fmt.Errorf("process %q did not exit after force kill", id)
 		case <-ticker.C:
 			if m.state(id) == nil {
 				return nil
@@ -259,6 +322,17 @@ func (m *Manager) Restart(id string) error {
 		return err
 	}
 	return m.Start(id)
+}
+
+// StartAll 批量启动所有实例；单个实例失败只记录到结果中，后续实例会继续尝试。
+// 已运行或正在启动的实例会沿用 StartContext 的幂等语义并计为成功。
+func (m *Manager) StartAll(ctx context.Context) InstanceBatchResult {
+	return m.runBatch(ctx, m.StartContext)
+}
+
+// StopAll 批量关闭所有实例；未运行实例沿用 Stop 的幂等语义并计为成功。
+func (m *Manager) StopAll(ctx context.Context) InstanceBatchResult {
+	return m.runBatch(ctx, m.StopContext)
 }
 
 func (m *Manager) Logs(id string) []string {
@@ -304,6 +378,72 @@ func (m *Manager) isStarting(id string) bool {
 	return m.starting[id]
 }
 
+func (m *Manager) runBatch(ctx context.Context, action func(context.Context, string) error) InstanceBatchResult {
+	items := m.store.List()
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].CreatedAt.Before(items[j].CreatedAt)
+	})
+	order := make(map[string]int, len(items))
+	for i, item := range items {
+		order[item.ID] = i
+	}
+
+	result := InstanceBatchResult{Total: len(items)}
+	if len(items) == 0 {
+		return result
+	}
+
+	type outcome struct {
+		id   string
+		name string
+		err  error
+	}
+
+	workers := min(4, len(items))
+	jobs := make(chan *Instance)
+	outcomes := make(chan outcome, len(items))
+	var wg sync.WaitGroup
+
+	// 批量操作采用有限并发，避免多个 mihomo 配置测试或进程退出等待同时压满本机资源。
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobs {
+				outcomes <- outcome{
+					id:   item.ID,
+					name: item.Name,
+					err:  action(ctx, item.ID),
+				}
+			}
+		}()
+	}
+
+	for _, item := range items {
+		jobs <- item
+	}
+	close(jobs)
+	wg.Wait()
+	close(outcomes)
+
+	for out := range outcomes {
+		if out.err != nil {
+			result.Failed++
+			result.Errors = append(result.Errors, InstanceBatchError{
+				ID:    out.id,
+				Name:  out.name,
+				Error: out.err.Error(),
+			})
+			continue
+		}
+		result.Success++
+	}
+	sort.Slice(result.Errors, func(i, j int) bool {
+		return order[result.Errors[i].ID] < order[result.Errors[j].ID]
+	})
+	return result
+}
+
 func (m *Manager) log(id string) *logBuffer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -326,8 +466,8 @@ func captureLines(buf *logBuffer, name string, stream io.Reader) {
 	}
 }
 
-func (m *Manager) testConfig(item *Instance) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (m *Manager) testConfig(ctx context.Context, item *Instance) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, m.mihomoPath, "-t", "-d", filepath.Dir(item.RuntimeConfigPath), "-f", item.RuntimeConfigPath)
 	out, err := cmd.CombinedOutput()

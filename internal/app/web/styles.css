@@ -212,6 +212,19 @@ label span {
   gap: 12px;
 }
 
+.side-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.side-actions button {
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
 .content {
   padding: 20px;
   overflow: auto;

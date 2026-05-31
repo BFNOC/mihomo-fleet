@@ -35,6 +35,7 @@ const state = {
   latencyRunning: new Set(),
   latencyBatchRunning: false,
   latencyBatchToken: 0,
+  bulkRunning: false,
 };
 
 const statusLabels = {
@@ -92,6 +93,8 @@ const el = {
   instanceList: document.querySelector("#instanceList"),
   message: document.querySelector("#message"),
   newBtn: document.querySelector("#newBtn"),
+  startAllBtn: document.querySelector("#startAllBtn"),
+  stopAllBtn: document.querySelector("#stopAllBtn"),
   emptyCreate: document.querySelector("#emptyCreate"),
   createPanel: document.querySelector("#createPanel"),
   emptyPanel: document.querySelector("#emptyPanel"),
@@ -430,7 +433,7 @@ function showMessage(text, kind = "info") {
   el.message.className = `message ${kind === "error" ? "error" : ""}`;
 }
 
-async function refresh() {
+async function refresh(options = {}) {
   try {
     const [system, profiles, list] = await Promise.all([
       api("/api/system"),
@@ -439,12 +442,14 @@ async function refresh() {
     ]);
     state.system = system;
     state.profiles = profiles.profiles || [];
-    state.instances = list.instances || [];
-    if (!state.activeId && state.instances.length) {
-      state.activeId = state.instances[0].id;
-    }
-    if (state.activeId && !state.instances.some((item) => item.id === state.activeId)) {
-      state.activeId = state.instances[0]?.id || "";
+    if (!state.bulkRunning || options.forceInstances) {
+      state.instances = list.instances || [];
+      if (!state.activeId && state.instances.length) {
+        state.activeId = state.instances[0].id;
+      }
+      if (state.activeId && !state.instances.some((item) => item.id === state.activeId)) {
+        state.activeId = state.instances[0]?.id || "";
+      }
     }
     localStorage.setItem("activeInstance", state.activeId);
     render();
@@ -459,6 +464,7 @@ function render() {
   renderSystem();
   renderSelector(selected);
   renderList(selected);
+  updateBulkControls();
   renderPanels(selected);
   updateCreateProfileControls();
 }
@@ -520,6 +526,15 @@ function renderList(selected) {
   }
 }
 
+function updateBulkControls() {
+  const canStart = state.instances.some((item) => item.status !== "running" && item.status !== "starting");
+  const canStop = state.instances.some((item) => item.status === "running");
+  el.newBtn.disabled = state.bulkRunning;
+  el.emptyCreate.disabled = state.bulkRunning;
+  el.startAllBtn.disabled = state.bulkRunning || !canStart;
+  el.stopAllBtn.disabled = state.bulkRunning || !canStop;
+}
+
 function renderPanels(selected) {
   el.createPanel.classList.toggle("hidden", !state.creating);
   el.emptyPanel.classList.toggle("hidden", state.creating || state.instances.length > 0);
@@ -542,9 +557,10 @@ function renderPanels(selected) {
   renderProfileOptions(el.editProfile, selected.profileId, false);
   el.editMixedPort.value = selected.mixedPort;
   el.editControllerPort.value = selected.controllerPort;
-  el.startBtn.disabled = selected.status === "running";
-  el.stopBtn.disabled = selected.status !== "running";
-  el.restartBtn.disabled = false;
+  el.startBtn.disabled = state.bulkRunning || selected.status === "running" || selected.status === "starting";
+  el.stopBtn.disabled = state.bulkRunning || selected.status !== "running";
+  el.restartBtn.disabled = state.bulkRunning;
+  el.deleteBtn.disabled = state.bulkRunning;
   updateLatencyControls();
   renderSubscriptionSettings(selected);
 }
@@ -959,6 +975,41 @@ async function runAction(path, success) {
   }
 }
 
+function formatBatchMessage(action, payload) {
+  const verb = action === "start-all" ? "启动" : "关闭";
+  const total = Number(payload.total) || 0;
+  const success = Number(payload.success) || 0;
+  const failed = Number(payload.failed) || 0;
+  if (total === 0) return `没有可${verb}的实例。`;
+
+  let text = failed
+    ? `批量${verb}完成：成功 ${success}/${total}，失败 ${failed}。`
+    : `批量${verb}完成：成功 ${success}/${total}。`;
+  const details = (payload.errors || [])
+    .slice(0, 2)
+    .map((item) => `${item.name || item.id}: ${localizedMessage(item.error)}`);
+  if (details.length) text += ` ${details.join("；")}`;
+  return text;
+}
+
+async function runBulkAction(action) {
+  try {
+    state.bulkRunning = true;
+    updateBulkControls();
+    const payload = await api(`/api/instances?action=${encodeURIComponent(action)}`, { method: "POST" });
+    state.instances = payload.instances || state.instances;
+    showMessage(formatBatchMessage(action, payload), payload.failed ? "error" : "info");
+    render();
+    await refreshActiveDetails();
+  } catch (err) {
+    showMessage(err.message, "error");
+    await refresh({ forceInstances: true });
+  } finally {
+    state.bulkRunning = false;
+    updateBulkControls();
+  }
+}
+
 document.querySelectorAll(".tab").forEach((button) => {
   button.addEventListener("click", async () => {
     state.activeTab = button.dataset.tab;
@@ -971,6 +1022,8 @@ document.querySelectorAll(".tab").forEach((button) => {
 
 el.instanceSelect.addEventListener("change", (event) => selectInstance(event.target.value));
 el.newBtn.addEventListener("click", showCreate);
+el.startAllBtn.addEventListener("click", () => runBulkAction("start-all"));
+el.stopAllBtn.addEventListener("click", () => runBulkAction("stop-all"));
 el.emptyCreate.addEventListener("click", showCreate);
 el.createProfile.addEventListener("change", () => {
   el.createConfig.dataset.profileId = "";

@@ -359,6 +359,10 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 		})
 		writeJSON(w, map[string]any{"instances": views})
 	case http.MethodPost:
+		if action := r.URL.Query().Get("action"); action != "" {
+			c.handleInstancesBatch(w, r, action)
+			return
+		}
 		var req struct {
 			Name           string `json:"name"`
 			ProfileID      string `json:"profileId"`
@@ -383,6 +387,31 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (c *Controller) handleInstancesBatch(w http.ResponseWriter, r *http.Request, action string) {
+	var result InstanceBatchResult
+	switch action {
+	case "start-all":
+		result = c.manager.StartAll(r.Context())
+	case "stop-all":
+		result = c.manager.StopAll(r.Context())
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unknown instance action %q", action))
+		return
+	}
+
+	views := c.manager.Views()
+	sort.Slice(views, func(i, j int) bool {
+		return views[i].CreatedAt.Before(views[j].CreatedAt)
+	})
+	writeJSON(w, struct {
+		InstanceBatchResult
+		Instances []InstanceView `json:"instances"`
+	}{
+		InstanceBatchResult: result,
+		Instances:           views,
+	})
 }
 
 func (c *Controller) handleInstance(w http.ResponseWriter, r *http.Request) {
