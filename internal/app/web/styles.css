@@ -275,7 +275,9 @@ label span {
 .port-matrix-list {
   display: grid;
   gap: 8px;
-  margin-top: 10px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
 }
 
 .port-row {

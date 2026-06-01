@@ -541,10 +541,12 @@ function renderPortMatrix(selected) {
   const focusedKey = el.portMatrixList.contains(document.activeElement)
     ? document.activeElement.dataset.portFocus
     : "";
-  el.portMatrixCount.textContent = `${state.instances.length} 个出口`;
+  const countText = `${state.instances.length} 个出口`;
+  // 避免 aria-live 区域在每次矩阵重绘时重复播报相同数量。
+  if (el.portMatrixCount.textContent !== countText) el.portMatrixCount.textContent = countText;
   el.portMatrixList.innerHTML = "";
   if (!state.instances.length) {
-    const empty = document.createElement("div");
+    const empty = document.createElement("li");
     empty.className = "port-empty";
     empty.textContent = "暂无端口";
     el.portMatrixList.append(empty);
@@ -552,7 +554,7 @@ function renderPortMatrix(selected) {
   }
 
   for (const item of state.instances) {
-    const row = document.createElement("div");
+    const row = document.createElement("li");
     row.className = `port-row ${selected && selected.id === item.id ? "active" : ""}`;
 
     const selectButton = document.createElement("button");
@@ -588,7 +590,8 @@ function renderPortMatrix(selected) {
       button.title = action.title;
       button.disabled = !action.value;
       button.dataset.portFocus = `copy:${item.id}:${action.id}`;
-      button.setAttribute("aria-label", `${action.title}：${item.name}`);
+      const unavailable = action.value ? "" : "（端口未分配，无法复制）";
+      button.setAttribute("aria-label", `${action.title}：${item.name}${unavailable}`);
       if (action.value) {
         button.addEventListener("click", async () => {
           await copyProxyValue(action.value, action.message);
