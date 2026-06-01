@@ -24,7 +24,7 @@ const proxyCopyDefs = [
   { id: "addr", label: "地址", title: "复制主机和端口" },
   { id: "http", label: "HTTP", title: "复制 HTTP 代理地址" },
   { id: "socks", label: "SOCKS", title: "复制 SOCKS5 代理地址" },
-  { id: "env", label: "ENV", title: "复制终端环境变量" },
+  { id: "env", label: "ENV", title: "复制 bash/zsh export 环境变量" },
 ];
 
 const state = {
@@ -642,7 +642,7 @@ function proxyCopyActions(item) {
     addr: endpoint,
     http,
     socks,
-    env: `HTTP_PROXY=${http} HTTPS_PROXY=${http} ALL_PROXY=${socks}`,
+    env: proxyEnvExports(http, socks),
   };
   const messages = {
     addr: `已复制 ${item.name} 地址。`,
@@ -655,6 +655,17 @@ function proxyCopyActions(item) {
     value: values[action.id],
     message: messages[action.id],
   }));
+}
+
+function proxyEnvExports(http, socks) {
+  return [
+    `export HTTP_PROXY='${http}'`,
+    `export HTTPS_PROXY='${http}'`,
+    `export ALL_PROXY='${socks}'`,
+    `export http_proxy='${http}'`,
+    `export https_proxy='${http}'`,
+    `export all_proxy='${socks}'`,
+  ].join("\n");
 }
 
 async function copyProxyValue(value, success) {
