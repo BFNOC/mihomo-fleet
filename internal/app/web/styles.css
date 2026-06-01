@@ -291,10 +291,6 @@ label span {
   border-radius: 6px;
 }
 
-.port-row:hover {
-  border-color: oklch(0.74 0.035 175);
-}
-
 .port-row-select {
   min-height: 0;
   display: grid;
@@ -313,6 +309,10 @@ label span {
 .port-row-select:focus-visible {
   outline: 2px solid var(--accent-soft);
   outline-offset: 1px;
+}
+
+.port-row:focus-within {
+  border-color: oklch(0.68 0.07 178);
 }
 
 .port-row.active {
@@ -352,14 +352,28 @@ label span {
   text-align: center;
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .port-row:not(.active):hover:not(:focus-within) {
+    border-color: oklch(0.74 0.035 175);
+  }
+}
+
 .clipboard-buffer {
   position: fixed;
   top: 0;
-  left: 0;
+  left: -9999px;
   width: 1px;
+  min-width: 1px;
+  max-width: 1px;
   height: 1px;
+  min-height: 1px;
+  max-height: 1px;
+  padding: 0;
+  border: 0;
   opacity: 0;
+  overflow: hidden;
   pointer-events: none;
+  resize: none;
 }
 
 .row-main {
@@ -822,5 +836,15 @@ label,
 
   .proxy-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .copy-tools {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .copy-tools button {
+    min-height: 36px;
   }
 }

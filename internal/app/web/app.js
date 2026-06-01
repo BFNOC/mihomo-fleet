@@ -701,8 +701,12 @@ async function writeClipboard(value) {
   }
   // 兼容非安全上下文或旧浏览器，localhost 以外也能复制端口文本。
   const textarea = document.createElement("textarea");
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   textarea.value = value;
   textarea.setAttribute("readonly", "");
+  // 复制缓冲区只服务 execCommand，不进入键盘顺序或读屏树。
+  textarea.tabIndex = -1;
+  textarea.setAttribute("aria-hidden", "true");
   textarea.className = "clipboard-buffer";
   document.body.append(textarea);
   textarea.select();
@@ -712,6 +716,7 @@ async function writeClipboard(value) {
     }
   } finally {
     textarea.remove();
+    if (previousFocus && document.contains(previousFocus)) previousFocus.focus({ preventScroll: true });
   }
 }
 
