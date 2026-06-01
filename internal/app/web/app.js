@@ -531,7 +531,7 @@ function renderList(selected) {
     `;
     button.querySelector(".row-name").textContent = item.name;
     button.querySelector(".status").textContent = statusText(item.status);
-    button.querySelector(".row-meta").textContent = `混合端口 ${item.mixedPort} · ${profile}${choice}`;
+    button.querySelector(".row-meta").textContent = `混合端口 ${proxyPortLabel(item.mixedPort)} · ${profile}${choice}`;
     button.addEventListener("click", () => selectInstance(item.id));
     el.instanceList.append(button);
   }
@@ -580,7 +580,7 @@ function renderPortMatrix(selected) {
 
     const tools = document.createElement("div");
     tools.className = "copy-tools";
-    const actions = Number(item.mixedPort) > 0 ? proxyCopyActions(item) : proxyCopyPlaceholders();
+    const actions = proxyPort(item.mixedPort) ? proxyCopyActions(item) : proxyCopyPlaceholders();
     for (const action of actions) {
       const button = document.createElement("button");
       button.type = "button";
@@ -610,11 +610,23 @@ function renderPortMatrix(selected) {
 }
 
 function proxyEndpoint(port) {
-  return `127.0.0.1:${port}`;
+  const value = proxyPort(port);
+  return value ? `127.0.0.1:${value}` : "";
 }
 
 function proxyEndpointText(port) {
-  return Number(port) > 0 ? proxyEndpoint(port) : "端口未分配";
+  return proxyEndpoint(port) || "端口未分配";
+}
+
+function proxyPortLabel(port) {
+  return proxyPort(port) || "未分配";
+}
+
+function proxyPort(port) {
+  if (typeof port !== "number" && typeof port !== "string") return 0;
+  if (typeof port === "string" && !/^\d+$/.test(port.trim())) return 0;
+  const value = Number(port);
+  return Number.isInteger(value) && value >= 1 && value <= 65535 ? value : 0;
 }
 
 function proxyCopyPlaceholders() {
@@ -623,6 +635,7 @@ function proxyCopyPlaceholders() {
 
 function proxyCopyActions(item) {
   const endpoint = proxyEndpoint(item.mixedPort);
+  if (!endpoint) return proxyCopyPlaceholders();
   const http = `http://${endpoint}`;
   const socks = `socks5://${endpoint}`;
   const values = {
@@ -694,9 +707,9 @@ function renderPanels(selected) {
   el.detailMeta.textContent = selected.lastError ? localizedMessage(selected.lastError) : `${statusText(selected.status)} · ${selected.id}`;
   el.metricStatus.textContent = statusText(selected.status);
   el.metricPid.textContent = selected.pid || "无";
-  el.metricMixed.textContent = selected.mixedPort;
+  el.metricMixed.textContent = proxyPortLabel(selected.mixedPort);
   el.metricController.textContent = selected.controllerPort;
-  el.overviewMixed.textContent = `127.0.0.1:${selected.mixedPort}`;
+  el.overviewMixed.textContent = proxyEndpointText(selected.mixedPort);
   el.overviewController.textContent = `127.0.0.1:${selected.controllerPort}`;
   el.overviewProfile.textContent = selected.profileName || selected.profileId || "无";
   el.overviewUserConfig.textContent = selected.profileConfigPath || selected.userConfigPath;
