@@ -606,10 +606,23 @@ function renderPortMatrix(selected) {
 
   // 自动刷新会重建列表；恢复端口矩阵内的焦点，避免键盘用户每 4 秒被打断。
   if (focusedKey) {
-    const focused = [...el.portMatrixList.querySelectorAll("[data-port-focus]")]
-      .find((node) => node.dataset.portFocus === focusedKey);
-    focused?.focus({ preventScroll: true });
+    restorePortMatrixFocus(focusedKey);
   }
+}
+
+function restorePortMatrixFocus(focusedKey) {
+  const controls = [...el.portMatrixList.querySelectorAll("[data-port-focus]")]
+    .filter((node) => !node.disabled);
+  const instanceId = portFocusInstanceId(focusedKey);
+  // 复制按钮可能因端口变化被禁用；先退回同实例，再退回第一个出口。
+  const target = controls.find((node) => node.dataset.portFocus === focusedKey)
+    || controls.find((node) => node.dataset.portFocus === `select:${instanceId}`)
+    || controls.find((node) => node.dataset.portFocus?.startsWith("select:"));
+  target?.focus({ preventScroll: true });
+}
+
+function portFocusInstanceId(focusedKey) {
+  return focusedKey.split(":")[1] || "";
 }
 
 function proxyEndpoint(port) {
