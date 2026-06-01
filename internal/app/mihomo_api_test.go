@@ -128,6 +128,27 @@ func TestMihomoRealProxyDelayReturnsProbeError(t *testing.T) {
 	}
 }
 
+func TestMihomoRealProxyDelayTreatsFirstDelayTestFailureAsUnavailable(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"message":"An error occurred in delay test"}`))
+	}))
+	defer server.Close()
+
+	delay, err := mihomoRealProxyDelay(context.Background(), testMihomoItem(t, server.URL), "JP AWS", defaultLatencyURL, 5000)
+	if err != nil {
+		t.Fatalf("mihomoRealProxyDelay() error = %v", err)
+	}
+	if delay != 0 {
+		t.Fatalf("delay = %d, want 0", delay)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1", got)
+	}
+}
+
 func TestMihomoGroupDelay(t *testing.T) {
 	groupName := "Proxy Group"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +168,52 @@ func TestMihomoGroupDelay(t *testing.T) {
 	}
 }
 
+func TestMihomoGroupDelayTreatsDelayTestFailureAsEmptyResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"message":"An error occurred in the delay test"}`))
+	}))
+	defer server.Close()
+
+	delays, err := mihomoGroupDelay(context.Background(), testMihomoItem(t, server.URL), "Proxy", defaultLatencyURL, 5000)
+	if err != nil {
+		t.Fatalf("mihomoGroupDelay() error = %v", err)
+	}
+	if len(delays) != 0 {
+		t.Fatalf("delays = %#v, want empty", delays)
+	}
+}
+
+func TestMihomoGroupDelayTreatsTimeoutAsEmptyResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{name: "gateway timeout json", status: http.StatusGatewayTimeout, body: `{"message":"Timeout"}`},
+		{name: "gateway timeout empty", status: http.StatusGatewayTimeout},
+		{name: "service unavailable empty", status: http.StatusServiceUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			delays, err := mihomoGroupDelay(context.Background(), testMihomoItem(t, server.URL), "Proxy", defaultLatencyURL, 5000)
+			if err != nil {
+				t.Fatalf("mihomoGroupDelay() error = %v", err)
+			}
+			if len(delays) != 0 {
+				t.Fatalf("delays = %#v, want empty", delays)
+			}
+		})
+	}
+}
+
 func TestMihomoDelayReturnsUpstreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad node", http.StatusServiceUnavailable)
@@ -155,6 +222,80 @@ func TestMihomoDelayReturnsUpstreamError(t *testing.T) {
 
 	_, err := mihomoProxyDelay(context.Background(), testMihomoItem(t, server.URL), "bad", defaultLatencyURL, 5000)
 	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestMihomoProxyDelayTreatsDelayTestFailureAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"message":"An error occurred in the delay test"}`))
+	}))
+	defer server.Close()
+
+	delay, err := mihomoProxyDelay(context.Background(), testMihomoItem(t, server.URL), "bad", defaultLatencyURL, 5000)
+	if err != nil {
+		t.Fatalf("mihomoProxyDelay() error = %v", err)
+	}
+	if delay != 0 {
+		t.Fatalf("delay = %d, want 0", delay)
+	}
+}
+
+func TestMihomoProxyDelayTreatsTimeoutAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGatewayTimeout)
+		_, _ = w.Write([]byte(`{"message":"Timeout"}`))
+	}))
+	defer server.Close()
+
+	delay, err := mihomoProxyDelay(context.Background(), testMihomoItem(t, server.URL), "timeout", defaultLatencyURL, 5000)
+	if err != nil {
+		t.Fatalf("mihomoProxyDelay() error = %v", err)
+	}
+	if delay != 0 {
+		t.Fatalf("delay = %d, want 0", delay)
+	}
+}
+
+func TestMihomoProxyDelayTreatsEmptyTimeoutAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGatewayTimeout)
+	}))
+	defer server.Close()
+
+	delay, err := mihomoProxyDelay(context.Background(), testMihomoItem(t, server.URL), "timeout", defaultLatencyURL, 5000)
+	if err != nil {
+		t.Fatalf("mihomoProxyDelay() error = %v", err)
+	}
+	if delay != 0 {
+		t.Fatalf("delay = %d, want 0", delay)
+	}
+}
+
+func TestMihomoProxyDelayTreatsEmptyServiceUnavailableAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	delay, err := mihomoProxyDelay(context.Background(), testMihomoItem(t, server.URL), "bad", defaultLatencyURL, 5000)
+	if err != nil {
+		t.Fatalf("mihomoProxyDelay() error = %v", err)
+	}
+	if delay != 0 {
+		t.Fatalf("delay = %d, want 0", delay)
+	}
+}
+
+func TestMihomoProxyDelayReturnsUnmatchedTimeoutError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGatewayTimeout)
+		_, _ = w.Write([]byte(`{"message":"server busy timeout"}`))
+	}))
+	defer server.Close()
+
+	if _, err := mihomoProxyDelay(context.Background(), testMihomoItem(t, server.URL), "timeout", defaultLatencyURL, 5000); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -181,6 +322,7 @@ func TestNormalizeLatencyRequest(t *testing.T) {
 }
 
 func TestHandleLatencyProxyRequest(t *testing.T) {
+	const testURL = "https://www.gstatic.com/generate_204"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.URL.EscapedPath(), "/proxies/US%20AWS/delay"; got != want {
 			t.Fatalf("path = %q, want %q", got, want)
@@ -190,7 +332,7 @@ func TestHandleLatencyProxyRequest(t *testing.T) {
 	defer server.Close()
 
 	controller, instanceID := testLatencyController(t, server.URL, true)
-	body := bytes.NewBufferString(`{"proxy":"US AWS","kind":"url","url":"https://www.gstatic.com/generate_204","timeoutMs":3000}`)
+	body := bytes.NewBufferString(`{"proxy":"US AWS","kind":"url","url":"` + testURL + `","timeoutMs":3000}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+instanceID+"/latency", body)
 	rec := httptest.NewRecorder()
 
@@ -207,8 +349,64 @@ func TestHandleLatencyProxyRequest(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("response json = %v", err)
 	}
-	if payload.Delay != 91 || payload.TimeoutMS != 3000 || payload.URL != defaultLatencyURL {
+	if payload.Delay != 91 || payload.TimeoutMS != 3000 || payload.URL != testURL {
 		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestHandleLatencyTreatsDelayTestFailureAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"message":"An error occurred in the delay test"}`))
+	}))
+	defer server.Close()
+
+	controller, instanceID := testLatencyController(t, server.URL, true)
+	body := bytes.NewBufferString(`{"proxy":"US AWS","kind":"url","timeoutMs":3000}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+instanceID+"/latency", body)
+	rec := httptest.NewRecorder()
+
+	controller.handleLatency(rec, req, instanceID)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Delay int `json:"delay"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json = %v", err)
+	}
+	if payload.Delay != 0 {
+		t.Fatalf("delay = %d, want 0", payload.Delay)
+	}
+}
+
+func TestHandleLatencyTreatsTimeoutAsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGatewayTimeout)
+		_, _ = w.Write([]byte(`{"message":"Timeout"}`))
+	}))
+	defer server.Close()
+
+	controller, instanceID := testLatencyController(t, server.URL, true)
+	body := bytes.NewBufferString(`{"proxy":"US AWS","kind":"url","timeoutMs":3000}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+instanceID+"/latency", body)
+	rec := httptest.NewRecorder()
+
+	controller.handleLatency(rec, req, instanceID)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Delay int `json:"delay"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json = %v", err)
+	}
+	if payload.Delay != 0 {
+		t.Fatalf("delay = %d, want 0", payload.Delay)
 	}
 }
 

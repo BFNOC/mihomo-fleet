@@ -4,17 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const (
-	defaultLatencyURL       = "https://www.gstatic.com/generate_204"
-	defaultLatencyTimeoutMS = 5000
+	defaultLatencyURL       = "http://cp.cloudflare.com/generate_204"
+	defaultLatencyTimeoutMS = 10000
 	minLatencyTimeoutMS     = 500
 	maxLatencyTimeoutMS     = 15000
 )
@@ -57,6 +59,9 @@ func mihomoProxyDelay(ctx context.Context, item *Instance, proxyName, testURL st
 		Delay int `json:"delay"`
 	}
 	if err := doMihomoDelayRequest(ctx, item, endpoint, timeoutMS+2000, &payload); err != nil {
+		if errors.Is(err, errMihomoDelayTestFailure) {
+			return 0, nil
+		}
 		return 0, err
 	}
 	return payload.Delay, nil
@@ -92,6 +97,9 @@ func mihomoGroupDelay(ctx context.Context, item *Instance, groupName, testURL st
 
 	var delays map[string]int
 	if err := doMihomoDelayRequest(ctx, item, endpoint, latencyRequestBudgetMS("url", timeoutMS), &delays); err != nil {
+		if errors.Is(err, errMihomoDelayTestFailure) {
+			return map[string]int{}, nil
+		}
 		return nil, err
 	}
 	return delays, nil
@@ -112,6 +120,9 @@ func doMihomoDelayRequest(ctx context.Context, item *Instance, endpoint string, 
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		if isMihomoDelayTestFailure(res.StatusCode, body) {
+			return errMihomoDelayTestFailure
+		}
 		if len(body) == 0 {
 			return fmt.Errorf("mihomo returned %s", res.Status)
 		}
@@ -121,6 +132,25 @@ func doMihomoDelayRequest(ctx context.Context, item *Instance, endpoint string, 
 		return err
 	}
 	return nil
+}
+
+var errMihomoDelayTestFailure = errors.New("mihomo delay test failed")
+
+func isMihomoDelayTestFailure(statusCode int, body []byte) bool {
+	if statusCode != http.StatusServiceUnavailable && statusCode != http.StatusGatewayTimeout {
+		return false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return true
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(payload.Message))
+	return strings.Contains(message, "delay test") || (statusCode == http.StatusGatewayTimeout && message == "timeout")
 }
 
 func normalizeLatencyRequestURL(raw string) (string, error) {

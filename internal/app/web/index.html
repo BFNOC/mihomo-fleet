@@ -224,14 +224,14 @@
                 <div class="proxy-tools">
                   <label>
                     <span>测试 URL</span>
-                    <input id="latencyUrl" placeholder="https://www.gstatic.com/generate_204">
+                    <input id="latencyUrl" placeholder="http://cp.cloudflare.com/generate_204">
                   </label>
                   <label class="latency-timeout">
                     <span>超时 ms</span>
-                    <input id="latencyTimeout" type="number" min="500" max="15000" step="500" placeholder="5000">
+                    <input id="latencyTimeout" type="number" min="500" max="15000" step="500" placeholder="10000">
                   </label>
-                  <button id="testAllLatency" type="button">测速当前</button>
-                  <button id="testAllRealLatency" type="button">真延迟当前</button>
+                  <button id="testAllLatency" type="button">测速各组当前</button>
+                  <button id="testAllRealLatency" type="button">真延迟各组当前</button>
                 </div>
                 <input id="proxyFilter" class="proxy-filter" placeholder="筛选节点">
                 <div id="proxiesList" class="proxy-list"></div>

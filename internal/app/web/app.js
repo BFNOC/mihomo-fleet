@@ -13,8 +13,11 @@ rules:
 `;
 
 const newProfileValue = "__new__";
-const defaultLatencyUrl = "https://www.gstatic.com/generate_204";
-const defaultLatencyTimeout = 5000;
+const legacyDefaultLatencyUrl = "https://www.gstatic.com/generate_204";
+const legacyDefaultLatencyTimeout = "5000";
+const defaultLatencyUrl = "http://cp.cloudflare.com/generate_204";
+const defaultLatencyTimeout = 10000;
+const latencyBatchConcurrency = 4;
 const latencyKeySeparator = "\u001f";
 const latencyKinds = {
   url: "url",
@@ -192,6 +195,20 @@ function localizedMessage(message) {
   return text;
 }
 
+function normalizeStoredLatencyUrl(value) {
+  const url = String(value || "").trim();
+  return !url || url === legacyDefaultLatencyUrl ? defaultLatencyUrl : url;
+}
+
+function normalizeStoredLatencyTimeout(value, storedUrl) {
+  const timeout = String(value || "").trim();
+  const url = String(storedUrl || "").trim();
+  if (!timeout || (timeout === legacyDefaultLatencyTimeout && (!url || url === legacyDefaultLatencyUrl))) {
+    return String(defaultLatencyTimeout);
+  }
+  return timeout;
+}
+
 function formatProfileUpdate(profile) {
   if (profile.lastUpdateError) return `上次更新失败：${localizedMessage(profile.lastUpdateError)}`;
   if (profile.lastUpdatedAt) return `上次更新 ${new Date(profile.lastUpdatedAt).toLocaleString()}`;
@@ -253,6 +270,7 @@ function setLatencyRunning(instanceId, group, proxy, kind, running) {
   } else {
     state.latencyRunning.delete(key);
   }
+  updateLatencyControls();
 }
 
 function isLatencyRunning(instanceId, group, proxy, kind) {
@@ -356,9 +374,11 @@ function applyLatencyChipState(chip, selected, groupName, proxyName, kind) {
   const running = selected ? isLatencyRunning(selected.id, groupName, proxyName, kind) : false;
   const result = selected ? latencyResult(selected.id, groupName, proxyName, kind) : null;
   const value = formatLatencyValue(result, running);
+  const title = result?.error || `${latencyTitle(kind)} ${value}`;
   chip.className = `latency-chip ${latencyTone(result, running)}`;
   chip.textContent = `${latencyLabel(kind)} ${value}`;
-  chip.setAttribute("aria-label", `${latencyTitle(kind)} ${value}`);
+  chip.title = title;
+  chip.setAttribute("aria-label", title);
 }
 
 function updateLatencyChip(instanceId, groupName, proxyName, kind) {
@@ -405,12 +425,21 @@ function endLatencyBatch(batchToken) {
 
 function updateLatencyControls() {
   const selected = active();
-  const disabled = !selected || selected.status !== "running" || !state.proxyApply || state.latencyBatchRunning;
+  const disabled = !selected || selected.status !== "running" || !state.proxyApply;
   const hasLatencyTarget = state.proxyGroups.some((group) => currentLatencyTarget(group));
-  el.testAllLatency.disabled = disabled || !hasLatencyTarget;
-  el.testAllRealLatency.disabled = disabled || !hasLatencyTarget;
+  el.testAllLatency.disabled = disabled || !hasLatencyTarget || state.latencyBatchRunning;
+  el.testAllRealLatency.disabled = disabled || !hasLatencyTarget || state.latencyBatchRunning;
   for (const button of el.proxiesList.querySelectorAll(".proxy-group-actions button")) {
-    button.disabled = disabled || button.dataset.testable === "false";
+    const running =
+      selected &&
+      button.dataset.testable !== "false" &&
+      isLatencyRunning(selected.id, button.dataset.groupName, button.dataset.proxyName, button.dataset.kind);
+    button.disabled = disabled || button.dataset.testable === "false" || running;
+    if (running) {
+      button.title = "测速中";
+    } else if (button.dataset.disabledReason !== undefined) {
+      button.title = button.dataset.disabledReason;
+    }
   }
 }
 
@@ -1011,15 +1040,23 @@ function renderProxyGroups(groups, apply) {
     latencyButton.type = "button";
     latencyButton.textContent = "测速";
     latencyButton.title = disabledReason;
+    latencyButton.dataset.disabledReason = disabledReason;
+    latencyButton.dataset.groupName = group.name;
+    latencyButton.dataset.proxyName = currentName;
+    latencyButton.dataset.kind = latencyKinds.url;
     latencyButton.dataset.testable = currentName ? "true" : "false";
-    latencyButton.disabled = !apply || !currentName || state.latencyBatchRunning;
+    latencyButton.disabled = !apply || !currentName || (selected && isLatencyRunning(selected.id, group.name, currentName, latencyKinds.url));
     latencyButton.addEventListener("click", () => testGroupLatency(group, latencyKinds.url));
     const realLatencyButton = document.createElement("button");
     realLatencyButton.type = "button";
     realLatencyButton.textContent = "真延迟";
     realLatencyButton.title = disabledReason;
+    realLatencyButton.dataset.disabledReason = disabledReason;
+    realLatencyButton.dataset.groupName = group.name;
+    realLatencyButton.dataset.proxyName = currentName;
+    realLatencyButton.dataset.kind = latencyKinds.real;
     realLatencyButton.dataset.testable = currentName ? "true" : "false";
-    realLatencyButton.disabled = !apply || !currentName || state.latencyBatchRunning;
+    realLatencyButton.disabled = !apply || !currentName || (selected && isLatencyRunning(selected.id, group.name, currentName, latencyKinds.real));
     realLatencyButton.addEventListener("click", () => testGroupLatency(group, latencyKinds.real));
     actions.append(latencyButton, realLatencyButton);
     head.append(title, metaWrap, actions);
@@ -1058,16 +1095,10 @@ function renderLatencyChip(selected, groupName, proxyName, kind) {
 }
 
 async function testGroupLatency(group, kind) {
-  if (state.latencyBatchRunning) return;
-  const batchToken = beginLatencyBatch();
-  try {
-    await runGroupLatency(group, kind, batchToken);
-  } finally {
-    endLatencyBatch(batchToken);
-  }
+  await runGroupLatency(group, kind, { notifyErrors: true });
 }
 
-async function runGroupLatency(group, kind, batchToken) {
+async function runGroupLatency(group, kind, options = {}) {
   const selected = active();
   if (!selected) return;
   if (selected.status !== "running") {
@@ -1076,15 +1107,17 @@ async function runGroupLatency(group, kind, batchToken) {
   }
   const name = currentLatencyTarget(group);
   if (!name) return;
+  if (isLatencyRunning(selected.id, group.name, name, kind)) return;
   const { url, timeoutMs } = latencySettings();
+  const batchToken = options.batchToken;
   if (kind === latencyKinds.url) {
-    await testGroupURLLatency(selected, group.name, name, url, timeoutMs, batchToken);
+    await testGroupURLLatency(selected, group.name, name, url, timeoutMs, batchToken, options);
   } else {
-    await testGroupRealLatency(selected, group.name, name, url, timeoutMs, batchToken);
+    await testGroupRealLatency(selected, group.name, name, url, timeoutMs, batchToken, options);
   }
 }
 
-async function testGroupURLLatency(selected, groupName, proxyName, url, timeoutMs, batchToken) {
+async function testGroupURLLatency(selected, groupName, proxyName, url, timeoutMs, batchToken, options = {}) {
   setLatencyRunning(selected.id, groupName, proxyName, latencyKinds.url, true);
   updateLatencyChip(selected.id, groupName, proxyName, latencyKinds.url);
   try {
@@ -1092,21 +1125,21 @@ async function testGroupURLLatency(selected, groupName, proxyName, url, timeoutM
       method: "POST",
       body: JSON.stringify({ group: groupName, proxy: proxyName, kind: latencyKinds.url, url, timeoutMs }),
     });
-    if (state.activeId === selected.id && state.latencyBatchToken === batchToken) {
+    if (shouldApplyLatencyResult(selected.id, batchToken)) {
       setLatencyResult(selected.id, groupName, proxyName, latencyKinds.url, { delay: Number(payload.delay) || 0, error: "" });
     }
   } catch (err) {
-    if (state.activeId === selected.id && state.latencyBatchToken === batchToken) {
-      setLatencyResult(selected.id, groupName, proxyName, latencyKinds.url, { delay: 0, error: err.message });
+    if (shouldApplyLatencyResult(selected.id, batchToken)) {
+      setLatencyResult(selected.id, groupName, proxyName, latencyKinds.url, { delay: 0, error: localizedMessage(err.message) });
     }
-    showMessage(err.message, "error");
+    if (options.notifyErrors) showMessage(err.message, "error");
   } finally {
     setLatencyRunning(selected.id, groupName, proxyName, latencyKinds.url, false);
     updateLatencyChip(selected.id, groupName, proxyName, latencyKinds.url);
   }
 }
 
-async function testGroupRealLatency(selected, groupName, proxyName, url, timeoutMs, batchToken) {
+async function testGroupRealLatency(selected, groupName, proxyName, url, timeoutMs, batchToken, options = {}) {
   setLatencyRunning(selected.id, groupName, proxyName, latencyKinds.real, true);
   updateLatencyChip(selected.id, groupName, proxyName, latencyKinds.real);
   try {
@@ -1114,18 +1147,22 @@ async function testGroupRealLatency(selected, groupName, proxyName, url, timeout
       method: "POST",
       body: JSON.stringify({ group: groupName, proxy: proxyName, kind: latencyKinds.real, url, timeoutMs }),
     });
-    if (state.activeId === selected.id && state.latencyBatchToken === batchToken) {
+    if (shouldApplyLatencyResult(selected.id, batchToken)) {
       setLatencyResult(selected.id, groupName, proxyName, latencyKinds.real, { delay: Number(payload.delay) || 0, error: "" });
     }
   } catch (err) {
-    if (state.activeId === selected.id && state.latencyBatchToken === batchToken) {
-      setLatencyResult(selected.id, groupName, proxyName, latencyKinds.real, { delay: 0, error: err.message });
+    if (shouldApplyLatencyResult(selected.id, batchToken)) {
+      setLatencyResult(selected.id, groupName, proxyName, latencyKinds.real, { delay: 0, error: localizedMessage(err.message) });
     }
-    showMessage(err.message, "error");
+    if (options.notifyErrors) showMessage(err.message, "error");
   } finally {
     setLatencyRunning(selected.id, groupName, proxyName, latencyKinds.real, false);
     updateLatencyChip(selected.id, groupName, proxyName, latencyKinds.real);
   }
+}
+
+function shouldApplyLatencyResult(instanceId, batchToken) {
+  return state.activeId === instanceId && (batchToken === undefined || state.latencyBatchToken === batchToken);
 }
 
 async function testAllLatency(kind) {
@@ -1139,13 +1176,26 @@ async function testAllLatency(kind) {
   const batchToken = beginLatencyBatch();
   try {
     const groups = state.proxyGroups.filter((group) => currentLatencyTarget(group));
-    for (const group of groups) {
-      if (state.activeId !== selected.id || state.latencyBatchToken !== batchToken) return;
-      await runGroupLatency(group, kind, batchToken);
-    }
+    await runLatencyBatch(groups, kind, batchToken, selected.id);
   } finally {
     endLatencyBatch(batchToken);
   }
+}
+
+async function runLatencyBatch(groups, kind, batchToken, instanceId) {
+  let index = 0;
+  const workerCount = Math.min(latencyBatchConcurrency, groups.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (index < groups.length) {
+      if (state.activeId !== instanceId || state.latencyBatchToken !== batchToken) return;
+      const group = groups[index];
+      index += 1;
+      const name = currentLatencyTarget(group);
+      if (name && isLatencyRunning(instanceId, group.name, name, kind)) continue;
+      await runGroupLatency(group, kind, { batchToken, notifyErrors: false });
+    }
+  });
+  await Promise.allSettled(workers);
 }
 
 async function selectProxy(group, proxy, apply) {
@@ -1442,8 +1492,9 @@ el.proxyFilter.addEventListener("input", () => {
   if (state.activeTab === "proxies") refreshProxies();
 });
 
-el.latencyUrl.value = localStorage.getItem("fleetLatencyUrl") || defaultLatencyUrl;
-el.latencyTimeout.value = localStorage.getItem("fleetLatencyTimeout") || String(defaultLatencyTimeout);
+const storedLatencyUrl = localStorage.getItem("fleetLatencyUrl");
+el.latencyUrl.value = normalizeStoredLatencyUrl(storedLatencyUrl);
+el.latencyTimeout.value = normalizeStoredLatencyTimeout(localStorage.getItem("fleetLatencyTimeout"), storedLatencyUrl);
 el.latencyUrl.addEventListener("change", latencySettings);
 el.latencyTimeout.addEventListener("change", latencySettings);
 el.testAllLatency.addEventListener("click", () => testAllLatency(latencyKinds.url));
