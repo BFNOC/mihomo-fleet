@@ -25,6 +25,22 @@ Python 服务。
 ./mihomo-fleet -version
 ```
 
+## 版本和发布
+
+当前版本以根目录 `VERSION` 文件为准。
+
+GitHub Actions 只在 `VERSION` 文件变更的 push 上执行三端编译，并创建或更新
+`v版本号` 的 GitHub Release。Release assets 只包含对应平台的单个可执行文件：
+
+```text
+mihomo-fleet-linux-amd64
+mihomo-fleet-linux-arm64
+mihomo-fleet-darwin-amd64
+mihomo-fleet-darwin-arm64
+mihomo-fleet-windows-amd64.exe
+mihomo-fleet-windows-arm64.exe
+```
+
 ## 运行
 
 ```bash
