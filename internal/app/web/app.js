@@ -50,6 +50,9 @@ const state = {
   latencyBatchToken: 0,
   bulkRunning: false,
   cloneRunning: false,
+  editInstanceId: "",
+  editDirty: false,
+  editVersion: 0,
 };
 
 const statusLabels = {
@@ -807,14 +810,19 @@ function renderPanels(selected) {
   el.overviewUserConfig.textContent = selected.profileConfigPath || selected.userConfigPath;
   el.overviewRuntimeConfig.textContent = selected.runtimeConfigPath;
   el.overviewSelection.textContent = selectionSummary(selected);
-  el.editName.value = selected.name;
-  renderProfileOptions(el.editProfile, selected.profileId, false);
-  el.editMode.value = instanceMode(selected);
-  el.editMixedPort.value = selected.mixedPort;
-  el.editControllerPort.value = selected.controllerPort;
-  el.editLocalProxies.value = selected.localProxies || "";
-  el.editChain.value = chainToText(selected.chain);
-  applyModeFields("edit", el.editMode.value);
+  if (!state.editDirty || state.editInstanceId !== selected.id) {
+    state.editInstanceId = selected.id;
+    state.editDirty = false;
+    state.editVersion = 0;
+    el.editName.value = selected.name;
+    renderProfileOptions(el.editProfile, selected.profileId, false);
+    el.editMode.value = instanceMode(selected);
+    el.editMixedPort.value = selected.mixedPort;
+    el.editControllerPort.value = selected.controllerPort;
+    el.editLocalProxies.value = selected.localProxies || "";
+    el.editChain.value = chainToText(selected.chain);
+    applyModeFields("edit", el.editMode.value);
+  }
   el.startBtn.disabled = state.bulkRunning || selected.status === "running" || selected.status === "starting";
   el.stopBtn.disabled = state.bulkRunning || selected.status !== "running";
   el.restartBtn.disabled = state.bulkRunning;
@@ -946,6 +954,9 @@ async function fillSuggestedPorts() {
 }
 
 function clearActiveDetailCache() {
+  state.editInstanceId = "";
+  state.editDirty = false;
+  state.editVersion = 0;
   el.configEditor.value = "";
   el.configEditor.dataset.id = "";
   el.configEditor.dataset.profileId = "";
@@ -956,6 +967,13 @@ function clearActiveDetailCache() {
   state.proxyApply = false;
   state.latencyBatchRunning = false;
   state.latencyBatchToken += 1;
+}
+
+function markEditFormDirty() {
+  const selected = active();
+  state.editInstanceId = selected?.id || state.editInstanceId;
+  state.editDirty = true;
+  state.editVersion += 1;
 }
 
 function selectInstance(id) {
@@ -1465,13 +1483,25 @@ el.deleteBtn.addEventListener("click", async () => {
   }
 });
 
+[
+  el.editName,
+  el.editMixedPort,
+  el.editControllerPort,
+  el.editLocalProxies,
+  el.editChain,
+].forEach((input) => input.addEventListener("input", markEditFormDirty));
+
+el.editProfile.addEventListener("change", markEditFormDirty);
+
 el.editMode.addEventListener("change", () => {
+  markEditFormDirty();
   applyModeFields("edit", el.editMode.value);
 });
 
 el.saveBasics.addEventListener("click", async () => {
   const selected = active();
   if (!selected) return;
+  const editVersion = state.editVersion;
   try {
     await api(`/api/instances/${selected.id}`, {
       method: "PUT",
@@ -1485,6 +1515,9 @@ el.saveBasics.addEventListener("click", async () => {
         chain: el.editMode.value === instanceModes.globalChain ? chainFromText(el.editChain.value) : [],
       }),
     });
+    if (state.editInstanceId === selected.id && state.editVersion === editVersion) {
+      state.editDirty = false;
+    }
     showMessage("基础信息已保存。");
     await refresh();
   } catch (err) {
