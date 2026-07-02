@@ -1,0 +1,12 @@
+{
+  "id": "replace-relay-with-dialer-proxy",
+  "title": "将全局链式代理从 relay 组迁移到 dialer-proxy",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "归档任务",
+  "createdAt": "2026-07-02T11:35:10Z",
+  "branch": "main"
+}
