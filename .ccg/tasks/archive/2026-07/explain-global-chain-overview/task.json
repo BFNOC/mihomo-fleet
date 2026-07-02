@@ -1,0 +1,12 @@
+{
+  "id": "explain-global-chain-overview",
+  "title": "解释并改善全局链式概览展示",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "low",
+  "domain": "frontend",
+  "currentPhase": "completed",
+  "nextAction": "已补充概览生效链路展示，本地验证通过",
+  "createdAt": "2026-07-02T13:40:00Z",
+  "branch": "main"
+}
