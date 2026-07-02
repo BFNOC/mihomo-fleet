@@ -161,7 +161,7 @@ func applyGlobalChainConfig(cfg map[string]any, item *Instance) error {
 
 	cfg["mode"] = "rule"
 	cfg["proxy-groups"] = []any{selectGroup}
-	cfg["rules"] = []string{fmt.Sprintf("MATCH,%s", plan.matchTarget)}
+	cfg["rules"] = []string{"NETWORK,UDP,REJECT", fmt.Sprintf("MATCH,%s", plan.matchTarget)}
 	for _, key := range []string{"rule-providers", "sub-rules", "script"} {
 		delete(cfg, key)
 	}

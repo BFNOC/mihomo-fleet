@@ -266,8 +266,8 @@ rules:
 		t.Fatalf("global-chain config kept rule-providers:\n%s", raw)
 	}
 	rules, _ := cfg["rules"].([]any)
-	if len(rules) != 1 || rules[0] != "MATCH,"+globalChainSelectGroupName {
-		t.Fatalf("rules = %#v, want MATCH select", rules)
+	if len(rules) != 2 || rules[0] != "NETWORK,UDP,REJECT" || rules[1] != "MATCH,"+globalChainSelectGroupName {
+		t.Fatalf("rules = %#v, want UDP reject then MATCH select", rules)
 	}
 	groups, _ := cfg["proxy-groups"].([]any)
 	if len(groups) != 1 {
@@ -336,8 +336,8 @@ rules:
 		t.Fatal(err)
 	}
 	rules, _ := cfg["rules"].([]any)
-	if len(rules) != 1 || rules[0] != "MATCH,local-hop" {
-		t.Fatalf("rules = %#v, want MATCH local-hop", rules)
+	if len(rules) != 2 || rules[0] != "NETWORK,UDP,REJECT" || rules[1] != "MATCH,local-hop" {
+		t.Fatalf("rules = %#v, want UDP reject then MATCH local-hop", rules)
 	}
 	proxies, _ := cfg["proxies"].([]any)
 	if got := proxyMap(t, proxies, "local-hop")["dialer-proxy"]; got != globalChainSelectGroupName {

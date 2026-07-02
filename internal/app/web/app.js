@@ -1123,6 +1123,7 @@ async function refreshProxies() {
       ]);
       const proxies = payload.proxies || {};
       groups = alignProxyGroupsToProfileOrder(Object.values(proxies).filter((item) => Array.isArray(item.all)), profileGroups);
+      groups = filterRuntimeProxyGroups(selected, groups);
       apply = true;
       el.proxySource.textContent = "当前读取运行中的 mihomo 节点，选择后立即应用并保存。";
     } else {
@@ -1140,6 +1141,11 @@ async function refreshProxies() {
   } catch (err) {
     el.proxiesList.innerHTML = `<div class="message error">${escapeHTML(localizedMessage(err.message))}</div>`;
   }
+}
+
+function filterRuntimeProxyGroups(selected, groups) {
+  if (instanceMode(selected) !== instanceModes.globalChain) return groups;
+  return groups.filter((group) => String(group.name || "").toUpperCase() !== "GLOBAL");
 }
 
 function renderProxyGroups(groups, apply) {
