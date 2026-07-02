@@ -18,6 +18,9 @@ Python 服务。
 
 版本号来自根目录 `VERSION`，脚本会把版本注入到根目录 `./mihomo-fleet`，避免误用
 `go build cmd/mihomo-fleet/main.go` 生成 `./main`。
+如果没有通过 `-ldflags` 注入版本，程序会在启动时从同目录/当前目录的 `VERSION` 文件
+兜底读取版本号；没有 VERSION 文件时再使用 Go build info。所以本地 `go run`、普通
+`go build` 和 WebUI 顶部也会显示同一版本。
 
 查看当前二进制版本：
 
