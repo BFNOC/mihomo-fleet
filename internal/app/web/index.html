@@ -68,6 +68,15 @@
               <button id="createManualMode" class="active" data-source="manual" type="button">手写配置</button>
               <button id="createSubscriptionMode" data-source="subscription" type="button">订阅链接</button>
             </div>
+            <div class="form-grid two">
+              <label>
+                <span>实例模式</span>
+                <select id="createMode">
+                  <option value="rule">规则分流</option>
+                  <option value="global-chain">全局链式</option>
+                </select>
+              </label>
+            </div>
             <div id="createSubscriptionFields" class="form-grid subscription-fields hidden">
               <label>
                 <span>订阅链接</span>
@@ -96,6 +105,16 @@
               <span>配置内容</span>
               <textarea id="createConfig" spellcheck="false" wrap="off"></textarea>
             </label>
+            <div id="createChainFields" class="chain-fields hidden">
+              <label class="stacked">
+                <span>本地节点 YAML</span>
+                <textarea id="createLocalProxies" class="compact-code" spellcheck="false" wrap="off" placeholder="- name: local-hop"></textarea>
+              </label>
+              <label class="stacked">
+                <span>链路顺序</span>
+                <textarea id="createChain" class="compact-code" spellcheck="false" wrap="off" placeholder="local-hop&#10;节点选择"></textarea>
+              </label>
+            </div>
             <div class="actions">
               <button id="createSubmit" class="primary" type="button">创建</button>
               <button id="createCancel" type="button">取消</button>
@@ -146,6 +165,8 @@
                     <dd id="overviewMixed"></dd>
                     <dt>外部控制器</dt>
                     <dd id="overviewController"></dd>
+                    <dt>实例模式</dt>
+                    <dd id="overviewMode"></dd>
                     <dt>配置档</dt>
                     <dd id="overviewProfile"></dd>
                     <dt>配置文件</dt>
@@ -166,6 +187,13 @@
                     <span>配置档</span>
                     <select id="editProfile"></select>
                   </label>
+                  <label class="stacked">
+                    <span>实例模式</span>
+                    <select id="editMode">
+                      <option value="rule">规则分流</option>
+                      <option value="global-chain">全局链式</option>
+                    </select>
+                  </label>
                   <div class="form-grid two">
                     <label>
                       <span>混合端口</span>
@@ -174,6 +202,16 @@
                     <label>
                       <span>控制端口</span>
                       <input id="editControllerPort" type="number" min="1" max="65535">
+                    </label>
+                  </div>
+                  <div id="editChainFields" class="chain-fields hidden">
+                    <label class="stacked">
+                      <span>本地节点 YAML</span>
+                      <textarea id="editLocalProxies" class="compact-code" spellcheck="false" wrap="off"></textarea>
+                    </label>
+                    <label class="stacked">
+                      <span>链路顺序</span>
+                      <textarea id="editChain" class="compact-code" spellcheck="false" wrap="off"></textarea>
                     </label>
                   </div>
                   <button id="saveBasics" type="button">保存基础信息</button>

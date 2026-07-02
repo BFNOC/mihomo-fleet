@@ -108,6 +108,39 @@ export all_proxy='socks5://127.0.0.1:28001'
 替你改系统代理，也不会按进程名自动接管流量；分流边界由目标程序是否使用你填入的代理
 地址决定。把 ENV 内容导出到当前 shell 时，只影响当前 shell 及其后续启动的子进程。
 
+## 全局链式代理模式
+
+实例默认使用“规则分流”模式：运行配置会沿用 Profile 里的 `proxy-groups` 和 `rules`。
+如果只想使用订阅里的节点池，而不想继承订阅分流规则，可以把实例模式切到“全局链式”。
+
+全局链式模式会在启动时生成新的运行配置：
+
+- 保留订阅缓存里的 `proxies` 和 `proxy-providers`。
+- 丢弃订阅自带的 `proxy-groups`、`rules`、`rule-providers`。
+- 生成 `节点选择` 组，用来选择订阅节点或本地节点。
+- 生成 `代理链` relay 组，并写入 `MATCH,代理链`，进入该实例端口的流量全部走这条链。
+
+本地节点以 YAML 列表保存到实例上，不会写回共享订阅 Profile。例如：
+
+```yaml
+- name: local-hop
+  type: socks5
+  server: 127.0.0.1
+  port: 1080
+```
+
+链路顺序可以每行写一个名称，例如：
+
+```text
+local-hop
+节点选择
+```
+
+如果链路顺序留空，Fleet 会默认按“本地节点 YAML 顺序 + `节点选择`”生成链。订阅使用
+`proxy-providers` 时，provider 节点需要实例启动后由 mihomo 展开，停止状态下只能看到
+配置里已有的 inline 节点和本地节点。链路顺序只接受配置里已有的节点名、本地节点名或
+`节点选择` 组；`DIRECT`、`REJECT` 这类内置结果不会作为 relay 链路成员。
+
 ## mihomo 二进制文件放置
 
 推荐把 `mihomo` 和 `mihomo-fleet` 放在同一个执行目录中，不需要放进全局 `PATH`：

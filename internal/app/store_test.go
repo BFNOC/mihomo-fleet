@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 var portFreeTestMu sync.Mutex
@@ -91,6 +93,165 @@ func TestWriteRuntimeConfigInjectsLoopbackFields(t *testing.T) {
 	}
 }
 
+func TestWriteRuntimeConfigGlobalChainBuildsMatchRelay(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28003,
+		ControllerPort:    29003,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		Mode:              InstanceModeGlobalChain,
+		LocalProxies:      "- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n",
+		Chain:             []string{"local-hop", globalChainSelectGroupName},
+	}
+	user := `mixed-port: 1
+proxies:
+  - name: US-01
+    type: ss
+    server: example.com
+    port: 443
+proxy-providers:
+  remote:
+    type: http
+    url: https://example.com/sub
+    path: ./remote.yaml
+proxy-groups:
+  - name: Old
+    type: select
+    proxies:
+      - DIRECT
+rule-providers:
+  old:
+    type: http
+rules:
+  - GEOSITE,google,Old
+  - MATCH,Old
+`
+	if err := os.WriteFile(item.UserConfigPath, []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(item.RuntimeConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg["mixed-port"] != 28003 || cfg["external-controller"] != "127.0.0.1:29003" {
+		t.Fatalf("runtime fields were not injected: %#v", cfg)
+	}
+	if _, ok := cfg["rule-providers"]; ok {
+		t.Fatalf("global-chain config kept rule-providers:\n%s", raw)
+	}
+	rules, _ := cfg["rules"].([]any)
+	if len(rules) != 1 || rules[0] != "MATCH,"+globalChainRelayGroupName {
+		t.Fatalf("rules = %#v, want MATCH relay", rules)
+	}
+	groups, _ := cfg["proxy-groups"].([]any)
+	if len(groups) != 2 {
+		t.Fatalf("proxy-groups = %#v, want select + relay", groups)
+	}
+	selectGroup := groups[0].(map[string]any)
+	if selectGroup["name"] != globalChainSelectGroupName || selectGroup["type"] != "select" {
+		t.Fatalf("select group = %#v", selectGroup)
+	}
+	if got := strings.Join(anyStrings(selectGroup["proxies"]), ","); got != "US-01,local-hop" {
+		t.Fatalf("select proxies = %q", got)
+	}
+	if got := strings.Join(anyStrings(selectGroup["use"]), ","); got != "remote" {
+		t.Fatalf("select use = %q", got)
+	}
+	relayGroup := groups[1].(map[string]any)
+	if relayGroup["name"] != globalChainRelayGroupName || relayGroup["type"] != "relay" {
+		t.Fatalf("relay group = %#v", relayGroup)
+	}
+	if got := strings.Join(anyStrings(relayGroup["proxies"]), ","); got != "local-hop,"+globalChainSelectGroupName {
+		t.Fatalf("relay chain = %q", got)
+	}
+}
+
+func TestWriteRuntimeConfigGlobalChainRejectsLocalProxyTopLevelMap(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28003,
+		ControllerPort:    29003,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		Mode:              InstanceModeGlobalChain,
+		LocalProxies:      "mixed-port: 9999\n",
+	}
+	if err := os.WriteFile(item.UserConfigPath, []byte(subscriptionConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if err := writeRuntimeConfig(item, profile); err == nil || !strings.Contains(err.Error(), "parse local proxies") {
+		t.Fatalf("writeRuntimeConfig() error = %v, want parse local proxies", err)
+	}
+}
+
+func TestWriteRuntimeConfigGlobalChainRejectsInvalidChainInputs(t *testing.T) {
+	tests := []struct {
+		name         string
+		localProxies string
+		chain        []string
+		want         string
+	}{
+		{
+			name:         "unknown chain member",
+			localProxies: "- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n",
+			chain:        []string{"missing"},
+			want:         "chain references unknown proxy or group",
+		},
+		{
+			name:         "builtin direct is not a relay hop",
+			localProxies: "- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n",
+			chain:        []string{"DIRECT"},
+			want:         "chain references unknown proxy or group",
+		},
+		{
+			name:         "local conflicts with profile proxy",
+			localProxies: "- name: US-01\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n",
+			chain:        []string{"US-01"},
+			want:         "conflicts with profile proxy",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			item := &Instance{
+				ID:                "test",
+				Name:              "Test",
+				MixedPort:         28003,
+				ControllerPort:    29003,
+				Secret:            "secret-token",
+				UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+				RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+				Mode:              InstanceModeGlobalChain,
+				LocalProxies:      tt.localProxies,
+				Chain:             tt.chain,
+			}
+			if err := os.WriteFile(item.UserConfigPath, []byte(subscriptionConfig), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+			if err := writeRuntimeConfig(item, profile); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("writeRuntimeConfig() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestStoreSharesProfileAndPersistsPerInstanceSelection(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(dir)
@@ -127,6 +288,50 @@ func TestStoreSharesProfileAndPersistsPerInstanceSelection(t *testing.T) {
 	gotSecond, _ := reloaded.Get(second.ID)
 	if gotFirst.SelectedProxy != "HK-01" || gotSecond.SelectedProxy != "JP-01" {
 		t.Fatalf("selection was not stored per instance: %q %q", gotFirst.SelectedProxy, gotSecond.SelectedProxy)
+	}
+}
+
+func TestStorePersistsGlobalChainFieldsAndCloneCopiesThem(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Main", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := "- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n"
+	item, err := store.CreateWithOptions(createInstanceOptions{
+		Name:           "Chain",
+		ProfileID:      profile.ID,
+		MixedPort:      28030,
+		ControllerPort: 29030,
+		Mode:           InstanceModeGlobalChain,
+		LocalProxies:   local,
+		Chain:          []string{"local-hop", globalChainSelectGroupName},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewStore(store.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reloaded.Get(item.ID)
+	if !ok {
+		t.Fatal("expected reloaded instance")
+	}
+	if got.Mode != InstanceModeGlobalChain || got.LocalProxies != local || strings.Join(got.Chain, ",") != "local-hop,"+globalChainSelectGroupName {
+		t.Fatalf("global-chain fields were not persisted: %+v", got)
+	}
+	clone, err := reloaded.Clone(item.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone.Mode != item.Mode || clone.LocalProxies != local || strings.Join(clone.Chain, ",") != "local-hop,"+globalChainSelectGroupName {
+		t.Fatalf("clone lost global-chain fields: %+v", clone)
 	}
 }
 
@@ -326,4 +531,15 @@ func withPortFree(t *testing.T, fn func(int) bool) {
 		isPortFree = original
 		portFreeTestMu.Unlock()
 	})
+}
+
+func anyStrings(value any) []string {
+	items, _ := value.([]any)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			out = append(out, text)
+		}
+	}
+	return out
 }

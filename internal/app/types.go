@@ -2,6 +2,11 @@ package app
 
 import "time"
 
+const (
+	InstanceModeRule        = "rule"
+	InstanceModeGlobalChain = "global-chain"
+)
+
 const defaultUserConfig = `mixed-port: 7890
 allow-lan: false
 mode: rule
@@ -33,6 +38,9 @@ type Instance struct {
 	Secret            string            `json:"secret"`
 	UserConfigPath    string            `json:"userConfigPath"`
 	RuntimeConfigPath string            `json:"runtimeConfigPath"`
+	Mode              string            `json:"mode,omitempty"`
+	LocalProxies      string            `json:"localProxies,omitempty"`
+	Chain             []string          `json:"chain,omitempty"`
 	SelectedProxies   map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup     string            `json:"selectedGroup,omitempty"`
 	SelectedProxy     string            `json:"selectedProxy,omitempty"`
@@ -66,6 +74,9 @@ type InstanceView struct {
 	ControllerPort    int               `json:"controllerPort"`
 	UserConfigPath    string            `json:"userConfigPath"`
 	RuntimeConfigPath string            `json:"runtimeConfigPath"`
+	Mode              string            `json:"mode"`
+	LocalProxies      string            `json:"localProxies,omitempty"`
+	Chain             []string          `json:"chain,omitempty"`
 	SelectedProxies   map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup     string            `json:"selectedGroup,omitempty"`
 	SelectedProxy     string            `json:"selectedProxy,omitempty"`

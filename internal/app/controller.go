@@ -214,7 +214,13 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusNotFound, fmt.Errorf("instance %q not found", instanceID))
 					return
 				}
-				selections = normalizeSelections(item.SelectedProxies, item.SelectedGroup, item.SelectedProxy)
+				groups, err := profileProxyGroupsForInstance(cfg, item)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeJSON(w, map[string]any{"groups": groups})
+				return
 			}
 			groups, err := parseProfileProxyGroups(cfg, selections)
 			if err != nil {
@@ -365,11 +371,14 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			Name           string `json:"name"`
-			ProfileID      string `json:"profileId"`
-			Config         string `json:"config"`
-			MixedPort      int    `json:"mixedPort"`
-			ControllerPort int    `json:"controllerPort"`
+			Name           string   `json:"name"`
+			ProfileID      string   `json:"profileId"`
+			Config         string   `json:"config"`
+			MixedPort      int      `json:"mixedPort"`
+			ControllerPort int      `json:"controllerPort"`
+			Mode           string   `json:"mode"`
+			LocalProxies   string   `json:"localProxies"`
+			Chain          []string `json:"chain"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -378,7 +387,16 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.Name) == "" {
 			req.Name = "New instance"
 		}
-		item, err := c.store.Create(req.Name, req.ProfileID, req.Config, req.MixedPort, req.ControllerPort)
+		item, err := c.store.CreateWithOptions(createInstanceOptions{
+			Name:           req.Name,
+			ProfileID:      req.ProfileID,
+			Config:         req.Config,
+			MixedPort:      req.MixedPort,
+			ControllerPort: req.ControllerPort,
+			Mode:           req.Mode,
+			LocalProxies:   req.LocalProxies,
+			Chain:          req.Chain,
+		})
 		if err != nil {
 			status := http.StatusInternalServerError
 			if isPortUnavailableError(err) {
@@ -484,11 +502,14 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, view)
 	case http.MethodPut:
 		var req struct {
-			Name           string `json:"name"`
-			ProfileID      string `json:"profileId"`
-			Config         string `json:"config"`
-			MixedPort      int    `json:"mixedPort"`
-			ControllerPort int    `json:"controllerPort"`
+			Name           string    `json:"name"`
+			ProfileID      string    `json:"profileId"`
+			Config         string    `json:"config"`
+			MixedPort      int       `json:"mixedPort"`
+			ControllerPort int       `json:"controllerPort"`
+			Mode           string    `json:"mode"`
+			LocalProxies   *string   `json:"localProxies"`
+			Chain          *[]string `json:"chain"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -522,7 +543,16 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 				return
 			}
 		}
-		item, err := c.store.Update(id, req.Name, req.ProfileID, req.Config, req.MixedPort, req.ControllerPort)
+		item, err := c.store.UpdateWithOptions(id, updateInstanceOptions{
+			Name:           req.Name,
+			ProfileID:      req.ProfileID,
+			Config:         req.Config,
+			MixedPort:      req.MixedPort,
+			ControllerPort: req.ControllerPort,
+			Mode:           req.Mode,
+			LocalProxies:   req.LocalProxies,
+			Chain:          req.Chain,
+		})
 		if err != nil {
 			status := http.StatusBadRequest
 			if isPortUnavailableError(err) {

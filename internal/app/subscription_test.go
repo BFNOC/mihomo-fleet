@@ -108,6 +108,38 @@ func TestApplySubscriptionFetchClearsRemovedSelection(t *testing.T) {
 	}
 }
 
+func TestApplySubscriptionFetchKeepsGlobalChainSelection(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/sub", true, 360, &subscriptionFetchResult{Config: subscriptionConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWithOptions(createInstanceOptions{
+		Name:           "Chain gateway",
+		ProfileID:      profile.ID,
+		MixedPort:      28022,
+		ControllerPort: 29022,
+		Mode:           InstanceModeGlobalChain,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetSelection(item.ID, globalChainSelectGroupName, "US-01"); err != nil {
+		t.Fatal(err)
+	}
+	nextConfig := strings.Replace(subscriptionConfig, "  - MATCH,Proxy\n", "  - MATCH,DIRECT\n", 1)
+	if _, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: nextConfig}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := store.Get(item.ID)
+	if updated.SelectedProxies[globalChainSelectGroupName] != "US-01" {
+		t.Fatalf("global-chain selection was cleared: %+v", updated)
+	}
+}
+
 func TestStoreGetClonesSelectedProxies(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

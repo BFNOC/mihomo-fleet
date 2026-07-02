@@ -53,9 +53,23 @@ type createInstanceOptions struct {
 	ControllerPort  int
 	MixedStart      int
 	ControllerStart int
+	Mode            string
+	LocalProxies    string
+	Chain           []string
 	SelectedProxies map[string]string
 	SelectedGroup   string
 	SelectedProxy   string
+}
+
+type updateInstanceOptions struct {
+	Name           string
+	ProfileID      string
+	Config         string
+	MixedPort      int
+	ControllerPort int
+	Mode           string
+	LocalProxies   *string
+	Chain          *[]string
 }
 
 func NewStore(dataDir string) (*Store, error) {
@@ -97,6 +111,8 @@ func (s *Store) load() error {
 	}
 	for _, item := range data.Instances {
 		copy := *item
+		copy.Mode = instanceMode(copy.Mode)
+		copy.Chain = normalizeChainNames(copy.Chain)
 		copy.SelectedProxies = normalizeSelections(copy.SelectedProxies, copy.SelectedGroup, copy.SelectedProxy)
 		s.items[item.ID] = &copy
 	}
@@ -151,6 +167,7 @@ func (s *Store) List() []*Instance {
 	out := make([]*Instance, 0, len(s.items))
 	for _, item := range s.items {
 		copy := *item
+		copy.Chain = append([]string{}, item.Chain...)
 		copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 		out = append(out, &copy)
 	}
@@ -165,6 +182,7 @@ func (s *Store) Get(id string) (*Instance, bool) {
 		return nil, false
 	}
 	copy := *item
+	copy.Chain = append([]string{}, item.Chain...)
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, true
 }
@@ -309,6 +327,7 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	for _, item := range s.items {
 		if item.ProfileID == id {
 			copy := *item
+			copy.Chain = append([]string{}, item.Chain...)
 			copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 			itemSnapshots[item.ID] = copy
 		}
@@ -328,7 +347,7 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	profile.SubscriptionInfo = fetched.Info
 	profile.UpdatedAt = now
 	for _, item := range s.items {
-		if item.ProfileID == id {
+		if item.ProfileID == id && instanceMode(item.Mode) != InstanceModeGlobalChain {
 			reconcileInstanceSelection(item, validSelections)
 		}
 	}
@@ -386,6 +405,19 @@ func (s *Store) Create(name, profileID, config string, mixedPort, controllerPort
 	})
 }
 
+func (s *Store) CreateWithOptions(opts createInstanceOptions) (*Instance, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if opts.MixedStart == 0 {
+		opts.MixedStart = 28000
+	}
+	if opts.ControllerStart == 0 {
+		opts.ControllerStart = 29000
+	}
+	return s.createInstanceLocked(opts)
+}
+
 func (s *Store) Clone(id, name string, mixedPort, controllerPort int) (*Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -408,12 +440,24 @@ func (s *Store) Clone(id, name string, mixedPort, controllerPort int) (*Instance
 		SelectedProxies: cloneStringMap(source.SelectedProxies),
 		SelectedGroup:   source.SelectedGroup,
 		SelectedProxy:   source.SelectedProxy,
+		Mode:            source.Mode,
+		LocalProxies:    source.LocalProxies,
+		Chain:           append([]string{}, source.Chain...),
 	})
 }
 
 func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, error) {
 	now := time.Now().UTC()
 	id := uniqueID(opts.Name, s.items)
+	mode, err := normalizeInstanceMode(opts.Mode)
+	if err != nil {
+		return nil, err
+	}
+	if mode == InstanceModeGlobalChain {
+		if _, _, err := parseLocalProxyItems(opts.LocalProxies); err != nil {
+			return nil, err
+		}
+	}
 	used := s.usedPortsLocked("")
 	if opts.MixedStart == 0 {
 		opts.MixedStart = 28000
@@ -478,6 +522,9 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		Secret:            secret,
 		UserConfigPath:    profile.ConfigPath,
 		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		Mode:              mode,
+		LocalProxies:      opts.LocalProxies,
+		Chain:             normalizeChainNames(opts.Chain),
 		SelectedProxies:   cloneStringMap(opts.SelectedProxies),
 		SelectedGroup:     opts.SelectedGroup,
 		SelectedProxy:     opts.SelectedProxy,
@@ -495,6 +542,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		return nil, err
 	}
 	copy := *item
+	copy.Chain = append([]string{}, item.Chain...)
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
 }
@@ -528,6 +576,16 @@ func (s *Store) SuggestPorts() (int, int) {
 }
 
 func (s *Store) Update(id, name, profileID, config string, mixedPort, controllerPort int) (*Instance, error) {
+	return s.UpdateWithOptions(id, updateInstanceOptions{
+		Name:           name,
+		ProfileID:      profileID,
+		Config:         config,
+		MixedPort:      mixedPort,
+		ControllerPort: controllerPort,
+	})
+}
+
+func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -536,48 +594,66 @@ func (s *Store) Update(id, name, profileID, config string, mixedPort, controller
 		return nil, fmt.Errorf("instance %q not found", id)
 	}
 	nextName := item.Name
-	if name != "" {
-		nextName = name
+	if opts.Name != "" {
+		nextName = opts.Name
 	}
 	nextProfileID := item.ProfileID
 	nextUserConfigPath := item.UserConfigPath
 	clearSelection := false
-	if profileID != "" {
-		profile, ok := s.profiles[profileID]
+	if opts.ProfileID != "" {
+		profile, ok := s.profiles[opts.ProfileID]
 		if !ok {
-			return nil, fmt.Errorf("profile %q not found", profileID)
+			return nil, fmt.Errorf("profile %q not found", opts.ProfileID)
 		}
-		if item.ProfileID != profileID {
-			nextProfileID = profileID
+		if item.ProfileID != opts.ProfileID {
+			nextProfileID = opts.ProfileID
 			nextUserConfigPath = profile.ConfigPath
 			clearSelection = true
 		}
 	}
 	nextMixedPort := item.MixedPort
 	nextControllerPort := item.ControllerPort
-	if mixedPort > 0 {
-		nextMixedPort = mixedPort
+	if opts.MixedPort > 0 {
+		nextMixedPort = opts.MixedPort
 	}
-	if controllerPort > 0 {
-		nextControllerPort = controllerPort
+	if opts.ControllerPort > 0 {
+		nextControllerPort = opts.ControllerPort
 	}
 	if nextMixedPort == nextControllerPort {
 		return nil, fmt.Errorf("controller port %d is unavailable", nextControllerPort)
 	}
 	used := s.usedPortsLocked(id)
-	if mixedPort > 0 {
-		if used[mixedPort] || !isPortFree(mixedPort) {
-			return nil, fmt.Errorf("mixed proxy port %d is unavailable", mixedPort)
+	if opts.MixedPort > 0 {
+		if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
+			return nil, fmt.Errorf("mixed proxy port %d is unavailable", opts.MixedPort)
 		}
-		used[mixedPort] = true
+		used[opts.MixedPort] = true
 	}
-	if controllerPort > 0 {
-		if used[controllerPort] || !isPortFree(controllerPort) {
-			return nil, fmt.Errorf("controller port %d is unavailable", controllerPort)
+	if opts.ControllerPort > 0 {
+		if used[opts.ControllerPort] || !isPortFree(opts.ControllerPort) {
+			return nil, fmt.Errorf("controller port %d is unavailable", opts.ControllerPort)
 		}
-		used[controllerPort] = true
+		used[opts.ControllerPort] = true
+	}
+	nextMode := item.Mode
+	if opts.Mode != "" {
+		mode, err := normalizeInstanceMode(opts.Mode)
+		if err != nil {
+			return nil, err
+		}
+		nextMode = mode
+	}
+	nextLocalProxies := item.LocalProxies
+	if opts.LocalProxies != nil {
+		nextLocalProxies = *opts.LocalProxies
+	}
+	if nextMode == InstanceModeGlobalChain {
+		if _, _, err := parseLocalProxyItems(nextLocalProxies); err != nil {
+			return nil, err
+		}
 	}
 	snapshot := *item
+	snapshot.Chain = append([]string{}, item.Chain...)
 	snapshot.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	item.Name = nextName
 	if clearSelection {
@@ -589,11 +665,17 @@ func (s *Store) Update(id, name, profileID, config string, mixedPort, controller
 	item.UserConfigPath = nextUserConfigPath
 	item.MixedPort = nextMixedPort
 	item.ControllerPort = nextControllerPort
+	item.Mode = nextMode
+	item.LocalProxies = nextLocalProxies
+	if opts.Chain != nil {
+		item.Chain = normalizeChainNames(*opts.Chain)
+	}
 	var previousConfig []byte
-	if config != "" {
+	if opts.Config != "" {
 		profile, ok := s.profiles[item.ProfileID]
 		if !ok {
 			*item = snapshot
+			item.Chain = append([]string{}, snapshot.Chain...)
 			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
 			return nil, fmt.Errorf("profile %q not found", item.ProfileID)
 		}
@@ -601,11 +683,13 @@ func (s *Store) Update(id, name, profileID, config string, mixedPort, controller
 		previousConfig, err = os.ReadFile(profile.ConfigPath)
 		if err != nil {
 			*item = snapshot
+			item.Chain = append([]string{}, snapshot.Chain...)
 			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
 			return nil, err
 		}
-		if err := writeFileAtomic(profile.ConfigPath, []byte(config), 0o600); err != nil {
+		if err := writeFileAtomic(profile.ConfigPath, []byte(opts.Config), 0o600); err != nil {
 			*item = snapshot
+			item.Chain = append([]string{}, snapshot.Chain...)
 			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
 			return nil, err
 		}
@@ -614,8 +698,9 @@ func (s *Store) Update(id, name, profileID, config string, mixedPort, controller
 	item.UpdatedAt = time.Now().UTC()
 	if err := s.saveLocked(); err != nil {
 		*item = snapshot
+		item.Chain = append([]string{}, snapshot.Chain...)
 		item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
-		if config != "" && previousConfig != nil {
+		if opts.Config != "" && previousConfig != nil {
 			profile, ok := s.profiles[nextProfileID]
 			if ok {
 				if rollbackErr := writeFileAtomic(profile.ConfigPath, previousConfig, 0o600); rollbackErr != nil {
@@ -626,6 +711,7 @@ func (s *Store) Update(id, name, profileID, config string, mixedPort, controller
 		return nil, err
 	}
 	copy := *item
+	copy.Chain = append([]string{}, item.Chain...)
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
 }
@@ -648,6 +734,7 @@ func (s *Store) SetSelection(id, group, proxy string) (*Instance, error) {
 		return nil, err
 	}
 	copy := *item
+	copy.Chain = append([]string{}, item.Chain...)
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
 }
@@ -698,6 +785,7 @@ func (s *Store) saveLocked() error {
 	data := storedData{Instances: make([]*Instance, 0, len(s.items))}
 	for _, item := range s.items {
 		copy := *item
+		copy.Chain = append([]string{}, item.Chain...)
 		copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 		data.Instances = append(data.Instances, &copy)
 	}

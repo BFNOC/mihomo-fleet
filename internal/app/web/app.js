@@ -23,6 +23,10 @@ const latencyKinds = {
   url: "url",
   real: "real",
 };
+const instanceModes = {
+  rule: "rule",
+  globalChain: "global-chain",
+};
 const proxyCopyDefs = [
   { id: "addr", label: "地址", title: "复制主机和端口" },
   { id: "http", label: "HTTP", title: "复制 HTTP 代理地址" },
@@ -74,6 +78,7 @@ const errorLabels = {
   "proxy is required for real latency": "真延迟需要指定单个节点。",
   "latency kind must be url or real": "测速类型无效。",
   "latency test URL must start with http:// or https://": "测试 URL 必须以 http:// 或 https:// 开头。",
+  "global-chain mode requires proxies, proxy-providers, or local proxies": "全局链式模式需要订阅节点、provider 或本地节点。",
 };
 
 const errorPatterns = [
@@ -94,6 +99,14 @@ const errorPatterns = [
   [/^subscription host resolves to blocked address (.+)$/, () => "订阅链接解析到本机、内网或保留地址，已阻止。"],
   [/^remote profile data is invalid yaml: (.+)$/, (match) => `订阅内容不是有效 YAML：${match[1]}`],
   [/^remote profile must contain proxies or proxy-providers$/, () => "订阅内容缺少 proxies 或 proxy-providers。"],
+  [/^instance mode "(.+)" is invalid$/, (match) => `实例模式 ${match[1]} 无效。`],
+  [/^parse local proxies: (.+)$/, (match) => `解析本地节点失败：${match[1]}`],
+  [/^local proxy (.+) is missing name$/, (match) => `本地节点 ${match[1]} 缺少 name。`],
+  [/^local proxy name "(.+)" is duplicated$/, (match) => `本地节点 ${match[1]} 重名。`],
+  [/^local proxy name "(.+)" conflicts with generated global-chain group$/, (match) => `本地节点 ${match[1]} 与内置链路组重名。`],
+  [/^local proxy name "(.+)" conflicts with profile proxy$/, (match) => `本地节点 ${match[1]} 与配置档节点重名。`],
+  [/^chain references unknown proxy or group "(.+)"$/, (match) => `链路顺序引用了不存在的节点或组：${match[1]}。`],
+  [/^chain cannot reference generated relay group "(.+)"$/, (match) => `链路顺序不能引用 ${match[1]} 自身。`],
 ];
 
 const el = {
@@ -117,6 +130,7 @@ const el = {
   createSourceTabs: document.querySelector("#createSourceTabs"),
   createManualMode: document.querySelector("#createManualMode"),
   createSubscriptionMode: document.querySelector("#createSubscriptionMode"),
+  createMode: document.querySelector("#createMode"),
   createSubscriptionFields: document.querySelector("#createSubscriptionFields"),
   createSubscriptionUrl: document.querySelector("#createSubscriptionUrl"),
   createAutoUpdate: document.querySelector("#createAutoUpdate"),
@@ -125,6 +139,9 @@ const el = {
   createControllerPort: document.querySelector("#createControllerPort"),
   createConfigWrap: document.querySelector("#createConfigWrap"),
   createConfig: document.querySelector("#createConfig"),
+  createChainFields: document.querySelector("#createChainFields"),
+  createLocalProxies: document.querySelector("#createLocalProxies"),
+  createChain: document.querySelector("#createChain"),
   createSubmit: document.querySelector("#createSubmit"),
   createCancel: document.querySelector("#createCancel"),
   detailName: document.querySelector("#detailName"),
@@ -140,14 +157,19 @@ const el = {
   deleteBtn: document.querySelector("#deleteBtn"),
   overviewMixed: document.querySelector("#overviewMixed"),
   overviewController: document.querySelector("#overviewController"),
+  overviewMode: document.querySelector("#overviewMode"),
   overviewProfile: document.querySelector("#overviewProfile"),
   overviewUserConfig: document.querySelector("#overviewUserConfig"),
   overviewRuntimeConfig: document.querySelector("#overviewRuntimeConfig"),
   overviewSelection: document.querySelector("#overviewSelection"),
   editName: document.querySelector("#editName"),
   editProfile: document.querySelector("#editProfile"),
+  editMode: document.querySelector("#editMode"),
   editMixedPort: document.querySelector("#editMixedPort"),
   editControllerPort: document.querySelector("#editControllerPort"),
+  editChainFields: document.querySelector("#editChainFields"),
+  editLocalProxies: document.querySelector("#editLocalProxies"),
+  editChain: document.querySelector("#editChain"),
   saveBasics: document.querySelector("#saveBasics"),
   profileMeta: document.querySelector("#profileMeta"),
   subscriptionSettings: document.querySelector("#subscriptionSettings"),
@@ -183,6 +205,14 @@ function statusText(status) {
 
 function statusClass(status) {
   return statusLabels[status] ? status : "unknown";
+}
+
+function instanceMode(item) {
+  return item?.mode === instanceModes.globalChain ? instanceModes.globalChain : instanceModes.rule;
+}
+
+function modeLabel(mode) {
+  return mode === instanceModes.globalChain ? "全局链式" : "规则分流";
 }
 
 function localizedMessage(message) {
@@ -772,14 +802,19 @@ function renderPanels(selected) {
   el.metricController.textContent = selected.controllerPort;
   el.overviewMixed.textContent = proxyEndpointText(selected.mixedPort);
   el.overviewController.textContent = `127.0.0.1:${selected.controllerPort}`;
+  el.overviewMode.textContent = modeLabel(instanceMode(selected));
   el.overviewProfile.textContent = selected.profileName || selected.profileId || "无";
   el.overviewUserConfig.textContent = selected.profileConfigPath || selected.userConfigPath;
   el.overviewRuntimeConfig.textContent = selected.runtimeConfigPath;
   el.overviewSelection.textContent = selectionSummary(selected);
   el.editName.value = selected.name;
   renderProfileOptions(el.editProfile, selected.profileId, false);
+  el.editMode.value = instanceMode(selected);
   el.editMixedPort.value = selected.mixedPort;
   el.editControllerPort.value = selected.controllerPort;
+  el.editLocalProxies.value = selected.localProxies || "";
+  el.editChain.value = chainToText(selected.chain);
+  applyModeFields("edit", el.editMode.value);
   el.startBtn.disabled = state.bulkRunning || selected.status === "running" || selected.status === "starting";
   el.stopBtn.disabled = state.bulkRunning || selected.status !== "running";
   el.restartBtn.disabled = state.bulkRunning;
@@ -795,6 +830,22 @@ function selectionSummary(item) {
     return entries.map(([group, proxy]) => `${group} -> ${proxy}`).join("；");
   }
   return item.selectedProxy ? `${item.selectedGroup} -> ${item.selectedProxy}` : "无";
+}
+
+function chainFromText(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function chainToText(values) {
+  return Array.isArray(values) ? values.join("\n") : "";
+}
+
+function applyModeFields(prefix, mode) {
+  const chainMode = mode === instanceModes.globalChain;
+  el[`${prefix}ChainFields`].classList.toggle("hidden", !chainMode);
 }
 
 function renderSubscriptionSettings(selected) {
@@ -852,13 +903,15 @@ async function updateCreateProfileControls() {
   }
   const createNew = el.createProfile.value === newProfileValue || state.profiles.length === 0;
   const subscriptionMode = state.createSource === "subscription" && createNew;
+  const chainMode = el.createMode.value === instanceModes.globalChain;
   el.createSourceTabs.classList.toggle("hidden", !createNew);
   el.createManualMode.classList.toggle("active", state.createSource === "manual");
   el.createSubscriptionMode.classList.toggle("active", state.createSource === "subscription");
   el.createSubscriptionFields.classList.toggle("hidden", !subscriptionMode);
-  el.createConfigWrap.classList.toggle("hidden", subscriptionMode);
+  el.createConfigWrap.classList.toggle("hidden", subscriptionMode || chainMode);
+  applyModeFields("create", el.createMode.value);
   el.createProfileName.disabled = !createNew;
-  el.createConfig.disabled = !createNew || subscriptionMode;
+  el.createConfig.disabled = !createNew || subscriptionMode || chainMode;
   el.createSubscriptionUrl.disabled = !subscriptionMode;
   el.createAutoUpdate.disabled = !subscriptionMode;
   el.createUpdateInterval.disabled = !subscriptionMode;
@@ -921,6 +974,7 @@ function showCreate() {
   state.creating = true;
   state.createSource = "manual";
   el.createName.value = "";
+  el.createMode.value = instanceModes.rule;
   el.createMixedPort.value = "";
   el.createControllerPort.value = "";
   renderProfileOptions(el.createProfile, state.profiles[0]?.id || newProfileValue, true);
@@ -930,6 +984,8 @@ function showCreate() {
   el.createUpdateInterval.value = "360";
   el.createConfig.value = defaultConfig;
   el.createConfig.dataset.profileId = "";
+  el.createLocalProxies.value = "";
+  el.createChain.value = "";
   showMessage("");
   render();
   fillSuggestedPorts();
@@ -1009,6 +1065,7 @@ function renderProxyGroups(groups, apply) {
   for (const group of groups) {
     const names = (group.all || []).filter((name) => !filter || name.toLowerCase().includes(filter) || group.name.toLowerCase().includes(filter));
     if (!names.length) continue;
+    const selectableGroup = isSelectableProxyGroup(group);
     const section = document.createElement("section");
     section.className = "proxy-group";
 
@@ -1068,8 +1125,11 @@ function renderProxyGroups(groups, apply) {
       button.type = "button";
       button.className = `proxy-choice ${group.now === name ? "selected" : ""}`;
       button.title = name;
-      button.setAttribute("aria-pressed", group.now === name ? "true" : "false");
-      button.addEventListener("click", () => selectProxy(group.name, name, apply));
+      button.disabled = !selectableGroup;
+      if (selectableGroup) {
+        button.setAttribute("aria-pressed", group.now === name ? "true" : "false");
+        button.addEventListener("click", () => selectProxy(group.name, name, apply));
+      }
       const nameLabel = document.createElement("span");
       nameLabel.className = "proxy-name";
       nameLabel.textContent = name;
@@ -1082,6 +1142,11 @@ function renderProxyGroups(groups, apply) {
   if (!el.proxiesList.children.length) {
     el.proxiesList.innerHTML = `<div class="warning">没有匹配的节点。</div>`;
   }
+}
+
+function isSelectableProxyGroup(group) {
+  const type = String(group?.type || "select").toLowerCase();
+  return type !== "relay";
 }
 
 function renderLatencyChip(selected, groupName, proxyName, kind) {
@@ -1290,6 +1355,7 @@ el.createProfile.addEventListener("change", () => {
   el.createConfig.dataset.profileId = "";
   updateCreateProfileControls();
 });
+el.createMode.addEventListener("change", updateCreateProfileControls);
 el.createManualMode.addEventListener("click", () => {
   state.createSource = "manual";
   updateCreateProfileControls();
@@ -1325,6 +1391,9 @@ el.createSubmit.addEventListener("click", async () => {
       profileId,
       mixedPort: Number(el.createMixedPort.value) || 0,
       controllerPort: Number(el.createControllerPort.value) || 0,
+      mode: el.createMode.value,
+      localProxies: el.createMode.value === instanceModes.globalChain ? el.createLocalProxies.value : "",
+      chain: el.createMode.value === instanceModes.globalChain ? chainFromText(el.createChain.value) : [],
     };
     const created = await api("/api/instances", {
       method: "POST",
@@ -1396,6 +1465,10 @@ el.deleteBtn.addEventListener("click", async () => {
   }
 });
 
+el.editMode.addEventListener("change", () => {
+  applyModeFields("edit", el.editMode.value);
+});
+
 el.saveBasics.addEventListener("click", async () => {
   const selected = active();
   if (!selected) return;
@@ -1407,6 +1480,9 @@ el.saveBasics.addEventListener("click", async () => {
         profileId: el.editProfile.value,
         mixedPort: Number(el.editMixedPort.value),
         controllerPort: Number(el.editControllerPort.value),
+        mode: el.editMode.value,
+        localProxies: el.editMode.value === instanceModes.globalChain ? el.editLocalProxies.value : "",
+        chain: el.editMode.value === instanceModes.globalChain ? chainFromText(el.editChain.value) : [],
       }),
     });
     showMessage("基础信息已保存。");

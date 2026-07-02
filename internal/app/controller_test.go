@@ -264,6 +264,21 @@ func TestHandleInstancesCreateAllocatesPortsInStore(t *testing.T) {
 	}
 }
 
+func TestHandleInstancesCreateAcceptsGlobalChainFields(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	profile, err := c.store.CreateProfile("Main", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"name":"Chain","profileId":"` + profile.ID + `","mode":"global-chain","localProxies":"- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n","chain":["local-hop","` + globalChainSelectGroupName + `"]}`
+	view := postInstanceJSON(t, c, body, http.StatusCreated)
+	if view.Mode != InstanceModeGlobalChain || view.LocalProxies == "" || strings.Join(view.Chain, ",") != "local-hop,"+globalChainSelectGroupName {
+		t.Fatalf("view lost global-chain fields: %+v", view)
+	}
+}
+
 func TestHandleInstancesCreateReportsPortConflict(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 	c := newBatchTestController(t)
