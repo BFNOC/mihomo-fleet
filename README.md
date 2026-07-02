@@ -118,7 +118,7 @@ export all_proxy='socks5://127.0.0.1:28001'
 - 保留订阅缓存里的 `proxies` 和 `proxy-providers`。
 - 丢弃订阅自带的 `proxy-groups`、`rules`、`rule-providers`。
 - 生成 `节点选择` 组，用来选择订阅节点或本地节点。
-- 生成 `代理链` relay 组，并写入 `MATCH,代理链`，进入该实例端口的流量全部走这条链。
+- 使用 mihomo 的 `dialer-proxy` 串起前置节点，并写入 `MATCH,节点选择`，进入该实例端口的流量全部走选中的出口节点。
 
 本地节点以 YAML 列表保存到实例上，不会写回共享订阅 Profile。例如：
 
@@ -136,10 +136,22 @@ local-hop
 节点选择
 ```
 
-如果链路顺序留空，Fleet 会默认按“本地节点 YAML 顺序 + `节点选择`”生成链。订阅使用
-`proxy-providers` 时，provider 节点需要实例启动后由 mihomo 展开，停止状态下只能看到
-配置里已有的 inline 节点和本地节点。链路顺序只接受配置里已有的节点名、本地节点名或
-`节点选择` 组；`DIRECT`、`REJECT` 这类内置结果不会作为 relay 链路成员。
+链路顺序的方向是从上到下：上面的节点是前置入口，最后一行是最终出口。上例表示
+`节点选择` 里选中的订阅节点会通过 `local-hop` 拨号。也可以反过来写：
+
+```text
+节点选择
+local-hop
+```
+
+这表示 `local-hop` 会通过 `节点选择` 里选中的订阅节点拨号。Fleet 会把链路里已经固定使用的
+节点从 `节点选择` 的候选项里移除，避免选到自己形成环。
+
+如果链路顺序留空，Fleet 会默认按“本地节点 YAML 顺序 + `节点选择`”生成链；如果只有本地节点、
+没有订阅节点，则退化为只走 `节点选择`。订阅使用 `proxy-providers` 时，provider 节点会通过
+`override.dialer-proxy` 接入链路；provider 节点需要实例启动后由 mihomo 展开，停止状态下只能看到
+配置里已有的 inline 节点和本地节点。链路成员只接受配置里已有的 inline 节点名、本地节点名或
+`节点选择` 组；`DIRECT`、`REJECT` 这类内置结果不能作为链路成员。
 
 ## mihomo 二进制文件放置
 

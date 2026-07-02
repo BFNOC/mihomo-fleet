@@ -83,67 +83,174 @@ func applyGlobalChainConfig(cfg map[string]any, item *Instance) error {
 		return fmt.Errorf("global-chain mode requires proxies, proxy-providers, or local proxies")
 	}
 
-	known := make(map[string]bool)
 	for _, name := range inlineNames {
 		if name == globalChainSelectGroupName || name == globalChainRelayGroupName {
 			return fmt.Errorf("proxy name %q conflicts with generated global-chain group", name)
 		}
-		known[name] = true
 	}
+	inlineKnown := stringSet(inlineNames)
 	for _, name := range localNames {
-		if known[name] {
+		if inlineKnown[name] {
 			return fmt.Errorf("local proxy name %q conflicts with profile proxy", name)
 		}
-		known[name] = true
+	}
+	plan, err := buildGlobalChainPlan(item, inlineNames, localNames, providerNames)
+	if err != nil {
+		return err
 	}
 
 	for _, proxy := range localProxies {
 		proxies = append(proxies, proxy)
 	}
+	applyDialerProxyChain(proxies, plan)
 	if len(proxies) > 0 {
 		cfg["proxies"] = proxies
 	} else {
 		delete(cfg, "proxies")
 	}
+	if plan.selectDialer != "" && len(providerNames) > 0 {
+		applyProviderDialerProxy(cfg["proxy-providers"], plan.selectDialer)
+	}
 
-	selectNames := append(append([]string{}, inlineNames...), localNames...)
 	selectGroup := map[string]any{
 		"name": globalChainSelectGroupName,
 		"type": "select",
 	}
-	if len(selectNames) > 0 {
-		selectGroup["proxies"] = selectNames
+	if len(plan.selectNames) > 0 {
+		selectGroup["proxies"] = plan.selectNames
 	}
 	if len(providerNames) > 0 {
 		selectGroup["use"] = providerNames
 	}
 
-	known[globalChainSelectGroupName] = true
-	chain := normalizeChainNames(item.Chain)
-	if len(chain) == 0 {
-		chain = append(append([]string{}, localNames...), globalChainSelectGroupName)
-	}
-	for _, name := range chain {
-		if name == globalChainRelayGroupName {
-			return fmt.Errorf("chain cannot reference generated relay group %q", name)
-		}
-		if !known[name] {
-			return fmt.Errorf("chain references unknown proxy or group %q", name)
-		}
-	}
-
-	relayGroup := map[string]any{
-		"name":    globalChainRelayGroupName,
-		"type":    "relay",
-		"proxies": chain,
-	}
 	cfg["mode"] = "rule"
-	cfg["proxy-groups"] = []any{selectGroup, relayGroup}
-	cfg["rules"] = []string{fmt.Sprintf("MATCH,%s", globalChainRelayGroupName)}
+	cfg["proxy-groups"] = []any{selectGroup}
+	cfg["rules"] = []string{fmt.Sprintf("MATCH,%s", plan.matchTarget)}
 	for _, key := range []string{"rule-providers", "sub-rules", "script"} {
 		delete(cfg, key)
 	}
 	return nil
+}
+
+type globalChainPlan struct {
+	chain        []string
+	matchTarget  string
+	proxyDialers map[string]string
+	selectDialer string
+	selectNames  []string
+	usesSelect   bool
+}
+
+func buildGlobalChainPlan(item *Instance, inlineNames, localNames, providerNames []string) (globalChainPlan, error) {
+	chain := normalizeChainNames(item.Chain)
+	if len(chain) == 0 {
+		chain = []string{globalChainSelectGroupName}
+		if len(localNames) > 0 && (len(inlineNames) > 0 || len(providerNames) > 0) {
+			chain = append(append([]string{}, localNames...), globalChainSelectGroupName)
+		}
+	}
+	for _, name := range chain {
+		if name == globalChainRelayGroupName {
+			return globalChainPlan{}, fmt.Errorf("chain cannot reference generated relay group %q", name)
+		}
+	}
+
+	proxyNames := stringSet(append(append([]string{}, inlineNames...), localNames...))
+	seen := make(map[string]bool, len(chain))
+	proxyDialers := make(map[string]string, len(chain))
+	chainProxies := make(map[string]bool, len(chain))
+	usesSelect := false
+	for index, name := range chain {
+		if seen[name] {
+			return globalChainPlan{}, fmt.Errorf("chain contains duplicate member %q", name)
+		}
+		seen[name] = true
+		if name == globalChainSelectGroupName {
+			usesSelect = true
+			continue
+		}
+		if !proxyNames[name] {
+			return globalChainPlan{}, fmt.Errorf("chain references unknown proxy or group %q", name)
+		}
+		chainProxies[name] = true
+		if index == 0 {
+			proxyDialers[name] = ""
+		}
+	}
+
+	selectDialer := ""
+	for index := 1; index < len(chain); index++ {
+		dialer := chain[index-1]
+		name := chain[index]
+		if name == globalChainSelectGroupName {
+			selectDialer = dialer
+			continue
+		}
+		proxyDialers[name] = dialer
+	}
+
+	selectNames := make([]string, 0, len(inlineNames)+len(localNames))
+	for _, name := range append(append([]string{}, inlineNames...), localNames...) {
+		if !usesSelect || !chainProxies[name] {
+			selectNames = append(selectNames, name)
+		}
+	}
+	selectNames = dedupeStrings(selectNames)
+	if usesSelect && len(selectNames) == 0 && len(providerNames) == 0 {
+		return globalChainPlan{}, fmt.Errorf("global-chain mode has no selectable proxy after chain members")
+	}
+	return globalChainPlan{
+		chain:        chain,
+		matchTarget:  chain[len(chain)-1],
+		proxyDialers: proxyDialers,
+		selectDialer: selectDialer,
+		selectNames:  selectNames,
+		usesSelect:   usesSelect,
+	}, nil
+}
+
+func applyDialerProxyChain(proxies []any, plan globalChainPlan) {
+	if len(plan.proxyDialers) == 0 && plan.selectDialer == "" {
+		return
+	}
+	selectNames := stringSet(plan.selectNames)
+	for _, item := range proxies {
+		proxy, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := proxyName(item)
+		if dialer, ok := plan.proxyDialers[name]; ok {
+			if dialer == "" {
+				delete(proxy, "dialer-proxy")
+			} else {
+				proxy["dialer-proxy"] = dialer
+			}
+			continue
+		}
+		if plan.selectDialer != "" && selectNames[name] {
+			proxy["dialer-proxy"] = plan.selectDialer
+		}
+	}
+}
+
+func applyProviderDialerProxy(value any, dialer string) {
+	providers, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, value := range providers {
+		provider, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		override, _ := provider["override"].(map[string]any)
+		if override == nil {
+			override = make(map[string]any)
+		}
+		override["dialer-proxy"] = dialer
+		provider["override"] = override
+	}
 }
 
 func profileProxyGroupsForInstance(config string, item *Instance) ([]ProfileProxyGroup, error) {
@@ -174,27 +281,21 @@ func parseGlobalChainProxyGroups(config string, item *Instance) ([]ProfileProxyG
 		return nil, err
 	}
 	providerNames := proxyProviderNames(cfg["proxy-providers"])
-	selectNames := dedupeStrings(append(append([]string{}, inlineNames...), localNames...))
+	plan, err := buildGlobalChainPlan(item, inlineNames, localNames, providerNames)
+	if err != nil {
+		return nil, err
+	}
 	selections := normalizeSelections(item.SelectedProxies, item.SelectedGroup, item.SelectedProxy)
-	groups := []ProfileProxyGroup{{
+	group := ProfileProxyGroup{
 		Name: globalChainSelectGroupName,
 		Type: "select",
-		All:  selectNames,
-		Now:  selectionForGroup(globalChainSelectGroupName, selectNames, selections),
-	}}
-	if len(providerNames) > 0 && len(selectNames) == 0 {
-		groups[0].Now = ""
+		All:  plan.selectNames,
+		Now:  selectionForGroup(globalChainSelectGroupName, plan.selectNames, selections),
 	}
-	chain := normalizeChainNames(item.Chain)
-	if len(chain) == 0 {
-		chain = append(append([]string{}, localNames...), globalChainSelectGroupName)
+	if len(providerNames) > 0 && len(plan.selectNames) == 0 {
+		group.Now = ""
 	}
-	groups = append(groups, ProfileProxyGroup{
-		Name: globalChainRelayGroupName,
-		Type: "relay",
-		All:  chain,
-	})
-	return groups, nil
+	return []ProfileProxyGroup{group}, nil
 }
 
 func proxyItemsAndNames(value any) ([]any, []string, error) {
@@ -283,6 +384,16 @@ func normalizeChainNames(values []string) []string {
 			continue
 		}
 		out = append(out, name)
+	}
+	return out
+}
+
+func stringSet(values []string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out[value] = true
+		}
 	}
 	return out
 }

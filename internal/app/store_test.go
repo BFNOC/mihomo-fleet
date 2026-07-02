@@ -93,7 +93,7 @@ func TestWriteRuntimeConfigInjectsLoopbackFields(t *testing.T) {
 	}
 }
 
-func TestWriteRuntimeConfigGlobalChainBuildsMatchRelay(t *testing.T) {
+func TestWriteRuntimeConfigGlobalChainBuildsDialerProxy(t *testing.T) {
 	dir := t.TempDir()
 	item := &Instance{
 		ID:                "test",
@@ -118,6 +118,8 @@ proxy-providers:
     type: http
     url: https://example.com/sub
     path: ./remote.yaml
+    override:
+      udp: true
 proxy-groups:
   - name: Old
     type: select
@@ -152,29 +154,175 @@ rules:
 		t.Fatalf("global-chain config kept rule-providers:\n%s", raw)
 	}
 	rules, _ := cfg["rules"].([]any)
-	if len(rules) != 1 || rules[0] != "MATCH,"+globalChainRelayGroupName {
-		t.Fatalf("rules = %#v, want MATCH relay", rules)
+	if len(rules) != 1 || rules[0] != "MATCH,"+globalChainSelectGroupName {
+		t.Fatalf("rules = %#v, want MATCH select", rules)
 	}
 	groups, _ := cfg["proxy-groups"].([]any)
-	if len(groups) != 2 {
-		t.Fatalf("proxy-groups = %#v, want select + relay", groups)
+	if len(groups) != 1 {
+		t.Fatalf("proxy-groups = %#v, want select only", groups)
 	}
 	selectGroup := groups[0].(map[string]any)
 	if selectGroup["name"] != globalChainSelectGroupName || selectGroup["type"] != "select" {
 		t.Fatalf("select group = %#v", selectGroup)
 	}
-	if got := strings.Join(anyStrings(selectGroup["proxies"]), ","); got != "US-01,local-hop" {
+	if got := strings.Join(anyStrings(selectGroup["proxies"]), ","); got != "US-01" {
 		t.Fatalf("select proxies = %q", got)
 	}
 	if got := strings.Join(anyStrings(selectGroup["use"]), ","); got != "remote" {
 		t.Fatalf("select use = %q", got)
 	}
-	relayGroup := groups[1].(map[string]any)
-	if relayGroup["name"] != globalChainRelayGroupName || relayGroup["type"] != "relay" {
-		t.Fatalf("relay group = %#v", relayGroup)
+	proxies, _ := cfg["proxies"].([]any)
+	if got := proxyMap(t, proxies, "US-01")["dialer-proxy"]; got != "local-hop" {
+		t.Fatalf("US-01 dialer-proxy = %#v, want local-hop", got)
 	}
-	if got := strings.Join(anyStrings(relayGroup["proxies"]), ","); got != "local-hop,"+globalChainSelectGroupName {
-		t.Fatalf("relay chain = %q", got)
+	if _, ok := proxyMap(t, proxies, "local-hop")["dialer-proxy"]; ok {
+		t.Fatalf("local-hop should start the chain without dialer-proxy")
+	}
+	providers, _ := cfg["proxy-providers"].(map[string]any)
+	remote, _ := providers["remote"].(map[string]any)
+	override, _ := remote["override"].(map[string]any)
+	if override["dialer-proxy"] != "local-hop" || override["udp"] != true {
+		t.Fatalf("provider override = %#v, want existing override plus dialer-proxy", override)
+	}
+}
+
+func TestWriteRuntimeConfigGlobalChainSupportsSelectAsDialer(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28003,
+		ControllerPort:    29003,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		Mode:              InstanceModeGlobalChain,
+		LocalProxies:      "- name: local-hop\n  type: http\n  server: 127.0.0.1\n  port: 7899\n",
+		Chain:             []string{globalChainSelectGroupName, "local-hop"},
+	}
+	user := `proxies:
+  - name: US-01
+    type: ss
+    server: example.com
+    port: 443
+rules:
+  - MATCH,DIRECT
+`
+	if err := os.WriteFile(item.UserConfigPath, []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(item.RuntimeConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := cfg["rules"].([]any)
+	if len(rules) != 1 || rules[0] != "MATCH,local-hop" {
+		t.Fatalf("rules = %#v, want MATCH local-hop", rules)
+	}
+	proxies, _ := cfg["proxies"].([]any)
+	if got := proxyMap(t, proxies, "local-hop")["dialer-proxy"]; got != globalChainSelectGroupName {
+		t.Fatalf("local-hop dialer-proxy = %#v, want %s", got, globalChainSelectGroupName)
+	}
+	group := cfg["proxy-groups"].([]any)[0].(map[string]any)
+	if got := strings.Join(anyStrings(group["proxies"]), ","); got != "US-01" {
+		t.Fatalf("select proxies = %q", got)
+	}
+}
+
+func TestWriteRuntimeConfigGlobalChainBuildsMultiHopDialerProxy(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28003,
+		ControllerPort:    29003,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		Mode:              InstanceModeGlobalChain,
+		LocalProxies: "- name: local-a\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n" +
+			"- name: local-b\n  type: http\n  server: 127.0.0.1\n  port: 7899\n",
+		Chain: []string{"local-a", "local-b", globalChainSelectGroupName},
+	}
+	user := `proxies:
+  - name: US-01
+    type: ss
+    server: example.com
+    port: 443
+rules:
+  - MATCH,DIRECT
+`
+	if err := os.WriteFile(item.UserConfigPath, []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(item.RuntimeConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	proxies, _ := cfg["proxies"].([]any)
+	if got := proxyMap(t, proxies, "local-b")["dialer-proxy"]; got != "local-a" {
+		t.Fatalf("local-b dialer-proxy = %#v, want local-a", got)
+	}
+	if got := proxyMap(t, proxies, "US-01")["dialer-proxy"]; got != "local-b" {
+		t.Fatalf("US-01 dialer-proxy = %#v, want local-b", got)
+	}
+	if got := strings.Join(anyStrings(cfg["proxy-groups"].([]any)[0].(map[string]any)["proxies"]), ","); got != "US-01" {
+		t.Fatalf("select proxies = %q", got)
+	}
+}
+
+func TestWriteRuntimeConfigGlobalChainSingleSelectKeepsLocalProxySelectable(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28003,
+		ControllerPort:    29003,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		Mode:              InstanceModeGlobalChain,
+		LocalProxies:      "- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n",
+		Chain:             []string{globalChainSelectGroupName},
+	}
+	if err := os.WriteFile(item.UserConfigPath, []byte("proxies: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(item.RuntimeConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	group := cfg["proxy-groups"].([]any)[0].(map[string]any)
+	if got := strings.Join(anyStrings(group["proxies"]), ","); got != "local-hop" {
+		t.Fatalf("select proxies = %q", got)
+	}
+	proxies, _ := cfg["proxies"].([]any)
+	if _, ok := proxyMap(t, proxies, "local-hop")["dialer-proxy"]; ok {
+		t.Fatalf("local-hop should not get dialer-proxy for a single select chain")
 	}
 }
 
@@ -210,14 +358,20 @@ func TestWriteRuntimeConfigGlobalChainRejectsInvalidChainInputs(t *testing.T) {
 		{
 			name:         "unknown chain member",
 			localProxies: "- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n",
-			chain:        []string{"missing"},
+			chain:        []string{"missing", globalChainSelectGroupName},
 			want:         "chain references unknown proxy or group",
 		},
 		{
-			name:         "builtin direct is not a relay hop",
+			name:         "builtin direct is not a chain member",
 			localProxies: "- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n",
-			chain:        []string{"DIRECT"},
+			chain:        []string{"DIRECT", globalChainSelectGroupName},
 			want:         "chain references unknown proxy or group",
+		},
+		{
+			name:         "duplicate chain member",
+			localProxies: "- name: local-hop\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n",
+			chain:        []string{"local-hop", "local-hop", globalChainSelectGroupName},
+			want:         "chain contains duplicate member",
 		},
 		{
 			name:         "local conflicts with profile proxy",
@@ -542,4 +696,19 @@ func anyStrings(value any) []string {
 		}
 	}
 	return out
+}
+
+func proxyMap(t *testing.T, proxies []any, name string) map[string]any {
+	t.Helper()
+	for _, item := range proxies {
+		proxy, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if proxy["name"] == name {
+			return proxy
+		}
+	}
+	t.Fatalf("proxy %q not found in %#v", name, proxies)
+	return nil
 }
