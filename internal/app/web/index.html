@@ -97,6 +97,10 @@
                 <input id="createMixedPort" type="number" min="1" max="65535" placeholder="自动">
               </label>
               <label>
+                <span>代理绑定地址</span>
+                <input id="createProxyBind" placeholder="127.0.0.1">
+              </label>
+              <label>
                 <span>控制端口</span>
                 <input id="createControllerPort" type="number" min="1" max="65535" placeholder="自动">
               </label>
@@ -163,10 +167,14 @@
                   <dl class="kv">
                     <dt>本地代理</dt>
                     <dd id="overviewMixed"></dd>
+                    <dt>代理绑定</dt>
+                    <dd id="overviewProxyBind"></dd>
                     <dt>外部控制器</dt>
                     <dd id="overviewController"></dd>
                     <dt>实例模式</dt>
                     <dd id="overviewMode"></dd>
+                    <dt>生效链路</dt>
+                    <dd id="overviewChain"></dd>
                     <dt>配置档</dt>
                     <dd id="overviewProfile"></dd>
                     <dt>配置文件</dt>
@@ -198,6 +206,10 @@
                     <label>
                       <span>混合端口</span>
                       <input id="editMixedPort" type="number" min="1" max="65535">
+                    </label>
+                    <label>
+                      <span>代理绑定地址</span>
+                      <input id="editProxyBind" placeholder="127.0.0.1">
                     </label>
                     <label>
                       <span>控制端口</span>
@@ -282,7 +294,7 @@
                   <h3>进程日志</h3>
                   <p>当前实例最近的标准输出和错误输出。</p>
                 </div>
-                <pre id="logs" class="logs"></pre>
+                <pre id="logs" class="logs" tabindex="0"></pre>
               </section>
             </div>
           </section>

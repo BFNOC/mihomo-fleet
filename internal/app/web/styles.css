@@ -791,8 +791,9 @@ label,
 }
 
 .logs {
-  height: 360px;
+  height: min(360px, max(220px, calc(100vh - 260px)));
   overflow: auto;
+  overscroll-behavior: contain;
   margin: 12px 0 0;
   padding: 12px;
   border-radius: 6px;

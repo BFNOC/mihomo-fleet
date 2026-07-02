@@ -34,7 +34,9 @@ func writeRuntimeConfig(item *Instance, profile *Profile) error {
 			return err
 		}
 	}
-	applyRuntimeFields(cfg, item)
+	if err := applyRuntimeFields(cfg, item); err != nil {
+		return err
+	}
 
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -61,12 +63,46 @@ func cleanRuntimeConfig(cfg map[string]any) {
 	}
 }
 
-func applyRuntimeFields(cfg map[string]any, item *Instance) {
-	cfg["mixed-port"] = item.MixedPort
+func applyRuntimeFields(cfg map[string]any, item *Instance) error {
 	cfg["external-controller"] = fmt.Sprintf("127.0.0.1:%d", item.ControllerPort)
 	cfg["secret"] = item.Secret
-	cfg["allow-lan"] = false
-	cfg["bind-address"] = "127.0.0.1"
+	return applyProxyBindFields(cfg, item)
+}
+
+func applyProxyBindFields(cfg map[string]any, item *Instance) error {
+	addrs, err := parseProxyBindAddresses(item.ProxyBind)
+	if err != nil {
+		return err
+	}
+	if len(addrs) == 1 {
+		cfg["mixed-port"] = item.MixedPort
+		delete(cfg, "listeners")
+		addr := addrs[0]
+		if addr == defaultProxyBind {
+			cfg["allow-lan"] = false
+			cfg["bind-address"] = defaultProxyBind
+			return nil
+		}
+		cfg["allow-lan"] = true
+		cfg["bind-address"] = mihomoBindAddress(addr)
+		return nil
+	}
+
+	delete(cfg, "mixed-port")
+	delete(cfg, "bind-address")
+	cfg["allow-lan"] = true
+	listeners := make([]any, 0, len(addrs))
+	for index, addr := range addrs {
+		listeners = append(listeners, map[string]any{
+			"name":   fmt.Sprintf("fleet-mixed-%d", index+1),
+			"type":   "mixed",
+			"port":   item.MixedPort,
+			"listen": addr,
+			"udp":    true,
+		})
+	}
+	cfg["listeners"] = listeners
+	return nil
 }
 
 func applyGlobalChainConfig(cfg map[string]any, item *Instance) error {

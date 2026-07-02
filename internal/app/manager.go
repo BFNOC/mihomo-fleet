@@ -101,6 +101,7 @@ func viewFor(item *Instance, profile *Profile, status string, pid int) InstanceV
 		Name:              item.Name,
 		ProfileID:         item.ProfileID,
 		MixedPort:         item.MixedPort,
+		ProxyBind:         instanceProxyBind(item.ProxyBind),
 		ControllerPort:    item.ControllerPort,
 		UserConfigPath:    item.UserConfigPath,
 		RuntimeConfigPath: item.RuntimeConfigPath,

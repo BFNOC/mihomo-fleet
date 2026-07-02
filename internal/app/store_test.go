@@ -93,6 +93,118 @@ func TestWriteRuntimeConfigInjectsLoopbackFields(t *testing.T) {
 	}
 }
 
+func TestWriteRuntimeConfigAllProxyBindUsesMihomoWildcard(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28002,
+		ProxyBind:         "all",
+		ControllerPort:    29002,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+	}
+	if err := os.WriteFile(item.UserConfigPath, []byte(defaultUserConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
+	if cfg["mixed-port"] != 28002 {
+		t.Fatalf("mixed-port = %#v, want 28002", cfg["mixed-port"])
+	}
+	if cfg["allow-lan"] != true {
+		t.Fatalf("allow-lan = %#v, want true", cfg["allow-lan"])
+	}
+	if cfg["bind-address"] != "*" {
+		t.Fatalf("bind-address = %#v, want *", cfg["bind-address"])
+	}
+	if _, ok := cfg["listeners"]; ok {
+		t.Fatalf("single wildcard bind should not emit listeners: %#v", cfg["listeners"])
+	}
+}
+
+func TestWriteRuntimeConfigSingleProxyBindUsesTopLevelBind(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28002,
+		ProxyBind:         "192.168.64.1",
+		ControllerPort:    29002,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+	}
+	if err := os.WriteFile(item.UserConfigPath, []byte(defaultUserConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
+	if cfg["mixed-port"] != 28002 {
+		t.Fatalf("mixed-port = %#v, want 28002", cfg["mixed-port"])
+	}
+	if cfg["allow-lan"] != true {
+		t.Fatalf("allow-lan = %#v, want true", cfg["allow-lan"])
+	}
+	if cfg["bind-address"] != "192.168.64.1" {
+		t.Fatalf("bind-address = %#v, want 192.168.64.1", cfg["bind-address"])
+	}
+	if _, ok := cfg["listeners"]; ok {
+		t.Fatalf("single bind should not emit listeners: %#v", cfg["listeners"])
+	}
+}
+
+func TestWriteRuntimeConfigMultiProxyBindEmitsListeners(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28002,
+		ProxyBind:         "127.0.0.1,192.168.64.1",
+		ControllerPort:    29002,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+	}
+	if err := os.WriteFile(item.UserConfigPath, []byte("mixed-port: 1\nlisteners:\n  - name: user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
+	if _, ok := cfg["mixed-port"]; ok {
+		t.Fatalf("multi bind kept mixed-port: %#v", cfg["mixed-port"])
+	}
+	if _, ok := cfg["bind-address"]; ok {
+		t.Fatalf("multi bind kept bind-address: %#v", cfg["bind-address"])
+	}
+	if cfg["allow-lan"] != true {
+		t.Fatalf("allow-lan = %#v, want true", cfg["allow-lan"])
+	}
+	listeners, ok := cfg["listeners"].([]any)
+	if !ok || len(listeners) != 2 {
+		t.Fatalf("listeners = %#v, want two listeners", cfg["listeners"])
+	}
+	for index, wantListen := range []string{"127.0.0.1", "192.168.64.1"} {
+		listener, ok := listeners[index].(map[string]any)
+		if !ok {
+			t.Fatalf("listener %d = %#v", index, listeners[index])
+		}
+		if listener["type"] != "mixed" || listener["port"] != 28002 || listener["listen"] != wantListen || listener["udp"] != true {
+			t.Fatalf("listener %d = %#v", index, listener)
+		}
+	}
+}
+
 func TestWriteRuntimeConfigGlobalChainBuildsDialerProxy(t *testing.T) {
 	dir := t.TempDir()
 	item := &Instance{
@@ -461,6 +573,7 @@ func TestStorePersistsGlobalChainFieldsAndCloneCopiesThem(t *testing.T) {
 		Name:           "Chain",
 		ProfileID:      profile.ID,
 		MixedPort:      28030,
+		ProxyBind:      "127.0.0.1,192.168.64.1",
 		ControllerPort: 29030,
 		Mode:           InstanceModeGlobalChain,
 		LocalProxies:   local,
@@ -477,14 +590,14 @@ func TestStorePersistsGlobalChainFieldsAndCloneCopiesThem(t *testing.T) {
 	if !ok {
 		t.Fatal("expected reloaded instance")
 	}
-	if got.Mode != InstanceModeGlobalChain || got.LocalProxies != local || strings.Join(got.Chain, ",") != "local-hop,"+globalChainSelectGroupName {
+	if got.Mode != InstanceModeGlobalChain || got.ProxyBind != "127.0.0.1,192.168.64.1" || got.LocalProxies != local || strings.Join(got.Chain, ",") != "local-hop,"+globalChainSelectGroupName {
 		t.Fatalf("global-chain fields were not persisted: %+v", got)
 	}
 	clone, err := reloaded.Clone(item.ID, "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if clone.Mode != item.Mode || clone.LocalProxies != local || strings.Join(clone.Chain, ",") != "local-hop,"+globalChainSelectGroupName {
+	if clone.Mode != item.Mode || clone.ProxyBind != item.ProxyBind || clone.LocalProxies != local || strings.Join(clone.Chain, ",") != "local-hop,"+globalChainSelectGroupName {
 		t.Fatalf("clone lost global-chain fields: %+v", clone)
 	}
 }
@@ -696,6 +809,19 @@ func anyStrings(value any) []string {
 		}
 	}
 	return out
+}
+
+func readRuntimeConfigMap(t *testing.T, path string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
 
 func proxyMap(t *testing.T, proxies []any, name string) map[string]any {

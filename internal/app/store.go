@@ -50,6 +50,7 @@ type createInstanceOptions struct {
 	ProfileID       string
 	Config          string
 	MixedPort       int
+	ProxyBind       string
 	ControllerPort  int
 	MixedStart      int
 	ControllerStart int
@@ -66,6 +67,7 @@ type updateInstanceOptions struct {
 	ProfileID      string
 	Config         string
 	MixedPort      int
+	ProxyBind      *string
 	ControllerPort int
 	Mode           string
 	LocalProxies   *string
@@ -111,6 +113,7 @@ func (s *Store) load() error {
 	}
 	for _, item := range data.Instances {
 		copy := *item
+		copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
 		copy.Mode = instanceMode(copy.Mode)
 		copy.Chain = normalizeChainNames(copy.Chain)
 		copy.SelectedProxies = normalizeSelections(copy.SelectedProxies, copy.SelectedGroup, copy.SelectedProxy)
@@ -167,6 +170,7 @@ func (s *Store) List() []*Instance {
 	out := make([]*Instance, 0, len(s.items))
 	for _, item := range s.items {
 		copy := *item
+		copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
 		copy.Chain = append([]string{}, item.Chain...)
 		copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 		out = append(out, &copy)
@@ -182,6 +186,7 @@ func (s *Store) Get(id string) (*Instance, bool) {
 		return nil, false
 	}
 	copy := *item
+	copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
 	copy.Chain = append([]string{}, item.Chain...)
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, true
@@ -327,6 +332,7 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	for _, item := range s.items {
 		if item.ProfileID == id {
 			copy := *item
+			copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
 			copy.Chain = append([]string{}, item.Chain...)
 			copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 			itemSnapshots[item.ID] = copy
@@ -399,6 +405,7 @@ func (s *Store) Create(name, profileID, config string, mixedPort, controllerPort
 		ProfileID:       profileID,
 		Config:          config,
 		MixedPort:       mixedPort,
+		ProxyBind:       defaultProxyBind,
 		ControllerPort:  controllerPort,
 		MixedStart:      28000,
 		ControllerStart: 29000,
@@ -434,6 +441,7 @@ func (s *Store) Clone(id, name string, mixedPort, controllerPort int) (*Instance
 		Name:            name,
 		ProfileID:       source.ProfileID,
 		MixedPort:       mixedPort,
+		ProxyBind:       source.ProxyBind,
 		ControllerPort:  controllerPort,
 		MixedStart:      nextClonePortStart(source.MixedPort, 28000),
 		ControllerStart: nextClonePortStart(source.ControllerPort, 29000),
@@ -450,6 +458,10 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 	now := time.Now().UTC()
 	id := uniqueID(opts.Name, s.items)
 	mode, err := normalizeInstanceMode(opts.Mode)
+	if err != nil {
+		return nil, err
+	}
+	proxyBind, err := normalizeProxyBind(opts.ProxyBind)
 	if err != nil {
 		return nil, err
 	}
@@ -518,6 +530,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		Name:              opts.Name,
 		ProfileID:         opts.ProfileID,
 		MixedPort:         opts.MixedPort,
+		ProxyBind:         proxyBind,
 		ControllerPort:    opts.ControllerPort,
 		Secret:            secret,
 		UserConfigPath:    profile.ConfigPath,
@@ -542,6 +555,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		return nil, err
 	}
 	copy := *item
+	copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
 	copy.Chain = append([]string{}, item.Chain...)
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
@@ -612,12 +626,20 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		}
 	}
 	nextMixedPort := item.MixedPort
+	nextProxyBind := instanceProxyBind(item.ProxyBind)
 	nextControllerPort := item.ControllerPort
 	if opts.MixedPort > 0 {
 		nextMixedPort = opts.MixedPort
 	}
 	if opts.ControllerPort > 0 {
 		nextControllerPort = opts.ControllerPort
+	}
+	if opts.ProxyBind != nil {
+		var err error
+		nextProxyBind, err = normalizeProxyBind(*opts.ProxyBind)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if nextMixedPort == nextControllerPort {
 		return nil, fmt.Errorf("controller port %d is unavailable", nextControllerPort)
@@ -664,6 +686,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	item.ProfileID = nextProfileID
 	item.UserConfigPath = nextUserConfigPath
 	item.MixedPort = nextMixedPort
+	item.ProxyBind = nextProxyBind
 	item.ControllerPort = nextControllerPort
 	item.Mode = nextMode
 	item.LocalProxies = nextLocalProxies
@@ -711,6 +734,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		return nil, err
 	}
 	copy := *item
+	copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
 	copy.Chain = append([]string{}, item.Chain...)
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
@@ -734,6 +758,7 @@ func (s *Store) SetSelection(id, group, proxy string) (*Instance, error) {
 		return nil, err
 	}
 	copy := *item
+	copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
 	copy.Chain = append([]string{}, item.Chain...)
 	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 	return &copy, nil
@@ -785,6 +810,7 @@ func (s *Store) saveLocked() error {
 	data := storedData{Instances: make([]*Instance, 0, len(s.items))}
 	for _, item := range s.items {
 		copy := *item
+		copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
 		copy.Chain = append([]string{}, item.Chain...)
 		copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
 		data.Instances = append(data.Instances, &copy)

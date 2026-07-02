@@ -34,6 +34,7 @@ type Instance struct {
 	Name              string            `json:"name"`
 	ProfileID         string            `json:"profileId"`
 	MixedPort         int               `json:"mixedPort"`
+	ProxyBind         string            `json:"proxyBind,omitempty"`
 	ControllerPort    int               `json:"controllerPort"`
 	Secret            string            `json:"secret"`
 	UserConfigPath    string            `json:"userConfigPath"`
@@ -71,6 +72,7 @@ type InstanceView struct {
 	ProfileName       string            `json:"profileName,omitempty"`
 	ProfileConfigPath string            `json:"profileConfigPath,omitempty"`
 	MixedPort         int               `json:"mixedPort"`
+	ProxyBind         string            `json:"proxyBind"`
 	ControllerPort    int               `json:"controllerPort"`
 	UserConfigPath    string            `json:"userConfigPath"`
 	RuntimeConfigPath string            `json:"runtimeConfigPath"`

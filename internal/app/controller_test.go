@@ -258,10 +258,20 @@ func TestHandleInstancesCreateAllocatesPortsInStore(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 	c := newBatchTestController(t)
 
-	view := postInstanceJSON(t, c, `{"name":"Auto ports"}`, http.StatusCreated)
+	view := postInstanceJSON(t, c, `{"name":"Auto ports","proxyBind":"127.0.0.1,192.168.64.1"}`, http.StatusCreated)
 	if view.MixedPort != 28000 || view.ControllerPort != 29000 {
 		t.Fatalf("ports = (%d, %d), want (28000, 29000)", view.MixedPort, view.ControllerPort)
 	}
+	if view.ProxyBind != "127.0.0.1,192.168.64.1" {
+		t.Fatalf("proxyBind = %q, want normalized multi bind", view.ProxyBind)
+	}
+}
+
+func TestHandleInstancesCreateRejectsInvalidProxyBind(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+
+	postInstanceJSON(t, c, `{"name":"Bad bind","proxyBind":"127.0.0.1:28000"}`, http.StatusBadRequest)
 }
 
 func TestHandleInstancesCreateAcceptsGlobalChainFields(t *testing.T) {

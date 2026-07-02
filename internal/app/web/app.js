@@ -19,6 +19,8 @@ const defaultLatencyUrl = "http://cp.cloudflare.com/generate_204";
 const defaultLatencyTimeout = 10000;
 const latencyBatchConcurrency = 4;
 const latencyKeySeparator = "\u001f";
+const logStickThreshold = 24;
+const defaultProxyBind = "127.0.0.1";
 const latencyKinds = {
   url: "url",
   real: "real",
@@ -65,6 +67,7 @@ const statusLabels = {
 const errorLabels = {
   "mihomo binary not found. Install mihomo or start with -mihomo /path/to/mihomo": "未找到 mihomo 可执行文件。请安装 mihomo，或使用 -mihomo /path/to/mihomo 指定路径。",
   "stop the instance before changing ports": "修改端口前请先停止该实例。",
+  "stop the instance before changing proxy bind": "修改代理绑定地址前请先停止该实例。",
   "stop the instance before changing profile": "修改配置档前请先停止该实例。",
   "profileId and config cannot be changed in the same request": "不能在同一次请求中同时修改配置档和配置内容。",
   "subscriptionUrl and config cannot both be set": "订阅链接和配置内容不能同时设置。",
@@ -112,6 +115,9 @@ const errorPatterns = [
   [/^chain cannot reference generated relay group "(.+)"$/, (match) => `链路顺序不能引用 ${match[1]} 自身。`],
   [/^chain contains duplicate member "(.+)"$/, (match) => `链路顺序重复引用了 ${match[1]}。`],
   [/^global-chain mode has no selectable proxy after chain members$/, () => "链路节点移除后没有可选择的节点。请补充订阅/出口节点，或调整链路顺序。"],
+  [/^proxy bind address "(.+)" must not include a port; use the mixed port field instead$/, (match) => `代理绑定地址 ${match[1]} 不要写端口，请使用混合端口字段。`],
+  [/^proxy bind address "(.+)" must be an IP address, localhost, all, or \*$/, (match) => `代理绑定地址 ${match[1]} 无效，请填写 IP、localhost、all 或 *。`],
+  [/^proxy bind address "(.+)" has invalid IPv6 brackets$/, (match) => `代理绑定地址 ${match[1]} 的 IPv6 方括号不完整。`],
 ];
 
 const el = {
@@ -141,6 +147,7 @@ const el = {
   createAutoUpdate: document.querySelector("#createAutoUpdate"),
   createUpdateInterval: document.querySelector("#createUpdateInterval"),
   createMixedPort: document.querySelector("#createMixedPort"),
+  createProxyBind: document.querySelector("#createProxyBind"),
   createControllerPort: document.querySelector("#createControllerPort"),
   createConfigWrap: document.querySelector("#createConfigWrap"),
   createConfig: document.querySelector("#createConfig"),
@@ -161,8 +168,10 @@ const el = {
   cloneBtn: document.querySelector("#cloneBtn"),
   deleteBtn: document.querySelector("#deleteBtn"),
   overviewMixed: document.querySelector("#overviewMixed"),
+  overviewProxyBind: document.querySelector("#overviewProxyBind"),
   overviewController: document.querySelector("#overviewController"),
   overviewMode: document.querySelector("#overviewMode"),
+  overviewChain: document.querySelector("#overviewChain"),
   overviewProfile: document.querySelector("#overviewProfile"),
   overviewUserConfig: document.querySelector("#overviewUserConfig"),
   overviewRuntimeConfig: document.querySelector("#overviewRuntimeConfig"),
@@ -171,6 +180,7 @@ const el = {
   editProfile: document.querySelector("#editProfile"),
   editMode: document.querySelector("#editMode"),
   editMixedPort: document.querySelector("#editMixedPort"),
+  editProxyBind: document.querySelector("#editProxyBind"),
   editControllerPort: document.querySelector("#editControllerPort"),
   editChainFields: document.querySelector("#editChainFields"),
   editLocalProxies: document.querySelector("#editLocalProxies"),
@@ -625,7 +635,7 @@ function renderPortMatrix(selected) {
     selectButton.className = "port-row-select";
     selectButton.type = "button";
     selectButton.dataset.portFocus = `select:${item.id}`;
-    selectButton.setAttribute("aria-label", `${item.name}，${statusText(item.status)}，${proxyEndpointText(item.mixedPort)}`);
+    selectButton.setAttribute("aria-label", `${item.name}，${statusText(item.status)}，${proxyEndpointText(item)}`);
     if (selected && selected.id === item.id) selectButton.setAttribute("aria-current", "true");
     selectButton.addEventListener("click", () => selectInstance(item.id));
 
@@ -641,7 +651,7 @@ function renderPortMatrix(selected) {
 
     const address = document.createElement("span");
     address.className = "port-address";
-    address.textContent = proxyEndpointText(item.mixedPort);
+    address.textContent = proxyEndpointText(item);
     selectButton.append(top, address);
 
     const tools = document.createElement("div");
@@ -689,13 +699,34 @@ function portFocusInstanceId(focusedKey) {
   return focusedKey.split(":")[1] || "";
 }
 
-function proxyEndpoint(port) {
-  const value = proxyPort(port);
-  return value ? `127.0.0.1:${value}` : "";
+function proxyBindAddresses(item) {
+  const values = String(item?.proxyBind || defaultProxyBind)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values.length ? values : [defaultProxyBind];
 }
 
-function proxyEndpointText(port) {
-  return proxyEndpoint(port) || "端口未分配";
+function proxyEndpoint(port, host = defaultProxyBind) {
+  const value = proxyPort(port);
+  if (!value) return "";
+  return `${formatProxyHost(host)}:${value}`;
+}
+
+function proxyEndpoints(item) {
+  const port = proxyPort(item?.mixedPort);
+  if (!port) return [];
+  return proxyBindAddresses(item).map((host) => proxyEndpoint(port, host));
+}
+
+function proxyEndpointText(item) {
+  const endpoints = proxyEndpoints(item);
+  return endpoints.length ? endpoints.join("，") : "端口未分配";
+}
+
+function formatProxyHost(host) {
+  const value = String(host || defaultProxyBind).trim();
+  return value.includes(":") && !value.startsWith("[") ? `[${value}]` : value;
 }
 
 function proxyPortLabel(port) {
@@ -714,14 +745,16 @@ function proxyCopyPlaceholders() {
 }
 
 function proxyCopyActions(item) {
-  const endpoint = proxyEndpoint(item.mixedPort);
-  if (!endpoint) return proxyCopyPlaceholders();
-  const http = `http://${endpoint}`;
-  const socks = `socks5://${endpoint}`;
+  const endpoints = proxyEndpoints(item);
+  if (!endpoints.length) return proxyCopyPlaceholders();
+  const httpValues = endpoints.map((endpoint) => `http://${endpoint}`);
+  const socksValues = endpoints.map((endpoint) => `socks5://${endpoint}`);
+  const http = httpValues[0];
+  const socks = socksValues[0];
   const values = {
-    addr: endpoint,
-    http,
-    socks,
+    addr: endpoints.join("\n"),
+    http: httpValues.join("\n"),
+    socks: socksValues.join("\n"),
     env: proxyEnvExports(http, socks),
   };
   const messages = {
@@ -805,9 +838,11 @@ function renderPanels(selected) {
   el.metricPid.textContent = selected.pid || "无";
   el.metricMixed.textContent = proxyPortLabel(selected.mixedPort);
   el.metricController.textContent = selected.controllerPort;
-  el.overviewMixed.textContent = proxyEndpointText(selected.mixedPort);
+  el.overviewMixed.textContent = proxyEndpointText(selected);
+  el.overviewProxyBind.textContent = selected.proxyBind || defaultProxyBind;
   el.overviewController.textContent = `127.0.0.1:${selected.controllerPort}`;
   el.overviewMode.textContent = modeLabel(instanceMode(selected));
+  el.overviewChain.textContent = chainSummary(selected);
   el.overviewProfile.textContent = selected.profileName || selected.profileId || "无";
   el.overviewUserConfig.textContent = selected.profileConfigPath || selected.userConfigPath;
   el.overviewRuntimeConfig.textContent = selected.runtimeConfigPath;
@@ -820,6 +855,7 @@ function renderPanels(selected) {
     renderProfileOptions(el.editProfile, selected.profileId, false);
     el.editMode.value = instanceMode(selected);
     el.editMixedPort.value = selected.mixedPort;
+    el.editProxyBind.value = selected.proxyBind || defaultProxyBind;
     el.editControllerPort.value = selected.controllerPort;
     el.editLocalProxies.value = selected.localProxies || "";
     el.editChain.value = chainToText(selected.chain);
@@ -840,6 +876,20 @@ function selectionSummary(item) {
     return entries.map(([group, proxy]) => `${group} -> ${proxy}`).join("；");
   }
   return item.selectedProxy ? `${item.selectedGroup} -> ${item.selectedProxy}` : "无";
+}
+
+function chainSummary(item) {
+  if (instanceMode(item) !== instanceModes.globalChain) return "不适用";
+  const chain = Array.isArray(item.chain) ? item.chain.filter(Boolean) : [];
+  if (!chain.length) return "默认";
+  return chain.map((name) => chainLabel(item, name)).join(" -> ");
+}
+
+function chainLabel(item, name) {
+  if (name !== "节点选择") return name;
+  const selected = item.selectedProxies?.[name]
+    || (item.selectedGroup === name ? item.selectedProxy : "");
+  return selected ? `${name}（${selected}）` : name;
 }
 
 function chainFromText(value) {
@@ -965,6 +1015,7 @@ function clearActiveDetailCache() {
   el.configEditor.dataset.dirty = "";
   el.subscriptionSettings.dataset.profileId = "";
   el.subscriptionSettings.dataset.dirty = "";
+  el.logs.dataset.instanceId = "";
   state.proxyGroups = [];
   state.proxyApply = false;
   state.latencyBatchRunning = false;
@@ -996,6 +1047,7 @@ function showCreate() {
   el.createName.value = "";
   el.createMode.value = instanceModes.rule;
   el.createMixedPort.value = "";
+  el.createProxyBind.value = defaultProxyBind;
   el.createControllerPort.value = "";
   renderProfileOptions(el.createProfile, state.profiles[0]?.id || newProfileValue, true);
   el.createProfileName.value = "";
@@ -1039,11 +1091,23 @@ async function refreshLogs() {
   if (!selected) return;
   try {
     const payload = await api(`/api/instances/${selected.id}/logs`);
-    el.logs.textContent = (payload.lines || []).join("\n") || "还没有进程日志。";
-    el.logs.scrollTop = el.logs.scrollHeight;
+    const shouldStick = el.logs.dataset.instanceId !== selected.id || isLogScrolledToBottom();
+    const text = (payload.lines || []).join("\n") || "还没有进程日志。";
+    if (el.logs.textContent !== text) {
+      el.logs.textContent = text;
+    }
+    el.logs.dataset.instanceId = selected.id;
+    if (shouldStick) {
+      el.logs.scrollTop = el.logs.scrollHeight;
+    }
   } catch (err) {
+    el.logs.dataset.instanceId = "";
     el.logs.textContent = localizedMessage(err.message);
   }
+}
+
+function isLogScrolledToBottom() {
+  return el.logs.scrollHeight - el.logs.scrollTop - el.logs.clientHeight <= logStickThreshold;
 }
 
 async function refreshProxies() {
@@ -1410,6 +1474,7 @@ el.createSubmit.addEventListener("click", async () => {
       name: el.createName.value.trim(),
       profileId,
       mixedPort: Number(el.createMixedPort.value) || 0,
+      proxyBind: el.createProxyBind.value.trim(),
       controllerPort: Number(el.createControllerPort.value) || 0,
       mode: el.createMode.value,
       localProxies: el.createMode.value === instanceModes.globalChain ? el.createLocalProxies.value : "",
@@ -1488,6 +1553,7 @@ el.deleteBtn.addEventListener("click", async () => {
 [
   el.editName,
   el.editMixedPort,
+  el.editProxyBind,
   el.editControllerPort,
   el.editLocalProxies,
   el.editChain,
@@ -1511,6 +1577,7 @@ el.saveBasics.addEventListener("click", async () => {
         name: el.editName.value.trim(),
         profileId: el.editProfile.value,
         mixedPort: Number(el.editMixedPort.value),
+        proxyBind: el.editProxyBind.value.trim(),
         controllerPort: Number(el.editControllerPort.value),
         mode: el.editMode.value,
         localProxies: el.editMode.value === instanceModes.globalChain ? el.editLocalProxies.value : "",

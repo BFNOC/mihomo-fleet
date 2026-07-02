@@ -375,6 +375,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			ProfileID      string   `json:"profileId"`
 			Config         string   `json:"config"`
 			MixedPort      int      `json:"mixedPort"`
+			ProxyBind      string   `json:"proxyBind"`
 			ControllerPort int      `json:"controllerPort"`
 			Mode           string   `json:"mode"`
 			LocalProxies   string   `json:"localProxies"`
@@ -392,6 +393,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			ProfileID:      req.ProfileID,
 			Config:         req.Config,
 			MixedPort:      req.MixedPort,
+			ProxyBind:      req.ProxyBind,
 			ControllerPort: req.ControllerPort,
 			Mode:           req.Mode,
 			LocalProxies:   req.LocalProxies,
@@ -401,6 +403,8 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			status := http.StatusInternalServerError
 			if isPortUnavailableError(err) {
 				status = http.StatusConflict
+			} else if isInstanceValidationError(err) {
+				status = http.StatusBadRequest
 			}
 			writeError(w, status, err)
 			return
@@ -506,6 +510,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			ProfileID      string    `json:"profileId"`
 			Config         string    `json:"config"`
 			MixedPort      int       `json:"mixedPort"`
+			ProxyBind      *string   `json:"proxyBind"`
 			ControllerPort int       `json:"controllerPort"`
 			Mode           string    `json:"mode"`
 			LocalProxies   *string   `json:"localProxies"`
@@ -523,6 +528,17 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		if c.manager.state(id) != nil && (req.MixedPort > 0 || req.ControllerPort > 0) {
 			writeError(w, http.StatusConflict, errors.New("stop the instance before changing ports"))
 			return
+		}
+		if c.manager.state(id) != nil && req.ProxyBind != nil {
+			nextProxyBind, err := normalizeProxyBind(*req.ProxyBind)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if nextProxyBind != instanceProxyBind(current.ProxyBind) {
+				writeError(w, http.StatusConflict, errors.New("stop the instance before changing proxy bind"))
+				return
+			}
 		}
 		if c.manager.state(id) != nil && req.ProfileID != "" && current.ProfileID != req.ProfileID {
 			writeError(w, http.StatusConflict, errors.New("stop the instance before changing profile"))
@@ -548,6 +564,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			ProfileID:      req.ProfileID,
 			Config:         req.Config,
 			MixedPort:      req.MixedPort,
+			ProxyBind:      req.ProxyBind,
 			ControllerPort: req.ControllerPort,
 			Mode:           req.Mode,
 			LocalProxies:   req.LocalProxies,
@@ -984,4 +1001,15 @@ func isPortUnavailableError(err error) bool {
 	return (strings.Contains(message, "proxy port") && strings.Contains(message, "is unavailable")) ||
 		(strings.Contains(message, "controller port") && strings.Contains(message, "is unavailable")) ||
 		message == "unable to allocate local ports"
+}
+
+func isInstanceValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "proxy bind address") ||
+		strings.Contains(message, "instance mode") ||
+		strings.Contains(message, "parse local proxies") ||
+		strings.Contains(message, "mixed and controller ports must differ")
 }
