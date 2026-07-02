@@ -1,0 +1,12 @@
+{
+  "id": "multi-bind-and-log-scroll",
+  "title": "支持 WebUI 多监听地址并修复日志滚动",
+  "status": "in_progress",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "backend/frontend",
+  "currentPhase": "completed",
+  "nextAction": "归档 CCG 任务",
+  "createdAt": "2026-07-02T12:30:36Z",
+  "branch": "main"
+}
