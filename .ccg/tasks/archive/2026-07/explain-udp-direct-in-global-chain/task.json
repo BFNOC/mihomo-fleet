@@ -1,0 +1,12 @@
+{
+  "id": "explain-udp-direct-in-global-chain",
+  "title": "解释全局链式下 UDP 直连日志",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "low",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "已在全局链式运行态规则中优先拒绝 UDP，并隐藏误导性的内置 GLOBAL 组",
+  "createdAt": "2026-07-02T14:31:00Z",
+  "branch": "main"
+}
