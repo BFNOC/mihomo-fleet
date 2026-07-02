@@ -1,0 +1,12 @@
+{
+  "id": "fix-edit-form-refresh-dirty",
+  "title": "修复编辑实例模式时自动刷新覆盖未保存表单",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "medium",
+  "domain": "frontend",
+  "currentPhase": "completed",
+  "nextAction": "归档任务",
+  "createdAt": "2026-07-02T10:47:10Z",
+  "branch": "main"
+}
