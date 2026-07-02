@@ -1,0 +1,8 @@
+{"path":"internal/app/config.go","reason":"runtime config generation branches by instance mode"}
+{"path":"internal/app/types.go","reason":"Instance and InstanceView persistence/API model"}
+{"path":"internal/app/store.go","reason":"create/update/clone/persist instance fields and selection reconciliation"}
+{"path":"internal/app/controller.go","reason":"instance create/update request fields and proxy group endpoint"}
+{"path":"internal/app/web/index.html","reason":"mode and chain fields in create/edit UI"}
+{"path":"internal/app/web/app.js","reason":"frontend state, API payloads, rendering, proxy panel behavior"}
+{"path":"internal/app/store_test.go","reason":"runtime config and store compatibility tests"}
+{"path":"README.md","reason":"document new usage mode and boundaries"}

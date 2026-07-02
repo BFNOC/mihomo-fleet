@@ -1,0 +1,146 @@
+[codeagent-wrapper]
+  Backend: claude
+  Command: claude -p --dangerously-skip-permissions --setting-sources  --output-format stream-json --verbose -
+  PID: 3415
+  Log: /var/folders/fk/8tgllf4x3m33gzf233hplygh0000gn/T/codeagent-wrapper-3415.log
+  Web UI: http://localhost:63727
+  Session-ID: 6e5decd0-741d-440d-952c-280f4a594986
+已读完全部关键路径（types/config/store/controller/manager/subscription/mihomo_api/geodata + 前端 index.html/app.js + README）。以下是只读分析，不写代码。
+
+---
+
+## 分析：mihomo-fleet 新增「链式全局代理」实例模式
+
+### 0. 现状定位（结论先行）
+
+当前 `writeRuntimeConfig`（config.go:10）的本质是：**读取 profile 的 `config.yaml` → 删除一批顶层键（port/listeners/tun/external-ui 等）→ 覆写 mixed-port/external-controller/secret/allow-lan/bind-address**。也就是说 runtime config ≈ 订阅/手写配置原样 + Fleet 覆写，`proxies / proxy-providers / proxy-groups / rules` 全部来自 profile 原文。这正是「规则分流」模式。
+
+节点选择（`SelectedProxies map[string]string`，group→proxy）依赖：
+- `parseProfileProxyGroups`（subscription.go:307）从 **profile 配置**解析组；
+- `/api/profiles/{id}/proxies?instanceId=`（controller.go:200）在停止态用 profile 组渲染节点面板；
+- `putMihomoProxy`（mihomo_api.go:24）在运行态对 group 下发选择；
+- `reconcileInstanceSelection`（store.go:753）在订阅刷新时按 profile 组名校验/清理选择；
+- `restoreSelection`（manager.go:484）启动后恢复选择。
+
+新模式的全部设计要点，就是决定这套机制在「runtime config 不再沿用 profile 的 groups/rules」时如何继续工作。下面按你要求的四点展开。
+
+---
+
+### 1. 数据模型 / API / UI 变更范围
+
+#### 1.1 数据模型（types.go）— Critical：必须加，且向后兼容
+
+在 `Instance` 与 `InstanceView` 上新增（全部 additive，零值即旧行为）：
+
+- `Mode string` — `""` / `"rule"` = 现有模式（默认），`"chain"` = 新模式。**禁止用空串以外的默认值歧义**：加载与创建时 `Mode == ""` 一律归一为 `"rule"`。
+- `LocalProxies string` — 用户本地节点的 YAML 片段，**严格是 `proxies` 序列**（一个 list of map），不是完整配置。存原始文本便于编辑与回显。
+- `Chain []string` — 链式代理的有序节点名列表（local 节点 + 订阅 inline 节点，按用户指定顺序），用于 relay 组的 `proxies`。
+- 可选 `ChainGroupName string` / `SelectGroupName string` — 暴露生成的组名给前端，默认固定为 `Chain`（relay）与 `Proxy`（select），允许后续定制。
+
+`createInstanceOptions`（store.go:48）与 `Clone`（store.go:389）需同步携带这四个字段，否则克隆出来的实例会丢链配置。
+
+#### 1.2 API（controller.go / store.go）— Critical
+
+- **Create / Update / Clone 请求体** 扩展 `mode / localProxies / chain`。注意 `readJSON` 用了 `DisallowUnknownFields()`（controller.go:927），所以请求结构体必须显式声明新字段，否则旧前端发新字段会被拒（向后不兼容点，但旧前端不会发新字段，安全）。
+- **`Update`（store.go:530）必须按 mode 分支**：现有实现把 `config` 写进 `profile.ConfigPath`，这对 chain 模式是错的（chain 模式不应改订阅 YAML）。chain 模式的「编辑」目标应是 instance 上的 `LocalProxies / Chain`，而非 profile 文件。
+- **`handleInstanceRoot` PUT 的守卫**（controller.go:510-524）现在按「订阅 profile 不可编辑」拦截 `req.Config`；chain 模式下用户编辑的是链配置，需放行并走新分支。
+- **`/api/profiles/{id}/proxies?instanceId=` 的语义在 chain 模式下失效**：它解析的是订阅 profile 的组，而 chain 模式 runtime 用的是 Fleet 生成的 `Proxy/Chain` 组。建议新增 **instance 作用域的节点端点**（如 `/api/instances/{id}/proxies`），按 mode 返回：rule 模式仍走 profile 组；chain 模式返回生成的 select 组（含 `use` 拉取的 provider 节点，运行态才有名字）+ relay 组 + 可用的 inline/local 节点名。
+- `InstanceView` 暴露 `mode / localProxies / chain`，供前端渲染。
+
+#### 1.3 UI（index.html / app.js / styles.css）— Warning
+
+- 新建表单 `#createPanel` 增加「模式」分段控件：`规则分流` / `链式全局`。
+  - chain 模式下：配置档限定为含 `proxies` 或 `proxy-providers` 的订阅/配置；隐藏「手写配置」textarea，改为「本地节点（YAML）」textarea + 「链顺序」构建器（从订阅 inline 节点名 + 本地节点名里挑选并排序）。
+- 详情页：概览显示模式；**配置 tab 在 chain 模式下切换为链编辑器**（本地节点 YAML + 链顺序 + 当前 `Proxy` 组选择），不再显示订阅 YAML（订阅 YAML 仍只读展示在原 profile 处）。
+- 节点 tab：复用现有 group→proxy 选择 UI，因为生成的 `Proxy` select 组可被 `selectProxy` / `putMihomoProxy` 正常驱动；`Chain` relay 组展示成员但不可「选当前」（relay 无 now），需在 `currentLatencyTarget`（app.js:285）处对 relay 组判空，避免测速按钮误启用。
+- 端口矩阵、批量启停、克隆、删除：无需改动。
+
+---
+
+### 2. Runtime config 生成方案（config.go）— Critical
+
+#### 2.1 总入口
+
+`writeRuntimeConfig(item, profile)` 顶部按 mode 分流：
+
+```
+if item.Mode == "chain" → writeChainRuntimeConfig(...)
+else → 现有逻辑（保持不变，回归安全）
+```
+
+#### 2.2 `writeChainRuntimeConfig` 步骤
+
+1. **读取订阅 profile 的 `config.yaml`**，unmarshal 为 `map[string]any`。
+2. **只保留** `proxies`（list）与 `proxy-providers`（map）。**丢弃** `proxy-groups / rules / rule-providers`（这是新模式的核心：不沿用订阅分流规则）。`dns / sniffer / log-level` 等可保留，但建议白名单式保留，避免订阅里 `tun / listeners / port` 等残留——叠加现有 config.go:24 的 delete 列表继续清理。
+3. **注入本地节点**：把 `item.LocalProxies` **严格 unmarshal 为 `[]map[string]any`（序列）**，append 进 `proxies`。
+   - ⚠️ Critical 安全点：绝不能把 `LocalProxies` 当作顶层 map 合并，否则用户 YAML 里写 `mixed-port: 9999` 之类会逃逸 Fleet 沙箱。必须是 list 解析，解析失败即报错。
+   - 本地节点 `name` 与订阅 inline `name` 冲突 → 拒绝（明确报错），或加前缀去重；建议拒绝，让用户改名。
+4. **构造 proxy-groups**（这是「select/relay」的落点）：
+   - **relay 组** `Chain`：`{type: relay, proxies: item.Chain}`。`item.Chain` 中的每个名字必须 ∈（订阅 inline proxies 名 ∪ 本地 proxies 名）；引用不存在 → 启动前预校验报错（不要只靠 `mihomo -t` 兜底，错误信息要可读）。
+   - **select 组** `Proxy`：`{type: select, proxies: ["Chain","DIRECT", ...inline+local 节点名], use: [...订阅 proxy-provider 名]}`。`use` 让 provider 节点在运行态注入到选择列表，用户可在节点 tab 选用任一 provider 节点作单跳出口。
+   - 这样 MATCH 指向 `Proxy`，用户既可选 `Chain` 走多跳链，也可选 DIRECT 或某个节点单跳。**保持 select 组存在是兼容现有选择/测速/恢复机制的关键**。
+5. **rules**：`["MATCH,Proxy"]`。不引入 GEOSITE/GEOIP，因此无需 geodata。
+6. **Fleet 覆写**：复用现有 `mixed-port / external-controller / secret / allow-lan=false / bind-address=127.0.0.1` 与 delete 列表。
+7. 写入 `item.RuntimeConfigPath`，`testConfig`（manager.go:469，`mihomo -t`）作为最终兜底校验。
+
+#### 2.3 proxy-providers 的固有局限 — Warning
+
+- relay 组的 `proxies` 只能引用**配置期已知名字**。`proxy-providers` 的节点名是运行态才展开的，**无法在配置期指定「provider 里的某个具体节点」进入静态链顺序**。
+- 因此：**可静态排序的链只由 inline + 本地节点组成**；provider 节点只能整包 `use` 进 select 组，运行时单跳选用，或 `use` 进 relay 组（但成员顺序不可控，整批追加）。
+- 必须在 UI/README 明确：想用确定顺序的多跳链，订阅需提供 inline `proxies`；provider 型订阅只能做「链 + provider 单跳选择」混合。这是一个需要前置告知用户的产品边界。
+
+#### 2.4 geodata — Info
+
+`configGeodataNeeds`（geodata.go:260）读的是 `profile.ConfigPath`（订阅原文，含 GEOSITE/GEOIP 规则）。chain 模式实际只用 `MATCH`，不需要 geodata，但该函数仍会判定为需要并触发 `prepareGeodata` 准备文件——不是 bug，但会做无用功并可能日志告警。建议让 `configGeodataNeeds` 接收 `item.Mode` 或在 manager 调用处按 mode 短路。
+
+---
+
+### 3. 兼容性与迁移风险
+
+| 级别 | 风险 | 说明与缓解 |
+|---|---|---|
+| Critical | **`reconcileInstanceSelection` 会误清 chain 模式的选择** | 订阅刷新时（store.go:330）对所有实例按 **profile 组名** 校验 `SelectedProxies`。chain 模式的选择键是生成的 `Proxy` 组，不在 profile 组集合里 → 会被判定无效并清空。缓解：chain 模式实例跳过该 reconcile，或按生成的组集合校验。 |
+| Critical | **订阅刷新导致链引用悬空** | inline 订阅更新后节点名可能变更/消失，`item.Chain` 里的名字失效 → 下次启动 `mihomo -t` 失败。缓解：刷新后对 chain 实例校验 `Chain` 名字仍存在，悬空则记录 `LastError` 并在 UI 标红，可选「自动剔除失效成员并告警」。 |
+| Critical | **`Update` 写错文件** | 现有 `Update` 把 `config` 写入 `profile.ConfigPath`。chain 模式必须改为更新 instance 的 `LocalProxies/Chain`，且不应触碰共享订阅文件（多实例共享一个订阅）。 |
+| Warning | **停止态节点面板来源不一致** | `/api/profiles/{id}/proxies` 在 chain 模式返回的是订阅组，与 runtime 实际组不符，会误导用户。需 mode 感知或新增 instance 端点。 |
+| Warning | **relay 组无 `now`，测速/选择 UI 语义错位** | `currentLatencyTarget`（app.js:285）对 relay 组返回空，测速按钮应禁用；选择 relay 组「当前节点」无意义。需前端对 group.type==relay 特判。 |
+| Warning | **本地节点 YAML 注入** | 单用户本机（127.0.0.1 + X-Mihomo-Fleet 头）威胁面小，但仍需严格 list 解析 + 名字唯一性校验，防止顶层键逃逸与名字冲突。 |
+| Info | **旧 instances.json 无 `Mode` 字段** | 零值 `""` 归一为 `rule`，无需迁移脚本；`load`（store.go:83）天然兼容。 |
+| Info | **`DisallowUnknownFields`** | 旧前端不发新字段，新服务端默认 rule；新前端发新字段需服务端请求结构体显式声明，否则 400。 |
+| Info | **`Clone` 需携带新字段** | 否则克隆实例退化为 rule 模式且丢链配置。 |
+
+---
+
+### 4. 必须补的测试
+
+按 `go test -race ./...`，建议 table-driven：
+
+1. **`writeChainRuntimeConfig`（config_test.go，新增）**
+   - inline 订阅：保留 `proxies`、丢弃 `rules/proxy-groups`、追加本地节点、生成 `Chain`(relay)+`Proxy`(select)、`rules=[MATCH,Proxy]`、Fleet 端口/secret 覆写生效。
+   - proxy-providers 订阅：保留 `proxy-providers`，select 组 `use` 含 provider 名，relay 仅含 inline+local。
+   - 本地节点名与订阅 inline 名冲突 → 报错。
+   - `Chain` 引用不存在的名字 → 报错（预校验，非依赖 mihomo）。
+   - `LocalProxies` 含顶层键（如 `mixed-port: 9999`）→ 解析为非序列 → 报错，且断言 runtime config 中 `mixed-port` 仍为 Fleet 值（注入不逃逸）。
+   - 空 `Chain` → 报错。
+   - `Mode=="rule"` → 走原路径，输出与现有完全一致（回归保护）。
+2. **`configGeodataNeeds`**：chain 模式（无论订阅是否含 GEOSITE）返回空需求。
+3. **store**
+   - `Create/Update/Clone` 携带并持久化 `mode/localProxies/chain`；`Mode==""` 归一为 `rule`。
+   - `Update` 在 chain 模式下**不写** `profile.ConfigPath`，只更新 instance 字段。
+   - `ApplySubscriptionFetchForURL` 对 chain 实例：`reconcileInstanceSelection` 不清空 `Proxy` 选择（断言 `SelectedProxies["Proxy"]` 保留）。
+   - 订阅刷新后 `Chain` 名字悬空时的处理（按选定策略：报错或剔除）。
+4. **controller**
+   - Create/Update/Clone 请求体含新字段的 happy path 与校验失败 path（名字冲突、链空、本地 YAML 非法）。
+   - `/api/instances/{id}` 响应含 `mode/localProxies/chain`。
+   - chain 模式下节点端点返回生成的组（而非订阅组）。
+   - 旧请求体（无新字段）仍可创建 rule 实例（向后兼容）。
+5. **mihomo_api / manager**：`restoreSelection` 对 chain 实例恢复 `Proxy` 组选择成功；relay 组不被当作可测速目标（如端点对 relay 组返回合理错误）。
+
+---
+
+### 5. 推荐取舍（一句话）
+
+> 让新模式**继续产出包含一个 select 组 + 一个 relay 组 + `MATCH,select` 的 runtime config**，把链配置（本地节点 + 顺序）存为 instance 级字段、订阅只借 `proxies/proxy-providers`；这样现有的选择/测速/恢复/克隆机制最大复用，主要新增工作量在 `writeChainRuntimeConfig` 分支、`Update` 按 mode 分流、`reconcileInstanceSelection` 与节点端点的 mode 感知，以及前端「模式开关 + 链编辑器」。provider 型订阅的静态链顺序不可控是固有边界，需前置告知。
+
+---
+SESSION_ID: 6e5decd0-741d-440d-952c-280f4a594986

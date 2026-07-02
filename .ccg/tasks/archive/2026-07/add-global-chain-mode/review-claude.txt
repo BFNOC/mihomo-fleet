@@ -1,0 +1,60 @@
+[codeagent-wrapper]
+  Backend: claude
+  Command: claude -p --dangerously-skip-permissions --setting-sources  --output-format stream-json --verbose -
+  PID: 32283
+  Log: /var/folders/fk/8tgllf4x3m33gzf233hplygh0000gn/T/codeagent-wrapper-32283.log
+  Web UI: http://localhost:64908
+  Session-ID: 3ac3dcd5-27e1-4821-9cc8-6bcd25602a25
+I have a complete picture. Let me write the review.
+
+## Review: global-chain 实例模式
+
+### Critical 🔴
+
+无 Critical。本次新增功能逻辑自洽：global-chain 模式在 `writeRuntimeConfig` 中重建 proxy-groups/rules 并清理 rule-providers，rule 模式路径未受影响，store/controller 对新字段的处理（含指针语义区分"未提供"与"清空"）整体正确，回滚路径也补齐了 `Chain` 的快照恢复。
+
+### Warning 🟡
+
+1. **config.go:116-119 / proxyItemsAndNames:205-223 — select 组与 relay 组的"空节点"校验缺口**
+   `applyGlobalChainConfig` 仅要求 `inlineNames`、`localNames`、`providerNames` 至少一个非空。但当订阅**只有 `proxy-providers`、无 inline/local 节点**时，`selectGroup` 不会有 `proxies` 键（只设 `use`），运行配置可生成；但同一份配置在 `parseGlobalChainProxyGroups`（停止态读取组）中，`selectNames` 为空、`providerNames` 非空 → `Now` 被显式置空。两处行为一致，但运行态的 select 组此时没有任何可点选项，前端会渲染一个空选择组且 `now` 为空。建议在 `applyGlobalChainConfig` 里当 `selectNames` 与 `providerNames` 同时为空时复用同一校验报错（目前 `len==0 && provider==0` 会触发"requires proxies..."，已覆盖；纯 provider 场景则通过）。这一点功能上可工作，但属于边界一致性较弱的地方，建议加注释或测试固化。
+
+2. **config.go:131-138 — chain 引用 builtin 名但 relay 实际不可链这些**
+   `chain references unknown` 校验允许 chain 引用 `DIRECT/REJECT/GLOBAL` 等 builtin 名（`known` 已并入 `builtinProxyNames()`）。mihomo relay 组把 `DIRECT`/`REJECT` 作为链中一环语义存疑（relay 期望的是出站代理而非策略结果），可能启动报错或行为非预期。建议文档或校验中明确哪些 builtin 名可入链，或至少在 README 提示。
+
+3. **store.go:344-348 — global-chain 跳过 selection reconcile 但旧选择未清理**
+   `ApplySubscriptionFetchForURL` 对 global-chain 实例跳过 `reconcileInstanceSelection`，这保护了 `节点选择` 组的选中项不被订阅节点变更清掉（测试已覆盖）。但若订阅节点池变化导致用户先前选中的 inline 节点已不存在，`节点选择` 组的 `Now` 会指向失效名。`parseGlobalChainProxyGroups` 的 `selectionForGroup` 会在节点不在列表时回退到首个，运行态显示自洽，但持久化的 `SelectedProxies` 仍残留过期项。低风险，建议后续做一次按 selectNames 过滤的轻量 reconcile。
+
+4. **manager.go:201-220 — global-chain 跳过 geodata 预备可能误判**
+   global-chain 模式跳过 `prepareGeodata` 与 `configGeodataNeeds`。这是合理的（已删 rule-providers、rules 仅 MATCH），但前提是 `applyGlobalChainConfig` 已删除所有规则相关键。注意：`cleanRuntimeConfig` 不删 `dns` 里的 `geosite` 引用、不删 `geox-url`/`geodata-mode` 等顶层键；若用户 Profile 在 `dns` 段引用了 geosite，global-chain 模式下 mihomo 仍可能尝试下载 geodata，而此处日志不再提示。建议确认 dns 段不会触发 geodata 需求，或保留 geodata 下载提示。
+
+5. **controller.go:483-502 — PUT 时 `mode` 空串表示"不改"，但前端始终发送**
+   后端 `opts.Mode == ""` → 不改模式，前端 `saveBasics` 始终发送 `mode`。功能正常。但 `localProxies` 用 `*string` 区分未提供/清空，而前端在切到 rule 模式时发送 `localProxies: ""`（空串）→ 后端 `*opts.LocalProxies != nil` → 置空。这是期望行为（切回 rule 清空本地节点）。但 `chain` 同理用 `*[]string`，前端切 rule 时发 `chain: []` → `*opts.Chain != nil` → `normalizeChainNames([])` = `[]`，清空。一致。仅提示：mode 字段无法区分"不改"与"显式设为 rule"，因 rule 是默认值，无实际影响。
+
+6. **config.go:106-113 — selectGroup 缺 `proxies` 键时的 YAML 行为**
+   当 `selectNames` 为空（纯 provider）时 `selectGroup` 只有 `name/type/use`，无 `proxies` 键。mihomo 对 select 组无 `proxies` 但有 `use` 是合法的。OK，但 `proxyItemsAndNames` 返回的 `proxies` 切片在无 inline/local 时为空，`applyGlobalChainConfig` 末尾 `else { delete(cfg, "proxies") }` 会删掉原 profile 的 `proxies` 键 —— 这是正确的（无节点可保留）。逻辑无误，仅逻辑密度高，建议补一行注释。
+
+### Info 🟢
+
+1. **测试覆盖**：`TestWriteRuntimeConfigGlobalChainBuildsMatchRelay`、`TestStorePersistsGlobalChainFieldsAndCloneCopiesThem`、`TestApplySubscriptionFetchKeepsGlobalChainSelection`、`TestHandleInstancesCreateAcceptsGlobalChainFields` 覆盖了核心路径。**缺口**：(a) chain 引用未知名应报错的分支无测试；(b) `parseGlobalChainProxyGroups`（profile proxies 端点）无直接测试，仅间接经 controller；(c) duplicate proxy name 冲突分支无测试；(d) `applyGlobalChainConfig` 中 local proxy 与 inline proxy 重名 (`conflicts with profile proxy`) 分支无测试。建议按 Go 测试规范补 table-driven 用例。
+
+2. **前端 app.js:1126-1131 — relay 组按钮禁用**
+   `isSelectableProxyGroup` 禁用 relay 组点击是对的（relay 不可手选）。但禁用按钮仍渲染了点击态样式与 `aria-pressed`，无障碍上禁用按钮带 `aria-pressed` 略奇怪，建议 relay 组不设 `aria-pressed` 或改为只读展示。
+
+3. **app.js:906-908 — chain 模式隐藏 config 输入框**
+   切到 global-chain 时隐藏 `createConfig` 并 disable。但 `createConfigWrap` 在 subscription + 非 chain 时也隐藏，组合状态下 createLocalProxies/createChain 是否始终可见取决于 `applyModeFields("create",...)`，逻辑正确。提示：subscription 模式 + global-chain 组合下，订阅 URL 与本地节点同时存在是合法用例，UI 已支持。
+
+4. **README.md — 文档清晰**
+   全局链式说明准确反映了实现行为。小建议：文档未说明 chain 可引用 `DIRECT/REJECT` 等 builtin 名（见 Warning 2），也未说明切回 rule 模式会清空 localProxies/chain（见 Warning 5），可补充。
+
+5. **types.go — JSON tag 一致性**
+   `Instance.Mode` 用 `omitempty`，`InstanceView.Mode` 不带 `omitempty`（视图始终返回）。前端 `instanceMode()` 默认 rule，空串兼容。一致，OK。
+
+6. **store.go: load() 规范化**
+   `load()` 对 `copy.Mode` 用 `instanceMode` 归一、`copy.Chain` 用 `normalizeChainNames` 归一，但未对 `LocalProxies` 做任何校验/规整。历史持久化数据若 `localProxies` 非法 YAML，会在启动时静默加载，直到 create/update 或运行时才报错。低优先，建议 load 时 lazily 校验或记录警告。
+
+### Summary
+
+**Request changes（轻量）**。整体设计干净、向后兼容（rule 模式路径完全不变）、指针语义处理谨慎、回滚完整。无 Critical。主要改进点集中在：(1) chain 引用 builtin 名的语义需明确；(2) global-chain 跳过 geodata 预备对 dns 段 geosite 引用的影响需确认；(3) 测试覆盖几个报错分支。前端交互、API 契约、持久化均一致。建议补 table-driven 测试覆盖 chain 未知引用、重名冲突等分支后合入。
+
+---
+SESSION_ID: 3ac3dcd5-27e1-4821-9cc8-6bcd25602a25
