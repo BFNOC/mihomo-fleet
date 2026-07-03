@@ -1,0 +1,12 @@
+{
+  "id": "proxy-choice-full-name-tooltip",
+  "title": "节点按钮悬停显示完整名称",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "low",
+  "domain": "frontend",
+  "currentPhase": "completed",
+  "nextAction": "已实现节点按钮完整名称浮层并完成复审",
+  "createdAt": "2026-07-03T00:41:28Z",
+  "branch": "main"
+}
