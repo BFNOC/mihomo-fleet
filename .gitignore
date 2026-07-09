@@ -6,6 +6,8 @@
 /.codex/
 *.log
 .DS_Store
+/AGENTS.md
+/claude-codex-clean-migration.md
 *.dat
 *.mmdb
 mihomo
