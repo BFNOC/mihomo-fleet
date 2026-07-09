@@ -15,6 +15,8 @@ import (
 var portFreeTestMu sync.Mutex
 
 func TestStorePersistsSecretButViewDoesNotExposeIt(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
 	dir := t.TempDir()
 	store, err := NewStore(dir)
 	if err != nil {
@@ -519,6 +521,8 @@ func TestWriteRuntimeConfigGlobalChainRejectsInvalidChainInputs(t *testing.T) {
 }
 
 func TestStoreSharesProfileAndPersistsPerInstanceSelection(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
 	dir := t.TempDir()
 	store, err := NewStore(dir)
 	if err != nil {
@@ -744,8 +748,8 @@ func TestStoreCloneRejectsSameMixedAndControllerPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Clone(source.ID, "US same port", 28011, 28011); err == nil || err.Error() != "mixed and controller ports must differ" {
-		t.Fatalf("Clone() error = %v, want mixed/controller differ error", err)
+	if _, err := store.Clone(source.ID, "US same port", 28011, 28011); err == nil || !errors.Is(err, errValidation) {
+		t.Fatalf("Clone() error = %v, want errValidation", err)
 	}
 }
 
@@ -781,6 +785,420 @@ func TestStoreUpdateRejectsSameMixedAndControllerPort(t *testing.T) {
 	}
 	if got.MixedPort != 28001 || got.ControllerPort != 29001 {
 		t.Fatalf("ports changed after failed update: mixed=%d controller=%d", got.MixedPort, got.ControllerPort)
+	}
+}
+
+func TestStorePatchProfileRenamePersistsAcrossReload(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Original", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PatchProfile(profile.ID, ProfilePatch{Name: "Renamed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reloaded.GetProfile(profile.ID)
+	if !ok || got.Name != "Renamed" {
+		t.Fatalf("profile rename did not persist across reload: %+v", got)
+	}
+}
+
+func TestStorePatchProfileChangingURLClearsSubscriptionMetadata(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetched := &subscriptionFetchResult{
+		Config:  subscriptionConfig,
+		HomeURL: "https://example.com/home",
+		Info:    &SubscriptionInfo{Total: 100},
+	}
+	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/sub", true, 360, fetched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.LastUpdatedAt.IsZero() || profile.HomeURL == "" || profile.SubscriptionInfo == nil {
+		t.Fatalf("expected subscription metadata to be populated before the URL change: %+v", profile)
+	}
+
+	newURL := "https://example.com/sub2"
+	updated, err := store.PatchProfile(profile.ID, ProfilePatch{SubscriptionURL: &newURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.LastUpdatedAt.IsZero() || updated.HomeURL != "" || updated.SubscriptionInfo != nil {
+		t.Fatalf("expected LastUpdatedAt/HomeURL/SubscriptionInfo to be cleared after URL change: %+v", updated)
+	}
+}
+
+func TestStorePatchProfileClearingURLDisablesAutoUpdate(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/sub", true, 360, &subscriptionFetchResult{Config: subscriptionConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.AutoUpdate || profile.UpdateIntervalMinutes == 0 {
+		t.Fatalf("expected auto update to start enabled: %+v", profile)
+	}
+
+	empty := ""
+	updated, err := store.PatchProfile(profile.ID, ProfilePatch{SubscriptionURL: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SubscriptionURL != "" || updated.AutoUpdate || updated.UpdateIntervalMinutes != 0 {
+		t.Fatalf("expected clearing the subscription URL to disable auto update: %+v", updated)
+	}
+}
+
+func TestStoreUpdateWithOptionsSwitchingProfileClearsSelection(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, err := store.CreateProfile("A", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileB, err := store.CreateProfile("B", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Test", profileA.ID, "", 28040, 29040)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetSelection(item.ID, "Proxy", "US-01"); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := store.UpdateWithOptions(item.ID, updateInstanceOptions{ProfileID: profileB.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ProfileID != profileB.ID {
+		t.Fatalf("ProfileID = %q, want %q", updated.ProfileID, profileB.ID)
+	}
+	if updated.SelectedGroup != "" || updated.SelectedProxy != "" || len(updated.SelectedProxies) != 0 {
+		t.Fatalf("expected selection to be cleared after switching profile: %+v", updated)
+	}
+}
+
+func TestStoreUpdateWithOptionsConfigRewritesProfileFile(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Main", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Test", profile.ID, "", 28041, 29041)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.UpdateWithOptions(item.ID, updateInstanceOptions{Config: subscriptionConfig}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != subscriptionConfig {
+		t.Fatalf("profile config file = %q, want %q", raw, subscriptionConfig)
+	}
+}
+
+func TestStoreDeleteRemovesInstanceAndDirectoryAndPersists(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Test", "", defaultUserConfig, 28050, 29050)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceDir := filepath.Join(dir, "instances", item.ID)
+	if _, err := os.Stat(instanceDir); err != nil {
+		t.Fatalf("expected instance directory to exist before delete: %v", err)
+	}
+
+	if err := store.Delete(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Get(item.ID); ok {
+		t.Fatal("expected instance record to be removed")
+	}
+	if _, err := os.Stat(instanceDir); !os.IsNotExist(err) {
+		t.Fatalf("expected instance directory to be removed, stat err = %v", err)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Get(item.ID); ok {
+		t.Fatal("deleted instance should not reappear after reload")
+	}
+}
+
+func TestStoreProfileProxyGroupsCacheInvalidatesOnConfigRewrite(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Main", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.ProfileProxyGroups(profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || strings.Join(first[0].All, ",") != "US-01,JP-01,DIRECT" {
+		t.Fatalf("unexpected initial groups: %+v", first)
+	}
+
+	nextConfig := strings.Replace(subscriptionConfig, "      - JP-01\n", "", 1)
+	if _, err := store.PatchProfile(profile.ID, ProfilePatch{Config: &nextConfig}); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := store.ProfileProxyGroups(profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(second[0].All, ",") != "US-01,DIRECT" {
+		t.Fatalf("cache was not invalidated after config rewrite: %+v", second)
+	}
+}
+
+// breakStoreSaves makes every future saveLocked() call on a store rooted at
+// dataDir fail: writeFileAtomic's os.CreateTemp(dataDir, ...) needs write
+// permission on dataDir itself (instances.json lives directly inside it),
+// so dropping the write bit is enough to force a write failure without
+// touching any file. Subdirectories (instances/<id>, profiles/<id>) keep
+// their own 0700 permissions and stay writable, so profile/instance config
+// file writes that happen before saveLocked in these tests still succeed --
+// only the final saveLocked persistence step fails, which is what exercises
+// the rollback branches (H3: PatchProfile, ApplySubscriptionFetchForURL,
+// UpdateWithOptions, Delete). Root ignores permission bits entirely, so
+// these tests skip under root.
+func breakStoreSaves(t *testing.T, dataDir string) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block writes, cannot force a saveLocked failure this way")
+	}
+	if err := os.Chmod(dataDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dataDir, 0o700)
+	})
+}
+
+// TestStorePatchProfileRollsBackOnSaveFailure covers the H3 gap: when
+// saveLocked fails after PatchProfile has already applied the rename and
+// rewritten the profile config file, store.go's rollback branch must put
+// both back exactly as they were (see store.go's PatchProfile, the
+// `*profile = *original` / writeFileAtomic(previousConfig) block).
+func TestStorePatchProfileRollsBackOnSaveFailure(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Original", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	breakStoreSaves(t, dir)
+
+	newConfig := subscriptionConfig
+	if _, err := store.PatchProfile(profile.ID, ProfilePatch{Name: "Renamed", Config: &newConfig}); err == nil {
+		t.Fatal("expected PatchProfile to fail when saveLocked cannot persist instances.json")
+	}
+
+	got, ok := store.GetProfile(profile.ID)
+	if !ok {
+		t.Fatal("expected profile to still exist after failed patch")
+	}
+	if got.Name != "Original" {
+		t.Fatalf("profile name = %q, want rollback to %q", got.Name, "Original")
+	}
+	raw, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != defaultUserConfig {
+		t.Fatalf("profile config file was not rolled back: got %q", raw)
+	}
+}
+
+// TestStoreApplySubscriptionFetchForURLRollsBackOnSaveFailure covers the H3
+// gap for ApplySubscriptionFetchForURL's rollback: on saveLocked failure it
+// must restore the profile metadata, the rewritten config file, and any
+// instance selections it reconciled against the new proxy groups.
+func TestStoreApplySubscriptionFetchForURLRollsBackOnSaveFailure(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetched := &subscriptionFetchResult{
+		Config:  subscriptionConfig,
+		HomeURL: "https://example.com/home",
+		Info:    &SubscriptionInfo{Total: 100},
+	}
+	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/sub", true, 360, fetched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalConfig, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHomeURL := profile.HomeURL
+
+	item, err := store.Create("Test", profile.ID, "", 28070, 29070)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetSelection(item.ID, "Proxy", "US-01"); err != nil {
+		t.Fatal(err)
+	}
+
+	breakStoreSaves(t, dir)
+
+	nextFetched := &subscriptionFetchResult{Config: defaultUserConfig, HomeURL: "https://example.com/new-home"}
+	if _, err := store.ApplySubscriptionFetchForURL(profile.ID, "https://example.com/sub", nextFetched); err == nil {
+		t.Fatal("expected ApplySubscriptionFetchForURL to fail when saveLocked cannot persist instances.json")
+	}
+
+	gotProfile, ok := store.GetProfile(profile.ID)
+	if !ok {
+		t.Fatal("expected profile to still exist after failed subscription apply")
+	}
+	if gotProfile.HomeURL != originalHomeURL {
+		t.Fatalf("profile HomeURL = %q, want rollback to %q", gotProfile.HomeURL, originalHomeURL)
+	}
+	raw, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(originalConfig) {
+		t.Fatalf("profile config file was not rolled back: got %q", raw)
+	}
+	gotItem, ok := store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected instance to remain")
+	}
+	if gotItem.SelectedProxies["Proxy"] != "US-01" || gotItem.SelectedGroup != "Proxy" || gotItem.SelectedProxy != "US-01" {
+		t.Fatalf("instance selection was not rolled back: %#v", gotItem.SelectedProxies)
+	}
+}
+
+// TestStoreUpdateWithOptionsRollsBackOnSaveFailure covers the H3 gap for
+// UpdateWithOptions' rollback: on saveLocked failure both the in-memory
+// instance fields and the rewritten profile config file must be restored.
+func TestStoreUpdateWithOptionsRollsBackOnSaveFailure(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Main", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Test", profile.ID, "", 28071, 29071)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalName := item.Name
+
+	breakStoreSaves(t, dir)
+
+	if _, err := store.UpdateWithOptions(item.ID, updateInstanceOptions{Name: "Renamed", Config: subscriptionConfig}); err == nil {
+		t.Fatal("expected UpdateWithOptions to fail when saveLocked cannot persist instances.json")
+	}
+
+	got, ok := store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected instance to remain after failed update")
+	}
+	if got.Name != originalName {
+		t.Fatalf("instance name = %q, want rollback to %q", got.Name, originalName)
+	}
+	raw, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != defaultUserConfig {
+		t.Fatalf("profile config file was not rolled back: got %q", raw)
+	}
+}
+
+// TestStoreDeleteRestoresItemOnSaveFailure covers the H3 gap for Delete's
+// rollback: on saveLocked failure the in-memory record must be put back
+// (and, since RemoveAll only runs after a successful save, the instance
+// directory is never touched).
+func TestStoreDeleteRestoresItemOnSaveFailure(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Test", "", defaultUserConfig, 28072, 29072)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	breakStoreSaves(t, dir)
+
+	if err := store.Delete(item.ID); err == nil {
+		t.Fatal("expected Delete to fail when saveLocked cannot persist instances.json")
+	}
+
+	got, ok := store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected instance record to remain after failed delete")
+	}
+	if got.ID != item.ID || got.Name != item.Name {
+		t.Fatalf("instance record = %#v, want unchanged record for %q", got, item.ID)
+	}
+	instanceDir := filepath.Join(dir, "instances", item.ID)
+	if _, err := os.Stat(instanceDir); err != nil {
+		t.Fatalf("expected instance directory to survive an aborted delete: %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -83,6 +84,8 @@ func TestParseProfileProxyGroupsUsesSavedSelection(t *testing.T) {
 }
 
 func TestApplySubscriptionFetchClearsRemovedSelection(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +112,8 @@ func TestApplySubscriptionFetchClearsRemovedSelection(t *testing.T) {
 }
 
 func TestApplySubscriptionFetchKeepsGlobalChainSelection(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -141,6 +146,8 @@ func TestApplySubscriptionFetchKeepsGlobalChainSelection(t *testing.T) {
 }
 
 func TestStoreGetClonesSelectedProxies(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -164,6 +171,45 @@ func TestStoreGetClonesSelectedProxies(t *testing.T) {
 	second, _ := store.Get(item.ID)
 	if second.SelectedProxies["Proxy"] != "US-01" {
 		t.Fatalf("Get returned aliased SelectedProxies map: %+v", second.SelectedProxies)
+	}
+}
+
+func TestParseProfileProxyGroupsSynthesizesFallbackGroupWhenNoGroupsPresent(t *testing.T) {
+	config := `proxies:
+  - name: US-01
+    type: ss
+    server: example.com
+    port: 443
+  - name: JP-01
+    type: ss
+    server: example.net
+    port: 443
+`
+	groups, err := parseProfileProxyGroups(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("got %d groups, want 1", len(groups))
+	}
+	if groups[0].Name != "Proxy" || groups[0].Type != "select" {
+		t.Fatalf("unexpected fallback group: %+v", groups[0])
+	}
+	if strings.Join(groups[0].All, ",") != "US-01,JP-01,DIRECT" {
+		t.Fatalf("unexpected fallback members: %+v", groups[0].All)
+	}
+	if groups[0].Now != "US-01" {
+		t.Fatalf("fallback Now = %q, want first candidate US-01", groups[0].Now)
+	}
+}
+
+func TestParseProfileProxyGroupsEmptyInputReturnsNil(t *testing.T) {
+	groups, err := parseProfileProxyGroups("mixed-port: 1\n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if groups != nil {
+		t.Fatalf("groups = %+v, want nil", groups)
 	}
 }
 
@@ -222,6 +268,58 @@ func TestProfileSubscriptionDueUsesLastAttempt(t *testing.T) {
 	profile.UpdatedAt = now.Add(-61 * time.Minute)
 	if !profileSubscriptionDue(profile, now) {
 		t.Fatal("expected profile to be due after interval since last attempt")
+	}
+}
+
+// TestSanitizeSubscriptionErrorStripsCredentialsAndQuery covers review
+// finding M-2: fetchSubscription must never let a subscription URL's
+// userinfo or query-string tokens (where subscription tokens typically
+// live) reach the error text that gets persisted to instances.json
+// (Profile.LastUpdateError) or printed via log.Printf. This exercises
+// sanitizeSubscriptionError directly against a *url.Error shaped like the
+// one http.Client.Do (or a CheckRedirect failure it wraps) returns, since
+// fetchSubscription's own dial path can't be driven through httptest here
+// (the SSRF guard rejects loopback targets by design -- see M2 in
+// docs/review-2026-07-11-testing-quality.md).
+func TestSanitizeSubscriptionErrorStripsCredentialsAndQuery(t *testing.T) {
+	rawURL := "https://user:pass@example.com/sub?token=secret123"
+	simulated := &url.Error{Op: "Get", URL: rawURL, Err: errors.New("dial tcp: connect: connection refused")}
+
+	sanitized := sanitizeSubscriptionError(simulated)
+	if sanitized == nil {
+		t.Fatal("sanitizeSubscriptionError(non-nil) returned nil")
+	}
+	msg := sanitized.Error()
+	if strings.Contains(msg, "pass") {
+		t.Fatalf("sanitized error still contains the password: %q", msg)
+	}
+	if strings.Contains(msg, "secret123") {
+		t.Fatalf("sanitized error still contains the query token: %q", msg)
+	}
+	if strings.Contains(msg, "token=secret123") || strings.Contains(msg, "?") {
+		t.Fatalf("sanitized error still contains the query string: %q", msg)
+	}
+	if !strings.Contains(msg, "example.com") {
+		t.Fatalf("sanitized error lost the (non-sensitive) host: %q", msg)
+	}
+}
+
+// TestSanitizeSubscriptionErrorFallsBackForUnparsableURL covers the
+// url.Parse-failure path in fetchSubscription, where the *url.Error's URL
+// field is the raw (invalid) input string itself and so cannot be
+// re-parsed to build a redacted form -- sanitizeSubscriptionError must fall
+// back to a textual strip instead of leaving it untouched.
+func TestSanitizeSubscriptionErrorFallsBackForUnparsableURL(t *testing.T) {
+	rawURL := "https://user:pass@example.com/sub?token=secret123\x7f"
+	simulated := &url.Error{Op: "parse", URL: rawURL, Err: errors.New("net/url: invalid control character in URL")}
+
+	sanitized := sanitizeSubscriptionError(simulated)
+	msg := sanitized.Error()
+	if strings.Contains(msg, "pass") {
+		t.Fatalf("sanitized error still contains the password: %q", msg)
+	}
+	if strings.Contains(msg, "secret123") {
+		t.Fatalf("sanitized error still contains the query token: %q", msg)
 	}
 }
 

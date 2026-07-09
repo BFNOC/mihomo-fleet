@@ -85,6 +85,8 @@ const errorLabels = {
   "latency kind must be url or real": "测速类型无效。",
   "latency test URL must start with http:// or https://": "测试 URL 必须以 http:// 或 https:// 开头。",
   "global-chain mode requires proxies, proxy-providers, or local proxies": "全局链式模式需要订阅节点、provider 或本地节点。",
+  "instance is starting; retry once it finishes starting": "实例正在启动，请稍后重试。",
+  "missing or invalid API token": "API 令牌缺失或无效。",
 };
 
 const errorPatterns = [
@@ -92,6 +94,8 @@ const errorPatterns = [
   [/^profile "(.+)" is not a subscription profile$/, (match) => `配置档 ${match[1]} 不是订阅配置档。`],
   [/^profile "(.+)" subscription update is already running$/, (match) => `配置档 ${match[1]} 正在更新订阅。`],
   [/^instance "(.+)" not found$/, (match) => `实例 ${match[1]} 不存在。`],
+  [/^instance "(.+)" is being deleted$/, (match) => `实例 ${match[1]} 正在删除中，请稍后重试。`],
+  [/^stop instance before delete: (.+)$/, (match) => `删除前请先停止实例：${match[1]}`],
   [/^mixed proxy port (\d+) is unavailable$/, (match) => `混合端口 ${match[1]} 不可用。`],
   [/^controller port (\d+) is unavailable$/, (match) => `控制端口 ${match[1]} 不可用。`],
   [/^mixed proxy port (\d+) is already in use$/, (match) => `混合端口 ${match[1]} 已被占用。`],
@@ -206,6 +210,14 @@ const el = {
   logs: document.querySelector("#logs"),
 };
 
+const proxyTooltip = document.createElement("div");
+proxyTooltip.id = "proxyTooltip";
+proxyTooltip.className = "proxy-tooltip hidden";
+proxyTooltip.setAttribute("role", "tooltip");
+document.body.append(proxyTooltip);
+
+const proxyTooltipHoverQuery = window.matchMedia("(hover: hover) and (pointer: fine)");
+
 function active() {
   return state.instances.find((item) => item.id === state.activeId) || state.instances[0] || null;
 }
@@ -280,6 +292,32 @@ function formatBytes(value) {
     unit += 1;
   }
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function proxyLabelSources() {
+  const sources = new Set();
+  for (const profile of state.profiles) {
+    const name = String(profile.name || "").trim();
+    if (name) sources.add(name);
+  }
+  for (const instance of state.instances) {
+    const name = String(instance.profileName || "").trim();
+    if (name) sources.add(name);
+  }
+  return [...sources].sort((left, right) => right.length - left.length);
+}
+
+function splitProxyLabel(name, sources) {
+  const full = String(name || "");
+  for (const source of sources) {
+    for (const separator of [" - ", "-"]) {
+      const prefix = `${source}${separator}`;
+      if (full.startsWith(prefix) && full.length > prefix.length) {
+        return { source, name: full.slice(prefix.length).trimStart() };
+      }
+    }
+  }
+  return { source: "", name: full };
 }
 
 function latencySettings() {
@@ -488,42 +526,131 @@ function updateLatencyControls() {
   }
 }
 
+function proxyTooltipButton(target) {
+  if (!(target instanceof Element)) return null;
+  return target.closest(".proxy-choice");
+}
+
+function showProxyTooltip(button) {
+  const text = button.dataset.tooltip || "";
+  if (!text) return;
+
+  proxyTooltip.textContent = text;
+  proxyTooltip.classList.remove("hidden");
+  proxyTooltip.style.left = "0px";
+  proxyTooltip.style.top = "0px";
+
+  const edge = 8;
+  const gap = 8;
+  const buttonRect = button.getBoundingClientRect();
+  const tooltipRect = proxyTooltip.getBoundingClientRect();
+  const maxLeft = Math.max(edge, window.innerWidth - tooltipRect.width - edge);
+  const maxTop = Math.max(edge, window.innerHeight - tooltipRect.height - edge);
+
+  let left = Math.min(Math.max(buttonRect.left, edge), maxLeft);
+  let top = buttonRect.top - tooltipRect.height - gap;
+  if (top < edge) top = buttonRect.bottom + gap;
+  top = Math.min(Math.max(top, edge), maxTop);
+
+  proxyTooltip.style.left = `${left}px`;
+  proxyTooltip.style.top = `${top}px`;
+}
+
+function hideProxyTooltip() {
+  proxyTooltip.classList.add("hidden");
+}
+
+const API_SECRET_STORAGE_KEY = "fleetApiSecret";
+
+async function buildApiError(res) {
+  let message = `${res.status} ${res.statusText}`;
+  try {
+    const body = await res.json();
+    if (body.error) message = body.error;
+  } catch {
+    // 保留状态消息
+  }
+  return new Error(message);
+}
+
+// 令牌弹窗每个页面加载周期最多出现一次：apiTokenPromptShown 在弹窗首次得到结果
+// （无论用户输入了什么、取消，还是重试后仍然 401）后置位，此后 api() 不再弹窗，
+// 只把错误正常抛给调用方展示。apiTokenPromptInFlight 让并发触发的多个 401
+// （例如首屏 refresh() 的三个并行请求）共享同一次弹窗，而不是各弹一次。
+let apiTokenPromptShown = false;
+let apiTokenPromptInFlight = null;
+
+function requestApiToken() {
+  if (apiTokenPromptShown) return Promise.resolve(null);
+  if (apiTokenPromptInFlight) return apiTokenPromptInFlight;
+  apiTokenPromptInFlight = Promise.resolve()
+    .then(() => window.prompt("此面板需要 API 令牌才能访问，请输入 -api-secret 配置的令牌："))
+    .then((entered) => {
+      apiTokenPromptShown = true;
+      if (!entered) return null;
+      localStorage.setItem(API_SECRET_STORAGE_KEY, entered);
+      return entered;
+    })
+    .finally(() => {
+      apiTokenPromptInFlight = null;
+    });
+  return apiTokenPromptInFlight;
+}
+
 async function api(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", "X-Mihomo-Fleet": "1", ...(options.headers || {}) },
-    ...options,
-  });
-  if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
-    try {
-      const body = await res.json();
-      if (body.error) message = body.error;
-    } catch {
-      // 保留状态消息
+  const token = localStorage.getItem(API_SECRET_STORAGE_KEY) || "";
+  const headers = { "Content-Type": "application/json", "X-Mihomo-Fleet": "1", ...(options.headers || {}) };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let res = await fetch(path, { ...options, headers });
+  if (res.status === 401) {
+    // 服务端配置了 -api-secret 但本地未保存令牌，或令牌已失效：提示用户输入一次并重试。
+    const entered = await requestApiToken();
+    if (entered) {
+      headers.Authorization = `Bearer ${entered}`;
+      res = await fetch(path, { ...options, headers });
     }
-    throw new Error(message);
+  }
+  if (!res.ok) {
+    throw await buildApiError(res);
   }
   if (res.status === 204) return null;
   return res.json();
 }
 
+let messageClearTimer = null;
+
 function showMessage(text, kind = "info") {
+  if (messageClearTimer) {
+    clearTimeout(messageClearTimer);
+    messageClearTimer = null;
+  }
   if (!text) {
     el.message.classList.add("hidden");
     el.message.textContent = "";
     return;
   }
+  const isError = kind === "error";
   el.message.textContent = localizedMessage(text);
-  el.message.className = `message ${kind === "error" ? "error" : ""}`;
+  el.message.className = `message ${isError ? "error" : ""}`;
+  el.message.setAttribute("role", isError ? "alert" : "status");
+  if (!isError) {
+    messageClearTimer = setTimeout(() => showMessage(""), 6000);
+  }
 }
 
+let refreshSeq = 0;
+
 async function refresh(options = {}) {
+  const seq = ++refreshSeq;
   try {
     const [system, profiles, list] = await Promise.all([
       api("/api/system"),
       api("/api/profiles"),
       api("/api/instances"),
     ]);
+    // 乱序返回校验：只有仍是最新一轮请求时才写入状态并渲染。
+    if (seq !== refreshSeq) return;
     state.system = system;
     state.profiles = profiles.profiles || [];
     if (!state.bulkRunning || options.forceInstances) {
@@ -537,8 +664,10 @@ async function refresh(options = {}) {
     }
     localStorage.setItem("activeInstance", state.activeId);
     render();
-    await refreshActiveDetails();
+    // periodic：4s 轮询通道跳过 logs/proxies，交给独立的 1.8s 通道处理，避免双重请求。
+    await refreshActiveDetails({ skipFast: options.periodic });
   } catch (err) {
+    if (seq !== refreshSeq) return;
     showMessage(err.message, "error");
   }
 }
@@ -1020,6 +1149,10 @@ function clearActiveDetailCache() {
   state.proxyApply = false;
   state.latencyBatchRunning = false;
   state.latencyBatchToken += 1;
+  lastProxyGroupsSnapshot = "";
+  // 同步清空节点列表 DOM：否则上一个实例的按钮在切换后到新实例首次 fetch 返回前
+  // 仍然可点，selectProxy 会把旧实例的组名 POST 给新的 activeId。
+  el.proxiesList.innerHTML = "";
 }
 
 function markEditFormDirty() {
@@ -1063,7 +1196,7 @@ function showCreate() {
   fillSuggestedPorts();
 }
 
-async function refreshActiveDetails() {
+async function refreshActiveDetails(options = {}) {
   const selected = active();
   if (!selected || state.creating) return;
   if (
@@ -1074,6 +1207,8 @@ async function refreshActiveDetails() {
   ) {
     try {
       const cfg = await api(`/api/instances/${selected.id}/config`);
+      // await 之后重新校验，避免慢响应覆盖用户正在编辑的内容或写错实例。
+      if (state.activeId !== selected.id || el.configEditor.dataset.dirty === "1") return;
       el.configEditor.value = cfg.config;
       el.configEditor.dataset.id = selected.id;
       el.configEditor.dataset.profileId = selected.profileId;
@@ -1082,6 +1217,12 @@ async function refreshActiveDetails() {
       showMessage(err.message, "error");
     }
   }
+  // 4s 轮询通道跳过 logs/proxies，避免与 1.8s 通道重复请求；其余触发点（切换实例/标签页等）仍立即刷新。
+  if (options.skipFast) return;
+  await pollActiveTab();
+}
+
+async function pollActiveTab() {
   if (state.activeTab === "logs") await refreshLogs();
   if (state.activeTab === "proxies") await refreshProxies();
 }
@@ -1110,9 +1251,12 @@ function isLogScrolledToBottom() {
   return el.logs.scrollHeight - el.logs.scrollTop - el.logs.clientHeight <= logStickThreshold;
 }
 
+let proxiesRequestSeq = 0;
+
 async function refreshProxies() {
   const selected = active();
   if (!selected) return;
+  const seq = ++proxiesRequestSeq;
   try {
     let groups = [];
     let apply = false;
@@ -1121,6 +1265,8 @@ async function refreshProxies() {
         api(`/api/mihomo/${selected.id}/proxies`),
         loadProfileProxyGroupsForRuntime(selected),
       ]);
+      // await 后校验：乱序返回或实例已切换时丢弃这次结果，避免展示/提交错误实例的节点组。
+      if (seq !== proxiesRequestSeq || state.activeId !== selected.id) return;
       const proxies = payload.proxies || {};
       groups = alignProxyGroupsToProfileOrder(Object.values(proxies).filter((item) => Array.isArray(item.all)), profileGroups);
       groups = filterRuntimeProxyGroups(selected, groups);
@@ -1128,6 +1274,7 @@ async function refreshProxies() {
       el.proxySource.textContent = "当前读取运行中的 mihomo 节点，选择后立即应用并保存。";
     } else {
       groups = await loadProfileProxyGroups(selected);
+      if (seq !== proxiesRequestSeq || state.activeId !== selected.id) return;
       el.proxySource.textContent = "当前读取缓存配置，选择会保存到实例，下次启动后自动恢复。";
     }
     state.proxyGroups = groups;
@@ -1135,11 +1282,14 @@ async function refreshProxies() {
     updateLatencyControls();
     if (!groups.length) {
       el.proxiesList.innerHTML = `<div class="warning">没有可显示的节点组。使用 proxy-providers 的订阅需要启动实例后读取 mihomo 运行态节点。</div>`;
+      lastProxyGroupsSnapshot = "";
       return;
     }
     renderProxyGroups(groups, apply);
   } catch (err) {
+    if (seq !== proxiesRequestSeq || state.activeId !== selected.id) return;
     el.proxiesList.innerHTML = `<div class="message error">${escapeHTML(localizedMessage(err.message))}</div>`;
+    lastProxyGroupsSnapshot = "";
   }
 }
 
@@ -1148,9 +1298,76 @@ function filterRuntimeProxyGroups(selected, groups) {
   return groups.filter((group) => String(group.name || "").toUpperCase() !== "GLOBAL");
 }
 
+let lastProxyGroupsSnapshot = "";
+
+// 快照包含分组结构、过滤词、节点标签拆分依据（labelSources），以及每组"当前节点"
+// 实际渲染出的延迟数据，避免数据未变时无谓重建 DOM（丢焦点/闪断 tooltip），同时
+// 不会因为漏掉某个渲染输入（延迟字段、labelSources）而在它变化后卡死不更新——例如
+// 重命名 profile 后，节点组数据本身没变，但 splitProxyLabel 的拆分结果会变化。
+function proxyGroupsRenderSnapshot(groups, apply, filter) {
+  const selected = active();
+  const labelSources = proxyLabelSources();
+  const latencyBits = groups.map((group) => {
+    const currentName = currentLatencyTarget(group);
+    if (!currentName) return null;
+    return [
+      group.name,
+      currentName,
+      selected ? latencyResult(selected.id, group.name, currentName, latencyKinds.url) : null,
+      selected ? isLatencyRunning(selected.id, group.name, currentName, latencyKinds.url) : false,
+      selected ? latencyResult(selected.id, group.name, currentName, latencyKinds.real) : null,
+      selected ? isLatencyRunning(selected.id, group.name, currentName, latencyKinds.real) : false,
+    ];
+  });
+  return JSON.stringify({ instanceId: selected?.id || "", groups, apply, filter, labelSources, latencyBits });
+}
+
+function proxyFocusKey(groupName, proxyName) {
+  return `${groupName}${latencyKeySeparator}${proxyName}`;
+}
+
+// 测速/真延迟按钮的焦点键与 proxyFocusKey 共享"组名在前"的前缀结构（同组回退可以
+// 复用同一套 startsWith 逻辑），但用专门的 kind 标记加前缀，与节点选择按钮的键
+// 空间区分开，避免重建后把节点选择按钮的焦点错误地"恢复"到测速按钮上（反之亦然）。
+function latencyButtonFocusKey(groupName, kind) {
+  return `${groupName}${latencyKeySeparator}latency-btn${latencyKeySeparator}${kind}`;
+}
+
+function capturedProxyFocusKey() {
+  if (!el.proxiesList.contains(document.activeElement)) return "";
+  return document.activeElement.dataset.proxyFocus || "";
+}
+
+// 参照 restorePortMatrixFocus：精确匹配 -> 同组第一个可用按钮 -> 列表第一个可用按钮。
+// 按钮类型（节点选择 vs 测速/真延迟）通过各自键的前缀天然区分：同组回退只在
+// startsWith(groupPrefix) 的候选里找，而 latencyButtonFocusKey 与 proxyFocusKey
+// 除了共享的组名前缀外互不相同，因此不会跨类型误恢复焦点。
+function restoreProxyListFocus(focusedKey) {
+  if (!focusedKey) return;
+  const controls = [...el.proxiesList.querySelectorAll("[data-proxy-focus]")].filter((node) => !node.disabled);
+  if (!controls.length) return;
+  const groupPrefix = `${focusedKey.split(latencyKeySeparator)[0] || ""}${latencyKeySeparator}`;
+  const sameKindControls = controls.filter((node) => isLatencyFocusKey(node.dataset.proxyFocus) === isLatencyFocusKey(focusedKey));
+  const pool = sameKindControls.length ? sameKindControls : controls;
+  const target = pool.find((node) => node.dataset.proxyFocus === focusedKey)
+    || pool.find((node) => node.dataset.proxyFocus?.startsWith(groupPrefix))
+    || pool[0];
+  target?.focus({ preventScroll: true });
+}
+
+function isLatencyFocusKey(key) {
+  return String(key || "").includes(`${latencyKeySeparator}latency-btn${latencyKeySeparator}`);
+}
+
 function renderProxyGroups(groups, apply) {
   const selected = active();
   const filter = el.proxyFilter.value.trim().toLowerCase();
+  const snapshot = proxyGroupsRenderSnapshot(groups, apply, filter);
+  if (snapshot === lastProxyGroupsSnapshot) return;
+  lastProxyGroupsSnapshot = snapshot;
+  const labelSources = proxyLabelSources();
+  const focusedKey = capturedProxyFocusKey();
+  hideProxyTooltip();
   el.proxiesList.innerHTML = "";
   for (const group of groups) {
     const names = (group.all || []).filter((name) => !filter || name.toLowerCase().includes(filter) || group.name.toLowerCase().includes(filter));
@@ -1192,6 +1409,7 @@ function renderProxyGroups(groups, apply) {
     latencyButton.dataset.proxyName = currentName;
     latencyButton.dataset.kind = latencyKinds.url;
     latencyButton.dataset.testable = currentName ? "true" : "false";
+    latencyButton.dataset.proxyFocus = latencyButtonFocusKey(group.name, latencyKinds.url);
     latencyButton.disabled = !apply || !currentName || (selected && isLatencyRunning(selected.id, group.name, currentName, latencyKinds.url));
     latencyButton.addEventListener("click", () => testGroupLatency(group, latencyKinds.url));
     const realLatencyButton = document.createElement("button");
@@ -1203,6 +1421,7 @@ function renderProxyGroups(groups, apply) {
     realLatencyButton.dataset.proxyName = currentName;
     realLatencyButton.dataset.kind = latencyKinds.real;
     realLatencyButton.dataset.testable = currentName ? "true" : "false";
+    realLatencyButton.dataset.proxyFocus = latencyButtonFocusKey(group.name, latencyKinds.real);
     realLatencyButton.disabled = !apply || !currentName || (selected && isLatencyRunning(selected.id, group.name, currentName, latencyKinds.real));
     realLatencyButton.addEventListener("click", () => testGroupLatency(group, latencyKinds.real));
     actions.append(latencyButton, realLatencyButton);
@@ -1211,10 +1430,13 @@ function renderProxyGroups(groups, apply) {
     const grid = document.createElement("div");
     grid.className = "proxy-grid";
     for (const name of names) {
+      const label = splitProxyLabel(name, labelSources);
       const button = document.createElement("button");
       button.type = "button";
       button.className = `proxy-choice ${group.now === name ? "selected" : ""}`;
-      button.title = name;
+      button.dataset.tooltip = name;
+      button.dataset.proxyFocus = proxyFocusKey(group.name, name);
+      button.setAttribute("aria-label", name);
       button.disabled = !selectableGroup;
       if (selectableGroup) {
         button.setAttribute("aria-pressed", group.now === name ? "true" : "false");
@@ -1222,8 +1444,14 @@ function renderProxyGroups(groups, apply) {
       }
       const nameLabel = document.createElement("span");
       nameLabel.className = "proxy-name";
-      nameLabel.textContent = name;
+      nameLabel.textContent = label.name;
       button.append(nameLabel);
+      if (label.source) {
+        const sourceLabel = document.createElement("span");
+        sourceLabel.className = "proxy-source";
+        sourceLabel.textContent = label.source;
+        button.append(sourceLabel);
+      }
       grid.append(button);
     }
     section.append(head, grid);
@@ -1232,6 +1460,8 @@ function renderProxyGroups(groups, apply) {
   if (!el.proxiesList.children.length) {
     el.proxiesList.innerHTML = `<div class="warning">没有匹配的节点。</div>`;
   }
+  // 自动刷新会重建列表；恢复节点列表内的焦点，避免键盘用户每 1.8 秒被打断。
+  restoreProxyListFocus(focusedKey);
 }
 
 function isSelectableProxyGroup(group) {
@@ -1673,8 +1903,36 @@ for (const input of [el.subscriptionUrl, el.subscriptionAutoUpdate, el.subscript
 }
 
 el.proxyFilter.addEventListener("input", () => {
-  if (state.activeTab === "proxies") refreshProxies();
+  // 过滤是纯本地字符串匹配，数据已在 state.proxyGroups 中，无需发请求。
+  if (state.activeTab === "proxies") renderProxyGroups(state.proxyGroups, state.proxyApply);
 });
+
+el.proxiesList.addEventListener("pointerover", (event) => {
+  if (!proxyTooltipHoverQuery.matches) return;
+  const button = proxyTooltipButton(event.target);
+  if (!button || !el.proxiesList.contains(button)) return;
+  if (event.relatedTarget instanceof Node && button.contains(event.relatedTarget)) return;
+  showProxyTooltip(button);
+});
+
+el.proxiesList.addEventListener("pointerout", (event) => {
+  const button = proxyTooltipButton(event.target);
+  if (!button) return;
+  if (event.relatedTarget instanceof Node && button.contains(event.relatedTarget)) return;
+  hideProxyTooltip();
+});
+
+el.proxiesList.addEventListener("focusin", (event) => {
+  const button = proxyTooltipButton(event.target);
+  if (button && el.proxiesList.contains(button)) showProxyTooltip(button);
+});
+
+el.proxiesList.addEventListener("focusout", (event) => {
+  if (proxyTooltipButton(event.target)) hideProxyTooltip();
+});
+
+window.addEventListener("resize", hideProxyTooltip);
+window.addEventListener("scroll", hideProxyTooltip, true);
 
 const storedLatencyUrl = localStorage.getItem("fleetLatencyUrl");
 el.latencyUrl.value = normalizeStoredLatencyUrl(storedLatencyUrl);
@@ -1685,9 +1943,43 @@ el.testAllLatency.addEventListener("click", () => testAllLatency(latencyKinds.ur
 el.testAllRealLatency.addEventListener("click", () => testAllLatency(latencyKinds.real));
 
 el.createConfig.value = defaultConfig;
+
+const slowPollIntervalMs = 4000;
+const fastPollIntervalMs = 1800;
+let slowPollTimer = null;
+let fastPollTimer = null;
+
+// 自调度轮询：上一轮完成后才排下一轮，避免请求堆积；页面隐藏时暂停，恢复可见时立即补一轮。
+function scheduleSlowPoll(delay = slowPollIntervalMs) {
+  clearTimeout(slowPollTimer);
+  slowPollTimer = null;
+  if (document.hidden) return;
+  slowPollTimer = setTimeout(runSlowPoll, delay);
+}
+
+async function runSlowPoll() {
+  if (!document.hidden) await refresh({ periodic: true });
+  scheduleSlowPoll();
+}
+
+function scheduleFastPoll(delay = fastPollIntervalMs) {
+  clearTimeout(fastPollTimer);
+  fastPollTimer = null;
+  if (document.hidden) return;
+  fastPollTimer = setTimeout(runFastPoll, delay);
+}
+
+async function runFastPoll() {
+  if (!document.hidden) await pollActiveTab();
+  scheduleFastPoll();
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  runSlowPoll();
+  runFastPoll();
+});
+
 refresh();
-setInterval(refresh, 4000);
-setInterval(() => {
-  if (state.activeTab === "logs") refreshLogs();
-  if (state.activeTab === "proxies") refreshProxies();
-}, 1800);
+scheduleSlowPoll();
+scheduleFastPoll();

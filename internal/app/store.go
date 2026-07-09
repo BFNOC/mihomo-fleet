@@ -29,12 +29,63 @@ func (err instanceNotFoundError) Is(target error) bool {
 	return target == errInstanceNotFound
 }
 
+// errProfileNotFound, errPortUnavailable and errValidation are sentinel
+// errors used to classify user-facing errors from the store/config layer
+// (see controller.go's former isPortUnavailableError/isInstanceValidationError,
+// which classified by substring-matching error text -- fragile, and any
+// wording change would silently change HTTP status codes). Callers should
+// use errors.Is(err, errPortUnavailable) etc.
+//
+// The concrete errors below deliberately do NOT use
+// fmt.Errorf("...: %w", sentinel), because that appends the sentinel's own
+// message to the error text. internal/app/web/app.js's errorLabels/
+// errorPatterns match the *exact* historical error text (several via
+// anchored ^...$ regexes) to localize these messages; appending text would
+// silently break that matching. Instead each site below uses a small
+// wrapper type (mirroring instanceNotFoundError above) that reports the
+// original, unmodified message via Error() while still satisfying
+// errors.Is via a custom Is method.
+var (
+	errProfileNotFound = errors.New("profile not found")
+	errPortUnavailable = errors.New("port unavailable")
+	errValidation      = errors.New("invalid instance configuration")
+)
+
+type profileNotFoundError struct {
+	id string
+}
+
+func (err profileNotFoundError) Error() string {
+	return fmt.Sprintf("profile %q not found", err.id)
+}
+
+func (err profileNotFoundError) Is(target error) bool {
+	return target == errProfileNotFound
+}
+
+type portUnavailableError struct {
+	msg string
+}
+
+func (err portUnavailableError) Error() string { return err.msg }
+
+func (err portUnavailableError) Is(target error) bool { return target == errPortUnavailable }
+
+type validationError struct {
+	msg string
+}
+
+func (err validationError) Error() string { return err.msg }
+
+func (err validationError) Is(target error) bool { return target == errValidation }
+
 type Store struct {
-	mu        sync.RWMutex
-	dataDir   string
-	storePath string
-	items     map[string]*Instance
-	profiles  map[string]*Profile
+	mu              sync.RWMutex
+	dataDir         string
+	storePath       string
+	items           map[string]*Instance
+	profiles        map[string]*Profile
+	proxyGroupCache *profileProxyGroupCache
 }
 
 type ProfilePatch struct {
@@ -85,10 +136,11 @@ func NewStore(dataDir string) (*Store, error) {
 	_ = os.Chmod(filepath.Join(dataDir, "instances"), 0o700)
 	_ = os.Chmod(filepath.Join(dataDir, "profiles"), 0o700)
 	s := &Store{
-		dataDir:   dataDir,
-		storePath: filepath.Join(dataDir, "instances.json"),
-		items:     make(map[string]*Instance),
-		profiles:  make(map[string]*Profile),
+		dataDir:         dataDir,
+		storePath:       filepath.Join(dataDir, "instances.json"),
+		items:           make(map[string]*Instance),
+		profiles:        make(map[string]*Profile),
+		proxyGroupCache: newProfileProxyGroupCache(),
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -251,7 +303,7 @@ func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
 
 	profile, ok := s.profiles[id]
 	if !ok {
-		return nil, fmt.Errorf("profile %q not found", id)
+		return nil, profileNotFoundError{id: id}
 	}
 	original := cloneProfile(profile)
 	originalURL := profile.SubscriptionURL
@@ -307,12 +359,27 @@ func (s *Store) ApplySubscriptionFetch(id string, fetched *subscriptionFetchResu
 }
 
 func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *subscriptionFetchResult) (*Profile, error) {
+	// parseProfileProxyGroups only depends on fetched.Config, not on any
+	// Store state, so it is run here, before the write lock is taken. This
+	// is the single most expensive step of a subscription refresh (a full
+	// YAML parse of a config that can be up to 16MB) and previously ran
+	// while s.mu was held, blocking every other Store read/write (including
+	// the UI's periodic GET /api/instances) for its duration. The nil check
+	// mirrors the one further below so a nil fetched still surfaces the same
+	// "profile not found"/URL-mismatch errors first when both conditions
+	// apply, matching the original error precedence.
+	var groups []ProfileProxyGroup
+	if fetched != nil {
+		groups, _ = parseProfileProxyGroups(fetched.Config, nil)
+	}
+	validSelections := profileSelectionSet(groups)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	profile, ok := s.profiles[id]
 	if !ok {
-		return nil, fmt.Errorf("profile %q not found", id)
+		return nil, profileNotFoundError{id: id}
 	}
 	if profile.SubscriptionURL == "" {
 		return nil, fmt.Errorf("profile %q is not a subscription profile", id)
@@ -341,8 +408,6 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	if err := writeFileAtomic(profile.ConfigPath, []byte(fetched.Config), 0o600); err != nil {
 		return nil, err
 	}
-	groups, _ := parseProfileProxyGroups(fetched.Config, nil)
-	validSelections := profileSelectionSet(groups)
 	now := time.Now().UTC()
 	if fetched.UpdateIntervalMinutes > 0 && profile.UpdateIntervalMinutes <= 0 {
 		profile.UpdateIntervalMinutes = normalizeSubscriptionInterval(fetched.UpdateIntervalMinutes, profile.AutoUpdate)
@@ -387,13 +452,117 @@ func (s *Store) SetProfileUpdateError(id, message string) {
 func (s *Store) ReadProfileConfig(id string) (string, error) {
 	profile, ok := s.GetProfile(id)
 	if !ok {
-		return "", fmt.Errorf("profile %q not found", id)
+		return "", profileNotFoundError{id: id}
 	}
 	raw, err := os.ReadFile(profile.ConfigPath)
 	if err != nil {
 		return "", err
 	}
 	return string(raw), nil
+}
+
+// profileProxyGroupCache caches the selection-independent proxy-group parse
+// of a profile's config file (parseProfileProxyGroupsBase), keyed by the
+// config's path plus its mtime/size at the time it was parsed. The UI polls
+// GET /api/profiles/{id}/proxies roughly every 1.8s while the proxies tab of
+// an open instance is active; without this cache each poll re-reads and
+// re-parses the full (up to 16MB) subscription YAML even though the file
+// only changes when PatchProfile or ApplySubscriptionFetchForURL rewrite it.
+// Both of those go through writeFileAtomic (temp file + rename), which
+// always changes mtime and typically size, so a stale entry is naturally
+// invalidated the next time it is looked up -- no explicit invalidation call
+// is needed.
+type profileProxyGroupCache struct {
+	mu      sync.Mutex
+	entries map[string]profileProxyGroupCacheEntry
+}
+
+type profileProxyGroupCacheEntry struct {
+	modTime time.Time
+	size    int64
+	groups  []ProfileProxyGroup
+}
+
+func newProfileProxyGroupCache() *profileProxyGroupCache {
+	return &profileProxyGroupCache{entries: make(map[string]profileProxyGroupCacheEntry)}
+}
+
+func (c *profileProxyGroupCache) get(path string, info os.FileInfo) ([]ProfileProxyGroup, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[path]
+	if !ok || !entry.modTime.Equal(info.ModTime()) || entry.size != info.Size() {
+		return nil, false
+	}
+	// Defensive copy: the cached slice must never be handed out by
+	// reference, since callers are free to treat the result as theirs
+	// (e.g. append to it) without corrupting the cached entry.
+	return append([]ProfileProxyGroup(nil), entry.groups...), true
+}
+
+func (c *profileProxyGroupCache) put(path string, info os.FileInfo, groups []ProfileProxyGroup) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[path] = profileProxyGroupCacheEntry{
+		modTime: info.ModTime(),
+		size:    info.Size(),
+		groups:  append([]ProfileProxyGroup(nil), groups...),
+	}
+}
+
+// ProfileProxyGroups returns the parsed proxy-groups for a profile's config
+// (selection-independent: Now is each group's first candidate), using
+// proxyGroupCache to avoid re-reading and re-parsing the config file when it
+// has not changed since the last call. See profileProxyGroupCache's doc
+// comment for why that cache needs no explicit invalidation hook.
+func (s *Store) ProfileProxyGroups(id string) ([]ProfileProxyGroup, error) {
+	profile, ok := s.GetProfile(id)
+	if !ok {
+		return nil, profileNotFoundError{id: id}
+	}
+	info, err := os.Stat(profile.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	if cached, ok := s.proxyGroupCache.get(profile.ConfigPath, info); ok {
+		return cached, nil
+	}
+	raw, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := parseProfileProxyGroupsBase(string(raw))
+	if err != nil {
+		return nil, err
+	}
+	s.proxyGroupCache.put(profile.ConfigPath, info, groups)
+	return append([]ProfileProxyGroup(nil), groups...), nil
+}
+
+// ProfileProxyGroupsForInstance returns proxy-groups for a profile with the
+// given instance's saved selection (or its global-chain plan) applied. The
+// non-global-chain path -- by far the common case, and the one polled every
+// 1.8s by the proxies panel -- goes through ProfileProxyGroups above and so
+// benefits from its cache; only global-chain mode (whose result also depends
+// on the instance's LocalProxies/Chain, not just the profile config) still
+// reads and parses the config directly on every call.
+func (s *Store) ProfileProxyGroupsForInstance(id string, item *Instance) ([]ProfileProxyGroup, error) {
+	if item == nil || instanceMode(item.Mode) != InstanceModeGlobalChain {
+		var selections map[string]string
+		if item != nil {
+			selections = normalizeSelections(item.SelectedProxies, item.SelectedGroup, item.SelectedProxy)
+		}
+		base, err := s.ProfileProxyGroups(id)
+		if err != nil {
+			return nil, err
+		}
+		return applyProfileProxySelections(base, selections), nil
+	}
+	config, err := s.ReadProfileConfig(id)
+	if err != nil {
+		return nil, err
+	}
+	return parseGlobalChainProxyGroups(config, item)
 }
 
 func (s *Store) Create(name, profileID, config string, mixedPort, controllerPort int) (*Instance, error) {
@@ -463,7 +632,11 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 	}
 	proxyBind, err := normalizeProxyBind(opts.ProxyBind)
 	if err != nil {
-		return nil, err
+		// normalizeProxyBind lives in proxy_bind.go and returns a plain
+		// error; wrap it here (rather than at its definition) so its
+		// message text -- matched verbatim by app.js's errorPatterns --
+		// stays unchanged while still classifying as errValidation.
+		return nil, validationError{msg: err.Error()}
 	}
 	if mode == InstanceModeGlobalChain {
 		if _, _, err := parseLocalProxyItems(opts.LocalProxies); err != nil {
@@ -478,21 +651,21 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		opts.ControllerStart = 29000
 	}
 	if opts.MixedPort > 0 && opts.MixedPort == opts.ControllerPort {
-		return nil, errors.New("mixed and controller ports must differ")
+		return nil, validationError{msg: "mixed and controller ports must differ"}
 	}
 	if opts.MixedPort == 0 {
 		opts.MixedPort = allocatePort(opts.MixedStart, used)
 	} else if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
-		return nil, fmt.Errorf("mixed proxy port %d is unavailable", opts.MixedPort)
+		return nil, portUnavailableError{msg: fmt.Sprintf("mixed proxy port %d is unavailable", opts.MixedPort)}
 	}
 	used[opts.MixedPort] = true
 	if opts.ControllerPort == 0 {
 		opts.ControllerPort = allocatePort(opts.ControllerStart, used)
 	} else if used[opts.ControllerPort] || !isPortFree(opts.ControllerPort) {
-		return nil, fmt.Errorf("controller port %d is unavailable", opts.ControllerPort)
+		return nil, portUnavailableError{msg: fmt.Sprintf("controller port %d is unavailable", opts.ControllerPort)}
 	}
 	if opts.MixedPort == 0 || opts.ControllerPort == 0 {
-		return nil, errors.New("unable to allocate local ports")
+		return nil, portUnavailableError{msg: "unable to allocate local ports"}
 	}
 	var createdProfile *Profile
 	if opts.ProfileID == "" {
@@ -512,7 +685,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 	profile, ok := s.profiles[opts.ProfileID]
 	if !ok {
 		cleanupCreatedProfile()
-		return nil, fmt.Errorf("profile %q not found", opts.ProfileID)
+		return nil, profileNotFoundError{id: opts.ProfileID}
 	}
 	secret, err := randomToken()
 	if err != nil {
@@ -617,7 +790,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	if opts.ProfileID != "" {
 		profile, ok := s.profiles[opts.ProfileID]
 		if !ok {
-			return nil, fmt.Errorf("profile %q not found", opts.ProfileID)
+			return nil, profileNotFoundError{id: opts.ProfileID}
 		}
 		if item.ProfileID != opts.ProfileID {
 			nextProfileID = opts.ProfileID
@@ -638,22 +811,25 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		var err error
 		nextProxyBind, err = normalizeProxyBind(*opts.ProxyBind)
 		if err != nil {
-			return nil, err
+			// See the matching comment in createInstanceLocked: wrap here
+			// (not in proxy_bind.go) to keep the message text app.js
+			// matches unchanged while classifying as errValidation.
+			return nil, validationError{msg: err.Error()}
 		}
 	}
 	if nextMixedPort == nextControllerPort {
-		return nil, fmt.Errorf("controller port %d is unavailable", nextControllerPort)
+		return nil, portUnavailableError{msg: fmt.Sprintf("controller port %d is unavailable", nextControllerPort)}
 	}
 	used := s.usedPortsLocked(id)
 	if opts.MixedPort > 0 {
 		if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
-			return nil, fmt.Errorf("mixed proxy port %d is unavailable", opts.MixedPort)
+			return nil, portUnavailableError{msg: fmt.Sprintf("mixed proxy port %d is unavailable", opts.MixedPort)}
 		}
 		used[opts.MixedPort] = true
 	}
 	if opts.ControllerPort > 0 {
 		if used[opts.ControllerPort] || !isPortFree(opts.ControllerPort) {
-			return nil, fmt.Errorf("controller port %d is unavailable", opts.ControllerPort)
+			return nil, portUnavailableError{msg: fmt.Sprintf("controller port %d is unavailable", opts.ControllerPort)}
 		}
 		used[opts.ControllerPort] = true
 	}
@@ -700,7 +876,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 			*item = snapshot
 			item.Chain = append([]string{}, snapshot.Chain...)
 			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
-			return nil, fmt.Errorf("profile %q not found", item.ProfileID)
+			return nil, profileNotFoundError{id: item.ProfileID}
 		}
 		var err error
 		previousConfig, err = os.ReadFile(profile.ConfigPath)
@@ -767,7 +943,7 @@ func (s *Store) SetSelection(id, group, proxy string) (*Instance, error) {
 func (s *Store) SetError(id, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if item, ok := s.items[id]; ok {
+	if item, ok := s.items[id]; ok && item.LastError != message {
 		item.LastError = message
 		item.UpdatedAt = time.Now().UTC()
 		_ = s.saveLocked()
@@ -797,7 +973,7 @@ func (s *Store) ReadUserConfig(id string) (string, error) {
 	}
 	profile, ok := s.GetProfile(item.ProfileID)
 	if !ok {
-		return "", fmt.Errorf("profile %q not found", item.ProfileID)
+		return "", profileNotFoundError{id: item.ProfileID}
 	}
 	raw, err := os.ReadFile(profile.ConfigPath)
 	if err != nil {

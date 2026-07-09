@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,12 +32,17 @@ type buildMetadata struct {
 
 func main() {
 	var (
-		bind        = flag.String("bind", "127.0.0.1", "HTTP bind address")
+		bind = flag.String("bind", "127.0.0.1", "HTTP bind address. Keep this at 127.0.0.1/localhost for "+
+			"local-only access. Binding to any other address (e.g. 0.0.0.0 or a LAN IP) exposes an "+
+			"UNAUTHENTICATED control plane to the network unless -api-secret is also set")
 		port        = flag.Int("port", 47890, "HTTP bind port")
 		dataDir     = flag.String("data", ".mihomo-fleet", "runtime data directory")
 		mihomoPath  = flag.String("mihomo", "", "path to mihomo binary")
 		openBrowser = flag.Bool("open", false, "print browser URL with emphasis")
 		showVersion = flag.Bool("version", false, "print version and exit")
+		apiSecret   = flag.String("api-secret", "", "bearer token required on the Authorization header for all "+
+			"/api/ requests. Required (non-empty) when -bind is not a loopback address; optional but recommended "+
+			"otherwise")
 	)
 	flag.Parse()
 
@@ -46,6 +52,19 @@ func main() {
 		fmt.Printf("commit: %s\n", metadata.Commit)
 		fmt.Printf("build date: %s\n", metadata.BuildDate)
 		return
+	}
+
+	if !isLoopbackBind(*bind) {
+		if strings.TrimSpace(*apiSecret) == "" {
+			fmt.Fprintf(os.Stderr, "refusing to start: -bind=%q is not a loopback address, which would expose "+
+				"Mihomo Fleet's control plane (instance/profile config, proxy credentials, start/stop/config "+
+				"endpoints) to the network with NO authentication. Set -api-secret to a long random token to "+
+				"allow this bind, e.g.:\n  ./mihomo-fleet -bind %s -api-secret \"$(openssl rand -hex 32)\"\n",
+				*bind, *bind)
+			os.Exit(1)
+		}
+		log.Printf("WARNING: binding to non-loopback address %s:%d exposes the control API to the network; "+
+			"keep -api-secret private and restrict network access (firewall/VPN) to trusted clients", *bind, *port)
 	}
 
 	controller, err := app.NewController(app.Options{
@@ -58,6 +77,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("init controller: %v", err)
 	}
+	controller.SetAPISecret(*apiSecret)
 	defer controller.Shutdown(context.Background())
 
 	mux := http.NewServeMux()
@@ -101,6 +121,27 @@ func main() {
 		log.Printf("http shutdown: %v", err)
 	}
 	controller.Shutdown(ctx)
+}
+
+// isLoopbackBind reports whether bind refers to a loopback-only address:
+// 127.0.0.0/8, ::1, or the hostname "localhost" (case-insensitive). An empty
+// bind address behaves like Go's http.Server (listens on all interfaces,
+// same as 0.0.0.0) and is therefore NOT loopback; neither is 0.0.0.0, a LAN
+// IP, or any other hostname.
+func isLoopbackBind(bind string) bool {
+	host := strings.TrimSpace(bind)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func resolveBuildMetadata(info *debug.BuildInfo, versionFiles []string) buildMetadata {

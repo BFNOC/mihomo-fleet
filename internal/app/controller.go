@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,17 @@ type Controller struct {
 	subscriptionCancel  context.CancelFunc
 	subscriptionMu      sync.Mutex
 	subscriptionRunning map[string]bool
+	apiSecret           string
+}
+
+// SetAPISecret configures the bearer token that SecureHandler requires on
+// every /api/ request's Authorization header. Pass an empty string (the
+// zero value, and the default) to disable the check entirely -- this
+// preserves the historical no-auth-on-loopback behavior for callers that
+// never set a secret. Follows the same "construct then configure" pattern
+// main.go already uses for wiring CLI flags into the controller.
+func (c *Controller) SetAPISecret(secret string) {
+	c.apiSecret = secret
 }
 
 func NewController(opts Options) (*Controller, error) {
@@ -202,29 +214,30 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 				methodNotAllowed(w)
 				return
 			}
-			cfg, err := c.store.ReadProfileConfig(id)
-			if err != nil {
-				writeError(w, http.StatusNotFound, err)
-				return
-			}
-			var selections map[string]string
+			// The common (non-global-chain) case goes through
+			// Store.ProfileProxyGroups/ProfileProxyGroupsForInstance, which
+			// cache the parsed proxy-groups keyed by the profile config's
+			// (path, modTime, size). This endpoint is polled by the UI
+			// roughly every 1.8s while the proxies tab of an open instance
+			// is active, so avoiding a full re-read + re-parse of a
+			// potentially multi-MB subscription YAML on every poll matters.
 			if instanceID := r.URL.Query().Get("instanceId"); instanceID != "" {
 				item, ok := c.store.Get(instanceID)
 				if !ok {
 					writeError(w, http.StatusNotFound, fmt.Errorf("instance %q not found", instanceID))
 					return
 				}
-				groups, err := profileProxyGroupsForInstance(cfg, item)
+				groups, err := c.store.ProfileProxyGroupsForInstance(id, item)
 				if err != nil {
-					writeError(w, http.StatusBadRequest, err)
+					writeError(w, profileProxyGroupsStatus(err), err)
 					return
 				}
 				writeJSON(w, map[string]any{"groups": groups})
 				return
 			}
-			groups, err := parseProfileProxyGroups(cfg, selections)
+			groups, err := c.store.ProfileProxyGroups(id)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writeError(w, profileProxyGroupsStatus(err), err)
 				return
 			}
 			writeJSON(w, map[string]any{"groups": groups})
@@ -306,8 +319,29 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 
 func (c *Controller) SecureHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !c.allowedHost(r.Host) {
+		// The Host allowlist exists to stop DNS-rebinding attacks against the
+		// unauthenticated loopback-only setup (an attacker-controlled page
+		// pointing some hostname at 127.0.0.1). Once an API secret is
+		// configured, every /api/ request is already token-gated below and a
+		// rebound origin cannot read the real origin's localStorage token, so
+		// the Host check is no longer load-bearing -- and enforcing it would
+		// otherwise permanently block the documented LAN scenario, since a
+		// remote browser sends the LAN Host header (e.g. "192.168.1.5:47890"),
+		// never "localhost". Skip the check entirely in that case, for both
+		// static and /api/ paths (the remote browser must be able to load the
+		// UI shell too). When no secret is configured this is unreachable and
+		// behavior is unchanged.
+		if c.apiSecret == "" && !c.allowedHost(r.Host) {
 			writeError(w, http.StatusForbidden, errors.New("invalid host header"))
+			return
+		}
+		// Additive on top of the Host/CSRF checks below: when an API secret
+		// is configured (mandatory for non-loopback binds, see main.go),
+		// every /api/ request must also present it. Static assets are left
+		// unauthenticated so the UI shell can load before the user has
+		// entered a token; app.js prompts for one on the first 401.
+		if c.apiSecret != "" && strings.HasPrefix(r.URL.Path, "/api/") && !c.authorizedRequest(r) {
+			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid API token"))
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
@@ -323,6 +357,19 @@ func (c *Controller) SecureHandler(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authorizedRequest reports whether r carries the configured API secret as
+// an "Authorization: Bearer <secret>" header. Uses a constant-time compare
+// so response timing cannot be used to brute-force the token byte by byte.
+func (c *Controller) authorizedRequest(r *http.Request) bool {
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	token := strings.TrimPrefix(auth, prefix)
+	return subtle.ConstantTimeCompare([]byte(token), []byte(c.apiSecret)) == 1
 }
 
 func (c *Controller) allowedHost(host string) bool {
@@ -401,9 +448,12 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
-			if isPortUnavailableError(err) {
+			switch {
+			case errors.Is(err, errProfileNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, errPortUnavailable):
 				status = http.StatusConflict
-			} else if isInstanceValidationError(err) {
+			case errors.Is(err, errValidation):
 				status = http.StatusBadRequest
 			}
 			writeError(w, status, err)
@@ -525,11 +575,11 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			http.NotFound(w, r)
 			return
 		}
-		if c.manager.state(id) != nil && (req.MixedPort > 0 || req.ControllerPort > 0) {
+		if c.manager.Busy(id) && (req.MixedPort > 0 || req.ControllerPort > 0) {
 			writeError(w, http.StatusConflict, errors.New("stop the instance before changing ports"))
 			return
 		}
-		if c.manager.state(id) != nil && req.ProxyBind != nil {
+		if c.manager.Busy(id) && req.ProxyBind != nil {
 			nextProxyBind, err := normalizeProxyBind(*req.ProxyBind)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -540,7 +590,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 				return
 			}
 		}
-		if c.manager.state(id) != nil && req.ProfileID != "" && current.ProfileID != req.ProfileID {
+		if c.manager.Busy(id) && req.ProfileID != "" && current.ProfileID != req.ProfileID {
 			writeError(w, http.StatusConflict, errors.New("stop the instance before changing profile"))
 			return
 		}
@@ -572,7 +622,10 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		})
 		if err != nil {
 			status := http.StatusBadRequest
-			if isPortUnavailableError(err) {
+			switch {
+			case errors.Is(err, errProfileNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, errPortUnavailable):
 				status = http.StatusConflict
 			}
 			writeError(w, status, err)
@@ -581,7 +634,25 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		view, _ := c.manager.View(item.ID)
 		writeJSON(w, view)
 	case http.MethodDelete:
-		_ = c.manager.Stop(id)
+		// BeginDelete/EndDelete close the narrow window where an external
+		// concurrent POST .../start could win a race against this handler:
+		// launch after Stop below but before store.Delete removes the
+		// record, orphaning the process. EndDelete runs via defer so it
+		// fires on every return path (including the two error returns
+		// below), never wedging the instance in a permanently
+		// "being deleted" state.
+		c.manager.BeginDelete(id)
+		defer c.manager.EndDelete(id)
+		// Stop runs against a background context (not r.Context()) so a client
+		// disconnect during a slow SIGTERM/SIGKILL grace period or an in-flight
+		// start's cancellation window can never leave an orphaned mihomo process
+		// or resurrect the instance directory (geodata.go's MkdirAll) after the
+		// store record below is removed. If the instance cannot be confirmed
+		// stopped, deletion is aborted rather than silently dropping the error.
+		if err := c.manager.Stop(id); err != nil {
+			writeError(w, http.StatusConflict, fmt.Errorf("stop instance before delete: %w", err))
+			return
+		}
 		if err := c.store.Delete(id); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -609,9 +680,10 @@ func (c *Controller) handleClone(w http.ResponseWriter, r *http.Request, id stri
 	item, err := c.store.Clone(id, req.Name, req.MixedPort, req.ControllerPort)
 	if err != nil {
 		status := http.StatusBadRequest
-		if errors.Is(err, errInstanceNotFound) {
+		switch {
+		case errors.Is(err, errInstanceNotFound), errors.Is(err, errProfileNotFound):
 			status = http.StatusNotFound
-		} else if isPortUnavailableError(err) {
+		case errors.Is(err, errPortUnavailable):
 			status = http.StatusConflict
 		}
 		writeError(w, status, err)
@@ -648,9 +720,19 @@ func (c *Controller) handleSelection(w http.ResponseWriter, r *http.Request, id 
 		http.NotFound(w, r)
 		return
 	}
-	if req.Apply && c.manager.state(id) != nil {
-		if err := putMihomoProxy(item, req.Group, req.Proxy); err != nil {
-			writeError(w, http.StatusBadGateway, err)
+	if req.Apply {
+		if c.manager.state(id) != nil {
+			if err := putMihomoProxy(item, req.Group, req.Proxy); err != nil {
+				writeError(w, http.StatusBadGateway, err)
+				return
+			}
+		} else if c.manager.isStarting(id) {
+			// The instance is mid-launch: there is no controller port to push to
+			// yet, and pushing the selection now (instead of rejecting) would let
+			// it silently persist without ever reaching the process that is about
+			// to start with an older snapshot. Ask the caller to retry once the
+			// instance has finished starting.
+			writeError(w, http.StatusConflict, errors.New("instance is starting; retry once it finishes starting"))
 			return
 		}
 	}
@@ -993,23 +1075,14 @@ func methodNotAllowed(w http.ResponseWriter) {
 	writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 }
 
-func isPortUnavailableError(err error) bool {
-	if err == nil {
-		return false
+// profileProxyGroupsStatus classifies errors from Store.ProfileProxyGroups /
+// ProfileProxyGroupsForInstance for the GET .../proxies endpoint: a missing
+// profile is a 404, anything else (bad YAML, a global-chain plan error, a
+// disk read failure) is a 400, matching the status codes those call sites
+// used before they were consolidated behind the two Store methods.
+func profileProxyGroupsStatus(err error) int {
+	if errors.Is(err, errProfileNotFound) {
+		return http.StatusNotFound
 	}
-	message := err.Error()
-	return (strings.Contains(message, "proxy port") && strings.Contains(message, "is unavailable")) ||
-		(strings.Contains(message, "controller port") && strings.Contains(message, "is unavailable")) ||
-		message == "unable to allocate local ports"
-}
-
-func isInstanceValidationError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := err.Error()
-	return strings.Contains(message, "proxy bind address") ||
-		strings.Contains(message, "instance mode") ||
-		strings.Contains(message, "parse local proxies") ||
-		strings.Contains(message, "mixed and controller ports must differ")
+	return http.StatusBadRequest
 }

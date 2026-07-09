@@ -289,17 +289,6 @@ func applyProviderDialerProxy(value any, dialer string) {
 	}
 }
 
-func profileProxyGroupsForInstance(config string, item *Instance) ([]ProfileProxyGroup, error) {
-	if item == nil || instanceMode(item.Mode) != InstanceModeGlobalChain {
-		var selections map[string]string
-		if item != nil {
-			selections = normalizeSelections(item.SelectedProxies, item.SelectedGroup, item.SelectedProxy)
-		}
-		return parseProfileProxyGroups(config, selections)
-	}
-	return parseGlobalChainProxyGroups(config, item)
-}
-
 func parseGlobalChainProxyGroups(config string, item *Instance) ([]ProfileProxyGroup, error) {
 	var cfg map[string]any
 	if err := yaml.Unmarshal([]byte(config), &cfg); err != nil {
@@ -360,7 +349,11 @@ func parseLocalProxyItems(raw string) ([]any, []string, error) {
 	}
 	var parsed []map[string]any
 	if err := yaml.Unmarshal([]byte(raw), &parsed); err != nil {
-		return nil, nil, fmt.Errorf("parse local proxies: %w", err)
+		// validationError preserves this exact "parse local proxies: ..."
+		// text (matched by app.js's errorPatterns) while classifying as
+		// errValidation instead of the substring-matching this used to rely
+		// on (see former controller.go isInstanceValidationError).
+		return nil, nil, validationError{msg: fmt.Sprintf("parse local proxies: %v", err)}
 	}
 	if len(parsed) == 0 {
 		return nil, nil, nil
@@ -372,13 +365,13 @@ func parseLocalProxyItems(raw string) ([]any, []string, error) {
 		nameValue, ok := item["name"].(string)
 		name := strings.TrimSpace(nameValue)
 		if !ok || name == "" {
-			return nil, nil, fmt.Errorf("local proxy %d is missing name", index+1)
+			return nil, nil, validationError{msg: fmt.Sprintf("local proxy %d is missing name", index+1)}
 		}
 		if seen[name] {
-			return nil, nil, fmt.Errorf("local proxy name %q is duplicated", name)
+			return nil, nil, validationError{msg: fmt.Sprintf("local proxy name %q is duplicated", name)}
 		}
 		if name == globalChainSelectGroupName || name == globalChainRelayGroupName {
-			return nil, nil, fmt.Errorf("local proxy name %q conflicts with generated global-chain group", name)
+			return nil, nil, validationError{msg: fmt.Sprintf("local proxy name %q conflicts with generated global-chain group", name)}
 		}
 		item["name"] = name
 		seen[name] = true
@@ -452,6 +445,6 @@ func normalizeInstanceMode(mode string) (string, error) {
 	case InstanceModeGlobalChain:
 		return InstanceModeGlobalChain, nil
 	default:
-		return "", fmt.Errorf("instance mode %q is invalid", mode)
+		return "", validationError{msg: fmt.Sprintf("instance mode %q is invalid", mode)}
 	}
 }

@@ -28,6 +28,203 @@ func TestAllowedHostStrictLoopback(t *testing.T) {
 	}
 }
 
+// TestSecureHandlerHostAndCSRFChecks drives requests through
+// c.SecureHandler(mux) (rather than calling the wrapped handler directly)
+// so a future regression that drops the Host allowlist, the
+// X-Mihomo-Fleet/Content-Type CSRF checks, or the GET/HEAD/OPTIONS
+// exemption is caught here instead of passing silently, per review finding
+// H2 (docs/review-2026-07-11-testing-quality.md): SecureHandler previously
+// had 0% test coverage.
+func TestSecureHandlerHostAndCSRFChecks(t *testing.T) {
+	c := newBatchTestController(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := c.SecureHandler(mux)
+
+	tests := []struct {
+		name       string
+		method     string
+		host       string
+		headers    map[string]string
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "GET with loopback Host succeeds",
+			method:     http.MethodGet,
+			host:       "127.0.0.1",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "GET with attacker Host is blocked",
+			method:     http.MethodGet,
+			host:       "attacker.test",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "POST without X-Mihomo-Fleet header is blocked",
+			method:     http.MethodPost,
+			host:       "127.0.0.1",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:   "POST with header but wrong Content-Type and a body is rejected",
+			method: http.MethodPost,
+			host:   "127.0.0.1",
+			headers: map[string]string{
+				"X-Mihomo-Fleet": "1",
+				"Content-Type":   "text/plain",
+			},
+			body:       "hello",
+			wantStatus: http.StatusUnsupportedMediaType,
+		},
+		{
+			name:       "POST with header and application/json succeeds",
+			method:     http.MethodPost,
+			host:       "127.0.0.1",
+			headers:    map[string]string{"X-Mihomo-Fleet": "1", "Content-Type": "application/json"},
+			body:       "{}",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "OPTIONS is exempt from the custom-header requirement",
+			method:     http.MethodOptions,
+			host:       "127.0.0.1",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "HEAD is exempt from the custom-header requirement",
+			method:     http.MethodHead,
+			host:       "127.0.0.1",
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/api/probe", strings.NewReader(tt.body))
+			req.Host = tt.host
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d, body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestSecureHandlerAPISecretGatesAPIPathsOnly covers H-1's fix: once an API
+// secret is configured (mandatory for non-loopback binds), every /api/
+// request must carry a matching "Authorization: Bearer <secret>" header,
+// while static/UI paths stay reachable without one so the page can load far
+// enough to prompt for the token. This must be strictly additive to the
+// Host/CSRF checks verified above.
+func TestSecureHandlerAPISecretGatesAPIPathsOnly(t *testing.T) {
+	c := newBatchTestController(t)
+	c.SetAPISecret("s3cr3t-token")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := c.SecureHandler(mux)
+
+	get := func(path, authHeader string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = "127.0.0.1"
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := get("/api/probe", ""); code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/probe without Authorization: status = %d, want 401", code)
+	}
+	if code := get("/api/probe", "Bearer wrong-token"); code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/probe with wrong bearer: status = %d, want 401", code)
+	}
+	if code := get("/api/probe", "Bearer s3cr3t-token"); code != http.StatusOK {
+		t.Fatalf("GET /api/probe with correct bearer: status = %d, want 200", code)
+	}
+	if code := get("/", ""); code != http.StatusOK {
+		t.Fatalf("GET / (static) without Authorization: status = %d, want 200", code)
+	}
+}
+
+// TestSecureHandlerAPISecretSkipsHostAllowlist covers N1: once an API secret
+// is configured, the Host allowlist must not block the documented LAN
+// scenario (-bind 0.0.0.0 -api-secret ...), where a remote browser sends the
+// LAN Host header rather than "localhost". The Host check is DNS-rebinding
+// protection for the unauthenticated loopback setup; with a secret
+// configured /api/ is already token-gated, so it is skipped entirely (for
+// both static and /api/ paths) rather than selectively -- the token
+// check below is still fully enforced.
+func TestSecureHandlerAPISecretSkipsHostAllowlist(t *testing.T) {
+	c := newBatchTestController(t)
+	c.SetAPISecret("s3cr3t-token")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := c.SecureHandler(mux)
+
+	get := func(path, host, authHeader string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = host
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	const lanHost = "192.168.1.5:47890"
+
+	if code := get("/api/probe", lanHost, "Bearer s3cr3t-token"); code != http.StatusOK {
+		t.Fatalf("GET /api/probe with LAN Host and correct bearer: status = %d, want 200", code)
+	}
+	if code := get("/api/probe", lanHost, ""); code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/probe with LAN Host and no token: status = %d, want 401 (not 403)", code)
+	}
+	if code := get("/", lanHost, ""); code != http.StatusOK {
+		t.Fatalf("GET / (static) with LAN Host: status = %d, want 200 so the UI shell can load", code)
+	}
+}
+
+// TestSecureHandlerNoAPISecretSkipsAuth documents that leaving -api-secret
+// unset (the default for loopback binds) preserves the pre-H-1 behavior
+// exactly: no Authorization header is required anywhere.
+func TestSecureHandlerNoAPISecretSkipsAuth(t *testing.T) {
+	c := newBatchTestController(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := c.SecureHandler(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe", nil)
+	req.Host = "127.0.0.1"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (no secret configured means no auth required)", rec.Code)
+	}
+}
+
 func TestResolveMihomoPathPriority(t *testing.T) {
 	exePath := filepath.Join(t.TempDir(), "mihomo-fleet")
 	sameDirPath := filepath.Join(filepath.Dir(exePath), mihomoBinaryNames()[0])

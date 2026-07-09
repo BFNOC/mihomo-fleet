@@ -33,7 +33,7 @@ type subscriptionFetchResult struct {
 func fetchSubscription(ctx context.Context, client *http.Client, subscriptionURL, userAgent string) (*subscriptionFetchResult, error) {
 	parsed, err := url.Parse(strings.TrimSpace(subscriptionURL))
 	if err != nil {
-		return nil, fmt.Errorf("parse subscription URL: %w", err)
+		return nil, fmt.Errorf("parse subscription URL: %w", sanitizeSubscriptionError(err))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return nil, errors.New("subscription URL must start with http:// or https://")
@@ -42,7 +42,7 @@ func fetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 		return nil, errors.New("subscription URL host is required")
 	}
 	if err := validateSubscriptionTarget(ctx, parsed); err != nil {
-		return nil, err
+		return nil, sanitizeSubscriptionError(err)
 	}
 	if userAgent == "" {
 		userAgent = "clash-verge/vdev"
@@ -50,14 +50,21 @@ func fetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeSubscriptionError(err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/yaml, application/yaml, text/plain, */*")
 
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		// client.Do's error (and any redirect failure from CheckRedirect
+		// below, which http.Client wraps into the same *url.Error) embeds
+		// the full request URL -- including userinfo and any query-string
+		// tokens the subscription link carries. This error is persisted to
+		// instances.json (Profile.LastUpdateError) and printed via
+		// log.Printf by callers, so it must be sanitized here, at the
+		// source, rather than by every consumer.
+		return nil, sanitizeSubscriptionError(err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
@@ -84,6 +91,61 @@ func fetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 		HomeURL:               strings.TrimSpace(res.Header.Get("profile-web-page-url")),
 		Info:                  subscriptionInfo(res.Header),
 	}, nil
+}
+
+// sanitizeSubscriptionError redacts any URL embedded in err before it is
+// returned from fetchSubscription. *url.Error (returned by url.Parse,
+// http.NewRequestWithContext, and http.Client.Do -- including redirect
+// failures from CheckRedirect, which the client wraps into the same type)
+// carries the exact request/parse URL in its Error() text, userinfo and
+// query string included. Since these errors flow into
+// Profile.LastUpdateError (persisted to instances.json) and log.Printf
+// (controller.go's refreshDueSubscriptions), any credential or token in the
+// subscription link would otherwise leak to disk and stdout. Non-*url.Error
+// values are returned unchanged: fetchSubscription's other error paths
+// (size limits, HTTP status, YAML validation) never embed the URL.
+func sanitizeSubscriptionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		sanitized := *uerr
+		sanitized.URL = redactSubscriptionURLText(uerr.URL)
+		sanitized.Err = sanitizeSubscriptionError(uerr.Err)
+		return &sanitized
+	}
+	return err
+}
+
+// redactSubscriptionURLText reduces a URL-shaped string to a bare
+// "scheme://host/path" form: no userinfo, no query string, no fragment.
+// It prefers net/url.Redacted() (which masks -- but does not remove --
+// userinfo) when raw parses cleanly, then additionally strips the query
+// string/fragment, since subscription tokens are typically carried in the
+// query. If raw does not parse as a URL at all (e.g. it *is* the malformed
+// input that made url.Parse fail in the first place, so re-parsing it here
+// would fail identically), it falls back to a best-effort textual strip of
+// the same two things directly on raw.
+func redactSubscriptionURLText(raw string) string {
+	if parsed, err := url.Parse(raw); err == nil {
+		redacted := parsed.Redacted()
+		if idx := strings.IndexAny(redacted, "?#"); idx >= 0 {
+			redacted = redacted[:idx]
+		}
+		return redacted
+	}
+	text := raw
+	if idx := strings.IndexAny(text, "?#"); idx >= 0 {
+		text = text[:idx]
+	}
+	if schemeEnd := strings.Index(text, "://"); schemeEnd >= 0 {
+		afterScheme := schemeEnd + 3
+		if at := strings.IndexByte(text[afterScheme:], '@'); at >= 0 {
+			text = text[:afterScheme] + text[afterScheme+at+1:]
+		}
+	}
+	return text
 }
 
 func newSubscriptionHTTPClient() *http.Client {
@@ -305,6 +367,23 @@ func parseSubscriptionInfoValue(raw, key string) int64 {
 }
 
 func parseProfileProxyGroups(config string, selections map[string]string) ([]ProfileProxyGroup, error) {
+	groups, err := parseProfileProxyGroupsBase(config)
+	if err != nil {
+		return nil, err
+	}
+	return applyProfileProxySelections(groups, selections), nil
+}
+
+// parseProfileProxyGroupsBase performs the actual (potentially expensive,
+// full-document) YAML parse of a profile config into proxy groups, without
+// applying any per-instance selection (each group's Now is left at its
+// first candidate). Its result only depends on the config content, which is
+// exactly what makes it safe for Store.ProfileProxyGroups to cache keyed by
+// the config file's (path, modTime, size) -- see profileProxyGroupCache in
+// store.go. Callers that need a specific selection applied (e.g. an
+// instance's saved SelectedProxies) should call applyProfileProxySelections
+// on the result instead of re-parsing.
+func parseProfileProxyGroupsBase(config string) ([]ProfileProxyGroup, error) {
 	var cfg struct {
 		Proxies []struct {
 			Name string `yaml:"name"`
@@ -329,7 +408,7 @@ func parseProfileProxyGroups(config string, selections map[string]string) ([]Pro
 			Type: group.Type,
 			All:  dedupeStrings(group.Proxies),
 		}
-		out.Now = selectionForGroup(out.Name, out.All, selections)
+		out.Now = selectionForGroup(out.Name, out.All, nil)
 		groups = append(groups, out)
 	}
 	if len(groups) > 0 {
@@ -351,8 +430,25 @@ func parseProfileProxyGroups(config string, selections map[string]string) ([]Pro
 		Name: "Proxy",
 		Type: "select",
 		All:  names,
-		Now:  selectionForGroup("Proxy", names, selections),
+		Now:  selectionForGroup("Proxy", names, nil),
 	}}, nil
+}
+
+// applyProfileProxySelections returns a copy of groups with Now recomputed
+// per the given per-group selections (falling back to each group's first
+// candidate, same rule as parseProfileProxyGroupsBase). It does not mutate
+// groups or alias-write into the All slices it shares with them, since
+// groups may be a slice owned by profileProxyGroupCache.
+func applyProfileProxySelections(groups []ProfileProxyGroup, selections map[string]string) []ProfileProxyGroup {
+	if len(groups) == 0 {
+		return groups
+	}
+	out := make([]ProfileProxyGroup, len(groups))
+	for i, group := range groups {
+		group.Now = selectionForGroup(group.Name, group.All, selections)
+		out[i] = group
+	}
+	return out
 }
 
 func selectionForGroup(group string, names []string, selections map[string]string) string {
