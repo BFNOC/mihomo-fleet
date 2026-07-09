@@ -996,16 +996,22 @@ func detectVersion(binary string) string {
 	if binary == "" {
 		return ""
 	}
+	// H4 (REVIEW-2026-07-04.md): each attempt gets its own independent 2s
+	// budget. Previously both attempts shared a single 2s context, so a slow
+	// "-v" left "version" with little or no time to run, and c.version would
+	// silently end up empty under load.
+	if out := runVersionProbe(binary, "-v"); out != "" {
+		return out
+	}
+	return runVersionProbe(binary, "version")
+}
+
+func runVersionProbe(binary, arg string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "-v")
-	out, err := cmd.CombinedOutput()
+	out, err := exec.CommandContext(ctx, binary, arg).CombinedOutput()
 	if err != nil {
-		cmd = exec.CommandContext(ctx, binary, "version")
-		out, err = cmd.CombinedOutput()
-		if err != nil {
-			return ""
-		}
+		return ""
 	}
 	return strings.TrimSpace(string(bytes.TrimSpace(out)))
 }

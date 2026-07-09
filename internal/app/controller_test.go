@@ -509,6 +509,25 @@ func TestHandleInstanceUpdateReportsPortConflict(t *testing.T) {
 	}
 }
 
+// TestHandleInstanceUpdateSamePortsReturnsBadRequest covers H1
+// (REVIEW-2026-07-04.md): setting mixedPort == controllerPort on update is a
+// validation failure (400), not a port-availability conflict (409) -- unlike
+// TestHandleInstanceUpdateReportsPortConflict above, which conflicts with
+// another instance's already-used port.
+func TestHandleInstanceUpdateSamePortsReturnsBadRequest(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	first := postInstanceJSON(t, c, `{"name":"First","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/instances/"+first.ID, strings.NewReader(`{"mixedPort":29000,"controllerPort":29000}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstance(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleInstanceCloneCreatesStoppedCopy(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 	c := newBatchTestController(t)

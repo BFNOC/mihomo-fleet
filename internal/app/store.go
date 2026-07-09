@@ -818,7 +818,13 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		}
 	}
 	if nextMixedPort == nextControllerPort {
-		return nil, portUnavailableError{msg: fmt.Sprintf("controller port %d is unavailable", nextControllerPort)}
+		// Mirror createInstanceLocked's equal-ports check: this is a
+		// validation failure (400), not a port-availability conflict (409).
+		// See H1 in REVIEW-2026-07-04.md -- this path previously returned
+		// portUnavailableError, which HTTP-mapped to 409 even though the
+		// create path's identical check already returned validationError
+		// (400) for the same condition.
+		return nil, validationError{msg: "mixed and controller ports must differ"}
 	}
 	used := s.usedPortsLocked(id)
 	if opts.MixedPort > 0 {

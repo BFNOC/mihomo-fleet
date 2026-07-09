@@ -42,7 +42,13 @@ func writeRuntimeConfig(item *Instance, profile *Profile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(item.RuntimeConfigPath, out, 0o600)
+	// M4 (REVIEW-2026-07-04.md): this was the project's only non-atomic
+	// config write -- os.WriteFile can leave a truncated file behind if the
+	// process dies mid-write, which mihomo would then fail to start from.
+	// writeFileAtomic (util.go) writes to a temp file in the same directory
+	// and renames it into place, matching the 0600 permissions used here
+	// before (same-user child process, no other principals need read access).
+	return writeFileAtomic(item.RuntimeConfigPath, out, 0o600)
 }
 
 func cleanRuntimeConfig(cfg map[string]any) {

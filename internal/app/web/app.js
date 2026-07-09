@@ -67,6 +67,7 @@ const statusLabels = {
 const errorLabels = {
   "mihomo binary not found. Install mihomo or start with -mihomo /path/to/mihomo": "未找到 mihomo 可执行文件。请安装 mihomo，或使用 -mihomo /path/to/mihomo 指定路径。",
   "stop the instance before changing ports": "修改端口前请先停止该实例。",
+  "mixed and controller ports must differ": "混合端口与控制器端口不能相同。",
   "stop the instance before changing proxy bind": "修改代理绑定地址前请先停止该实例。",
   "stop the instance before changing profile": "修改配置档前请先停止该实例。",
   "profileId and config cannot be changed in the same request": "不能在同一次请求中同时修改配置档和配置内容。",

@@ -776,8 +776,22 @@ func TestStoreUpdateRejectsSameMixedAndControllerPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Update(item.ID, "", "", "", 0, 28001); err == nil {
+	_, err = store.Update(item.ID, "", "", "", 0, 28001)
+	if err == nil {
 		t.Fatal("expected controller port matching existing mixed port to be rejected")
+	}
+	// H1 (REVIEW-2026-07-04.md): equal mixed/controller ports on update must
+	// classify as errValidation (-> HTTP 400), the same as the create path,
+	// not errPortUnavailable (-> HTTP 409). Also pin the exact message text,
+	// since app.js's errorLabels dictionary matches it verbatim.
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("Update() error = %v, want errValidation", err)
+	}
+	if errors.Is(err, errPortUnavailable) {
+		t.Fatalf("Update() error = %v, should not also classify as errPortUnavailable", err)
+	}
+	if err.Error() != "mixed and controller ports must differ" {
+		t.Fatalf("Update() error text = %q, want %q", err.Error(), "mixed and controller ports must differ")
 	}
 	got, ok := store.Get(item.ID)
 	if !ok {

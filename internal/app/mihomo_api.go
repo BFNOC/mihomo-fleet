@@ -21,20 +21,36 @@ const (
 	maxLatencyTimeoutMS     = 15000
 )
 
+// mihomoAPIClient is shared by putMihomoProxy and doMihomoDelayRequest, the
+// two call sites that previously built a fresh http.Client (and therefore a
+// fresh Transport, with no connection reuse) on every single call (see M3 in
+// REVIEW-2026-07-04.md). Both always talk to a local mihomo controller
+// (127.0.0.1:<port>), so pooling connections in a shared Transport is a
+// straightforward win, especially for batches of delay-test requests.
+//
+// No Client.Timeout is set here: each call site instead bounds its own
+// request via context.WithTimeout (see below), preserving the exact per-call
+// timeout semantics the old per-call http.Client{Timeout: ...} values gave --
+// a client-level Timeout would apply globally to every caller and could not
+// express putMihomoProxy's fixed 2s budget alongside doMihomoDelayRequest's
+// caller-supplied budget.
+var mihomoAPIClient = &http.Client{}
+
 func putMihomoProxy(item *Instance, group, proxy string) error {
 	endpoint := "http://127.0.0.1:" + strconv.Itoa(item.ControllerPort) + "/proxies/" + url.PathEscape(group)
 	body, err := json.Marshal(map[string]string{"name": proxy})
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPut, endpoint, bytes.NewReader(body))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+item.Secret)
 	req.Header.Set("Content-Type", "application/json")
-	client := http.Client{Timeout: 2 * time.Second}
-	res, err := client.Do(req)
+	res, err := mihomoAPIClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -106,14 +122,20 @@ func mihomoGroupDelay(ctx context.Context, item *Instance, groupName, testURL st
 }
 
 func doMihomoDelayRequest(ctx context.Context, item *Instance, endpoint string, requestTimeoutMS int, out any) error {
+	// Deriving a child context from the caller-supplied ctx reproduces the
+	// previous http.Client{Timeout: requestTimeoutMS} exactly: that Timeout
+	// raced the request against ctx's own deadline and enforced whichever was
+	// shorter, which is exactly what context.WithTimeout on top of ctx does
+	// here.
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(requestTimeoutMS)*time.Millisecond)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+item.Secret)
 
-	client := http.Client{Timeout: time.Duration(requestTimeoutMS) * time.Millisecond}
-	res, err := client.Do(req)
+	res, err := mihomoAPIClient.Do(req)
 	if err != nil {
 		return err
 	}
