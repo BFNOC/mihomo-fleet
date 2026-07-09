@@ -39,6 +39,16 @@ type Controller struct {
 	subscriptionMu      sync.Mutex
 	subscriptionRunning map[string]bool
 	apiSecret           string
+	// mihomoProxies caches one *httputil.ReverseProxy per controller port
+	// (arch L9, docs/review-2026-07-11-go-architecture.md): handleMihomoProxy
+	// previously built a brand new ReverseProxy (and Director closure) on
+	// every single request. Keyed by port rather than instance id so a port
+	// change naturally "invalidates" the old entry by simply never being
+	// looked up again, without needing explicit invalidation bookkeeping;
+	// the stale entry for an abandoned port is harmless, just an unused map
+	// entry.
+	mihomoProxiesMu sync.Mutex
+	mihomoProxies   map[int]*httputil.ReverseProxy
 }
 
 // SetAPISecret configures the bearer token that SecureHandler requires on
@@ -93,6 +103,7 @@ func NewController(opts Options) (*Controller, error) {
 		proxyTransport:      transport,
 		subscriptionClient:  newSubscriptionHTTPClient(),
 		subscriptionRunning: make(map[string]bool),
+		mihomoProxies:       make(map[int]*httputil.ReverseProxy),
 	}
 	c.version = detectVersion(mihomoPath)
 	c.manager = NewManager(store, mihomoPath)
@@ -192,7 +203,7 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 			}
 			cfg, err := c.store.ReadProfileConfig(id)
 			if err != nil {
-				writeError(w, http.StatusNotFound, err)
+				writeError(w, http.StatusNotFound, sanitizedProfileConfigReadError(id, err))
 				return
 			}
 			writeJSON(w, map[string]string{"config": cfg})
@@ -242,6 +253,16 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, map[string]any{"groups": groups})
 			return
+		default:
+			// L3 (docs/review-2026-07-11-go-architecture.md): an unrecognized
+			// sub-resource previously fell through the switch and was handled
+			// by the profile-root method switch below -- so
+			// GET /api/profiles/{id}/bogus silently returned the profile
+			// itself (and PUT could even modify it) instead of 404, unlike
+			// handleInstance's equivalent routing (controller.go's default:
+			// http.NotFound).
+			http.NotFound(w, r)
+			return
 		}
 	}
 
@@ -274,44 +295,86 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("subscription profile config is refreshed from its URL"))
 			return
 		}
-		var fetched *subscriptionFetchResult
+		var nextURL string
+		var urlChanged bool
 		if req.SubscriptionURL != nil && strings.TrimSpace(*req.SubscriptionURL) != "" {
-			nextURL := strings.TrimSpace(*req.SubscriptionURL)
+			nextURL = strings.TrimSpace(*req.SubscriptionURL)
 			parsed, err := url.Parse(nextURL)
 			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 				writeError(w, http.StatusBadRequest, errors.New("subscription URL must start with http:// or https://"))
 				return
 			}
-			if current.SubscriptionURL != nextURL {
-				ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-				defer cancel()
-				var err error
-				fetched, err = fetchSubscription(ctx, c.subscriptionClient, nextURL, c.subscriptionUserAgent())
+			urlChanged = current.SubscriptionURL != nextURL
+		}
+
+		var profile *Profile
+		var err error
+		if urlChanged {
+			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+			fetched, ferr := fetchSubscription(ctx, c.subscriptionClient, nextURL, c.subscriptionUserAgent())
+			cancel()
+			if ferr != nil {
+				writeError(w, http.StatusBadRequest, ferr)
+				return
+			}
+			// arch M4: ReplaceProfileSubscription persists the new URL and
+			// applies the fetched config under a single store lock+save, so a
+			// failure here can never leave the URL pointing at a config the
+			// profile's config.yaml doesn't actually contain (the previous
+			// two-call PatchProfile-then-ApplySubscriptionFetchForURL
+			// sequence could partially apply and diverge on the second
+			// call's failure).
+			profile, err = c.store.ReplaceProfileSubscription(id, nextURL, fetched)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			// Name/AutoUpdate/UpdateIntervalMinutes are independent of the
+			// URL/config transaction above; apply them as a second,
+			// best-effort step so a failure here only leaves those fields
+			// stale (not the URL/config pair M4 is about).
+			if req.Name != "" || req.AutoUpdate != nil || req.UpdateIntervalMinutes != nil {
+				profile, err = c.store.PatchProfile(id, ProfilePatch{
+					Name:                  req.Name,
+					AutoUpdate:            req.AutoUpdate,
+					UpdateIntervalMinutes: req.UpdateIntervalMinutes,
+				})
 				if err != nil {
 					writeError(w, http.StatusBadRequest, err)
 					return
 				}
 			}
-		}
-		profile, err := c.store.PatchProfile(id, ProfilePatch{
-			Name:                  req.Name,
-			Config:                req.Config,
-			SubscriptionURL:       req.SubscriptionURL,
-			AutoUpdate:            req.AutoUpdate,
-			UpdateIntervalMinutes: req.UpdateIntervalMinutes,
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if fetched != nil {
-			profile, err = c.store.ApplySubscriptionFetchForURL(id, strings.TrimSpace(*req.SubscriptionURL), fetched)
+		} else {
+			profile, err = c.store.PatchProfile(id, ProfilePatch{
+				Name:                  req.Name,
+				Config:                req.Config,
+				SubscriptionURL:       req.SubscriptionURL,
+				AutoUpdate:            req.AutoUpdate,
+				UpdateIntervalMinutes: req.UpdateIntervalMinutes,
+			})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 		}
 		writeJSON(w, profile)
+	case http.MethodDelete:
+		// arch M2: refuse to delete a profile still referenced by an
+		// instance (409); unknown profile is 404. There is deliberately no
+		// cascade-delete from the instance side -- see DeleteProfile's doc
+		// comment in store.go for why.
+		if err := c.store.DeleteProfile(id); err != nil {
+			status := http.StatusBadRequest
+			switch {
+			case errors.Is(err, errProfileNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, errValidation):
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w)
 	}
@@ -344,11 +407,29 @@ func (c *Controller) SecureHandler(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid API token"))
 			return
 		}
+		// The custom X-Mihomo-Fleet header defeats cross-site requests: a
+		// remote page cannot set a custom header on a cross-origin request
+		// without triggering a CORS preflight, which this server never
+		// answers with an Access-Control-Allow-* response. It was previously
+		// only required for mutating methods; security L-4
+		// (docs/review-2026-07-11-security.md) extends it to GET requests
+		// under /api/ too, since several GET endpoints have server-side side
+		// effects (e.g. .../delay makes mihomo issue an outbound network
+		// probe) that a cross-site <img>/fetch could otherwise trigger blind
+		// (the response itself is unreadable cross-origin, but the side
+		// effect still happens). app.js's api() helper already sends this
+		// header on every request, GET included, so this is not a behavior
+		// change for the shipped UI. HEAD/OPTIONS stay exempt (no side
+		// effects, and OPTIONS is the CORS preflight method itself); GETs
+		// outside /api/ (the static UI shell) stay exempt so a plain browser
+		// navigation can still load the page.
+		needsCustomHeader := r.Method != http.MethodHead && r.Method != http.MethodOptions &&
+			(r.Method != http.MethodGet || strings.HasPrefix(r.URL.Path, "/api/"))
+		if needsCustomHeader && r.Header.Get("X-Mihomo-Fleet") != "1" {
+			writeError(w, http.StatusForbidden, errors.New("missing X-Mihomo-Fleet header"))
+			return
+		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-			if r.Header.Get("X-Mihomo-Fleet") != "1" {
-				writeError(w, http.StatusForbidden, errors.New("missing X-Mihomo-Fleet header"))
-				return
-			}
 			contentType := r.Header.Get("Content-Type")
 			if r.ContentLength != 0 && !strings.HasPrefix(contentType, "application/json") {
 				writeError(w, http.StatusUnsupportedMediaType, errors.New("Content-Type must be application/json"))
@@ -484,12 +565,21 @@ func (c *Controller) handlePortSuggest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Controller) handleInstancesBatch(w http.ResponseWriter, r *http.Request, action string) {
+	// conc L-8 (docs/review-2026-07-11-go-concurrency-performance.md): a
+	// server-side budget instead of r.Context() -- StartContext's first line
+	// returns immediately once its ctx is cancelled, so binding this to the
+	// request context meant a client disconnect (page refresh, browser tab
+	// closed, request timeout) partway through a "start all"/"stop all"
+	// click silently aborted every instance the batch hadn't reached yet,
+	// with no way for the (now gone) client to see which ones were.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 	var result InstanceBatchResult
 	switch action {
 	case "start-all":
-		result = c.manager.StartAll(r.Context())
+		result = c.manager.StartAll(ctx)
 	case "stop-all":
-		result = c.manager.StopAll(r.Context())
+		result = c.manager.StopAll(ctx)
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unknown instance action %q", action))
 		return
@@ -657,6 +747,10 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		// arch L7 / conc L-1: release id's log buffer now that the instance
+		// record (and its on-disk directory) are gone -- otherwise it stays in
+		// Manager.logs forever, since nothing else ever removes that entry.
+		c.manager.dropLogs(id)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w)
@@ -673,7 +767,13 @@ func (c *Controller) handleClone(w http.ResponseWriter, r *http.Request, id stri
 		MixedPort      int    `json:"mixedPort"`
 		ControllerPort int    `json:"controllerPort"`
 	}
-	if err := readJSON(r, &req); err != nil {
+	// arch L10: every field of a clone request is optional (Store.Clone
+	// already falls back to "<source name> copy" and auto-allocated ports),
+	// so an empty request body -- readJSON's json.Decoder.Decode returns a
+	// bare io.EOF for one -- is a legitimate all-defaults clone, not a
+	// malformed request. Previously this surfaced as the distinctly
+	// unhelpful {"error":"EOF"} response.
+	if err := readJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -720,19 +820,62 @@ func (c *Controller) handleSelection(w http.ResponseWriter, r *http.Request, id 
 		http.NotFound(w, r)
 		return
 	}
-	if req.Apply {
-		if c.manager.state(id) != nil {
-			if err := putMihomoProxy(item, req.Group, req.Proxy); err != nil {
-				writeError(w, http.StatusBadGateway, err)
+	// N1 (docs/review-2026-07-11-fix-verification-round4.md), superseding
+	// arch L4's original static-validation-for-everyone shape: a running
+	// instance's node panel is populated from mihomo's *live* API
+	// (GET /api/mihomo/{id}/proxies), which includes proxy-provider nodes
+	// that fetch at runtime and never appear in the static YAML parse --
+	// parseProfileProxyGroupsBase (subscription.go) skips any group with no
+	// static `proxies:` list entirely, so a provider-only group vanishes from
+	// Store.ProfileProxyGroupsForInstance. Validating a running instance's
+	// selection against that static parse rejected every provider node with
+	// 400 before the request ever reached mihomo, breaking selection for any
+	// subscription that is proxy-providers-only. mihomo already validates
+	// group/node itself (PUT /proxies/{group} 404s on an unknown group or
+	// node), so for a running instance we trust that instead: apply first,
+	// and only persist via SetSelection once the apply actually succeeds --
+	// this also completes the "apply before persist" ordering L4 left
+	// unfinished (a failed persist no longer diverges from a live mihomo
+	// state that already moved).
+	if ps := c.manager.state(id); ps != nil {
+		if req.Apply {
+			if err := putMihomoProxy(r.Context(), item, req.Group, req.Proxy); err != nil {
+				// mihomo's own rejection (unknown group/node, or any other
+				// PUT /proxies/{group} failure) is surfaced as a 400 the same
+				// way the stopped-instance static-validation path below
+				// reports an invalid selection -- from the client's
+				// perspective both are "this group/node doesn't exist".
+				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-		} else if c.manager.isStarting(id) {
-			// The instance is mid-launch: there is no controller port to push to
-			// yet, and pushing the selection now (instead of rejecting) would let
-			// it silently persist without ever reaching the process that is about
-			// to start with an older snapshot. Ask the caller to retry once the
-			// instance has finished starting.
+		}
+	} else if c.manager.isStarting(id) {
+		// The instance is mid-launch: there is no controller port to push to
+		// yet, and pushing the selection now (instead of rejecting) would let
+		// it silently persist without ever reaching the process that is about
+		// to start with an older snapshot. Ask the caller to retry once the
+		// instance has finished starting.
+		if req.Apply {
 			writeError(w, http.StatusConflict, errors.New("instance is starting; retry once it finishes starting"))
+			return
+		}
+	} else {
+		// Stopped instance: keep arch L4's original best-effort static
+		// validation (its actual pain point -- a stopped instance storing a
+		// typo'd selection and only discovering it when restoreSelection,
+		// manager.go, spins for 5s on the next start). But only reject when
+		// the *group* itself is known from the static parse and the proxy is
+		// not among its members -- if the group is absent from the static
+		// parse (a provider-backed group, or an unparseable/empty profile),
+		// there is nothing to validate against, so accept: restoreSelection
+		// already tolerates unknown selections at start.
+		groups, err := c.store.ProfileProxyGroupsForInstance(item.ProfileID, item)
+		if err != nil {
+			writeError(w, profileProxyGroupsStatus(err), err)
+			return
+		}
+		if proxyGroupKnown(groups, req.Group) && !proxyGroupHasNode(groups, req.Group, req.Proxy) {
+			writeError(w, http.StatusBadRequest, errors.New("unknown proxy group or node"))
 			return
 		}
 	}
@@ -817,6 +960,19 @@ func (c *Controller) handleLatency(w http.ResponseWriter, r *http.Request, id st
 func (c *Controller) handleConfig(w http.ResponseWriter, r *http.Request, id string) {
 	switch r.Method {
 	case http.MethodGet:
+		// security L-3 (docs/review-2026-07-11-security.md): unlike the
+		// GET .../profiles/{id}/config site (see
+		// sanitizedProfileConfigReadError), Store.ReadUserConfig's
+		// "not found" case is an untyped fmt.Errorf built from `id`
+		// (store.go), not one of the typed sentinel errors this package
+		// classifies with errors.Is elsewhere. Distinguishing it from a raw
+		// *os.PathError here would mean either reconstructing and
+		// string-comparing its exact text -- the very substring-matching
+		// anti-pattern errValidation/errProfileNotFound/errPortUnavailable
+		// were introduced to eliminate (see their doc comment in store.go)
+		// -- or changing ReadUserConfig's error type, which is out of this
+		// pass's scope. Left as-is rather than risk silently changing the
+		// "instance not found" message text app.js's errorPatterns match.
 		cfg, err := c.store.ReadUserConfig(id)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err)
@@ -866,6 +1022,48 @@ func (c *Controller) handleLogs(w http.ResponseWriter, r *http.Request, id strin
 	writeJSON(w, map[string]any{"lines": c.manager.Logs(id)})
 }
 
+// mihomoProxyRequestInfo carries the per-request values (arch L9) that a
+// cached, port-keyed *httputil.ReverseProxy cannot close over directly: the
+// same *ReverseProxy instance is reused across many different instances/
+// requests over its lifetime, so its Director reads these from the request's
+// context (stashed by handleMihomoProxy below) instead.
+type mihomoProxyRequestInfo struct {
+	targetPath string
+	rawQuery   string
+	secret     string
+}
+
+type mihomoProxyContextKey struct{}
+
+// mihomoProxyFor returns a *httputil.ReverseProxy targeting
+// 127.0.0.1:<port>, creating and caching one on first use (arch L9): the
+// previous implementation constructed a brand new ReverseProxy (and Director
+// closure) on every single request.
+func (c *Controller) mihomoProxyFor(port int) *httputil.ReverseProxy {
+	c.mihomoProxiesMu.Lock()
+	defer c.mihomoProxiesMu.Unlock()
+	if proxy, ok := c.mihomoProxies[port]; ok {
+		return proxy
+	}
+	target, _ := url.Parse("http://127.0.0.1:" + strconv.Itoa(port))
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = c.proxyTransport
+	baseDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		baseDirector(req)
+		info, _ := req.Context().Value(mihomoProxyContextKey{}).(mihomoProxyRequestInfo)
+		req.URL.Path = info.targetPath
+		req.URL.RawQuery = info.rawQuery
+		req.Host = target.Host
+		req.Header.Set("Authorization", "Bearer "+info.secret)
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("mihomo controller unreachable: %w", err))
+	}
+	c.mihomoProxies[port] = proxy
+	return proxy
+}
+
 func (c *Controller) handleMihomoProxy(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/mihomo/")
 	parts := strings.SplitN(strings.Trim(rest, "/"), "/", 2)
@@ -879,28 +1077,39 @@ func (c *Controller) handleMihomoProxy(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// arch L9: forwarding unconditionally here meant a stopped instance
+	// whose ControllerPort had since been reused by an unrelated local
+	// process would receive that process, not mihomo, complete with the
+	// instance's controller secret in the Authorization header. Busy
+	// (running or still starting) is the same guard the PUT handlers above
+	// use to decide whether an instance's runtime state can be trusted.
+	if !c.manager.Busy(id) {
+		writeError(w, http.StatusConflict, fmt.Errorf("instance %q is not running", id))
+		return
+	}
 	targetPath := "/"
 	if len(parts) == 2 {
 		targetPath = "/" + parts[1]
 	}
-	target, _ := url.Parse("http://127.0.0.1:" + strconv.Itoa(item.ControllerPort))
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = c.proxyTransport
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.URL.Path = targetPath
-		req.URL.RawQuery = r.URL.RawQuery
-		req.Host = target.Host
-		req.Header.Set("Authorization", "Bearer "+item.Secret)
-	}
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		writeError(w, http.StatusBadGateway, fmt.Errorf("mihomo controller unreachable: %w", err))
-	}
+	proxy := c.mihomoProxyFor(item.ControllerPort)
+	info := mihomoProxyRequestInfo{targetPath: targetPath, rawQuery: r.URL.RawQuery, secret: item.Secret}
+	r = r.WithContext(context.WithValue(r.Context(), mihomoProxyContextKey{}, info))
 	proxy.ServeHTTP(w, r)
 }
 
 func (c *Controller) handleStatic(w http.ResponseWriter, r *http.Request) {
+	// arch L10: "/" is registered as the catch-all pattern (RegisterRoutes),
+	// so any /api/ path that doesn't match one of the specific handlers
+	// above -- e.g. a typo'd endpoint -- previously fell through to here and
+	// got served index.html with a 200, making a misspelled/unregistered API
+	// call silently "succeed" while actually returning the UI shell's HTML.
+	// Anything under /api/ reaching this handler is by definition unmatched
+	// by every registered API route, so it 404s instead of falling through
+	// to the static file server.
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
 	serveStatic(w, r)
 }
 
@@ -968,8 +1177,17 @@ func (c *Controller) startSubscriptionScheduler() {
 	}()
 }
 
+// maxConcurrentSubscriptionRefreshes caps how many refreshDueSubscriptions
+// goroutines may be fetching a subscription at once (testing H5 /
+// concurrency L-4 area): previously one goroutine was spawned per due
+// profile with no limit, so a fleet with many subscription profiles that
+// all came due in the same scheduler tick (e.g. after being offline) would
+// fire that many concurrent outbound HTTP fetches.
+const maxConcurrentSubscriptionRefreshes = 4
+
 func (c *Controller) refreshDueSubscriptions(ctx context.Context) {
 	now := time.Now().UTC()
+	sem := make(chan struct{}, maxConcurrentSubscriptionRefreshes)
 	for _, profile := range c.store.ListProfiles() {
 		if !profileSubscriptionDue(profile, now) {
 			continue
@@ -978,7 +1196,9 @@ func (c *Controller) refreshDueSubscriptions(ctx context.Context) {
 			continue
 		}
 		profileID := profile.ID
+		sem <- struct{}{}
 		go func() {
+			defer func() { <-sem }()
 			if _, err := c.refreshProfileSubscription(ctx, profileID); err != nil {
 				log.Printf("subscription update failed for profile %s: %v", profileID, err)
 			}
@@ -1091,4 +1311,57 @@ func profileProxyGroupsStatus(err error) int {
 		return http.StatusNotFound
 	}
 	return http.StatusBadRequest
+}
+
+// sanitizedProfileConfigReadError classifies an error from
+// Store.ReadProfileConfig for the GET /api/profiles/{id}/config response
+// (security L-3, docs/review-2026-07-11-security.md): a typed
+// profileNotFoundError keeps its exact message (app.js's errorPatterns match
+// it verbatim), but ReadProfileConfig's only other failure mode is
+// os.ReadFile on the profile's config.yaml -- a raw *os.PathError whose
+// Error() text includes the absolute data-dir path. That path is logged
+// server-side instead, and the client gets the same "not found" message
+// shape errorPatterns already localizes (from the client's perspective the
+// two cases -- profile record missing vs. its config file unexpectedly
+// missing/unreadable on disk -- are indistinguishable anyway), rather than
+// inventing a new user-facing string.
+func sanitizedProfileConfigReadError(id string, err error) error {
+	if errors.Is(err, errProfileNotFound) {
+		return err
+	}
+	log.Printf("read profile config for %q failed: %v", id, err)
+	return fmt.Errorf("profile %q not found", id)
+}
+
+// proxyGroupHasNode reports whether groups contains a group named `group`
+// that lists `proxy` among its candidates (arch L4): the validation
+// handleSelection performs before persisting or applying a selection.
+func proxyGroupHasNode(groups []ProfileProxyGroup, group, proxy string) bool {
+	for _, g := range groups {
+		if g.Name != group {
+			continue
+		}
+		for _, name := range g.All {
+			if name == proxy {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// proxyGroupKnown reports whether groups contains a group named `group` at
+// all (N1, docs/review-2026-07-11-fix-verification-round4.md). handleSelection
+// uses this to decide whether the static parse has enough information to
+// validate a stopped instance's selection -- an absent group is not
+// necessarily invalid, it may just be provider-backed and therefore missing
+// from the static parse entirely (see parseProfileProxyGroupsBase).
+func proxyGroupKnown(groups []ProfileProxyGroup, group string) bool {
+	for _, g := range groups {
+		if g.Name == group {
+			return true
+		}
+	}
+	return false
 }

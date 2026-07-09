@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -53,6 +54,15 @@ func TestStorePersistsSecretButViewDoesNotExposeIt(t *testing.T) {
 	}
 }
 
+// TestWriteRuntimeConfigInjectsLoopbackFields covers cleanRuntimeConfig's
+// full strip list (arch M3, docs/review-2026-07-11-go-architecture.md
+// extended it with external-controller-unix/external-controller-pipe) and
+// asserts against the parsed runtime config map (testing L10,
+// docs/review-2026-07-11-testing-quality.md) instead of substring-matching
+// the raw marshaled YAML, which was coupled to yaml.Marshal's exact
+// formatting (quoting/indentation) and could be fooled by an unrelated key
+// sharing a blocked key's prefix (e.g. a hypothetical "tun-something" would
+// have satisfied the old `strings.Contains(got, "tun:")` check either way).
 func TestWriteRuntimeConfigInjectsLoopbackFields(t *testing.T) {
 	dir := t.TempDir()
 	item := &Instance{
@@ -64,33 +74,58 @@ func TestWriteRuntimeConfigInjectsLoopbackFields(t *testing.T) {
 		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
 		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
 	}
-	user := "mixed-port: 1\nport: 8080\nsocks-port: 7891\nredir-port: 7892\ntproxy-port: 7893\nexternal-controller: 0.0.0.0:9999\nexternal-ui: ui\ntun:\n  enable: true\nlisteners:\n  - name: test\nsecret: bad\nallow-lan: true\n"
+	user := "mixed-port: 1\n" +
+		"port: 8080\n" +
+		"socks-port: 7891\n" +
+		"redir-port: 7892\n" +
+		"tproxy-port: 7893\n" +
+		"external-controller: 0.0.0.0:9999\n" +
+		"external-controller-unix: /tmp/other-instance.sock\n" +
+		"external-controller-pipe: \\\\.\\pipe\\other-instance\n" +
+		"external-ui: ui\n" +
+		"tun:\n  enable: true\n" +
+		"listeners:\n  - name: test\n" +
+		"secret: bad\n" +
+		"allow-lan: true\n" +
+		"dns:\n  enable: true\n  listen: 0.0.0.0:1053\n"
 	if err := os.WriteFile(item.UserConfigPath, []byte(user), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err != nil {
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(item.RuntimeConfigPath)
-	if err != nil {
-		t.Fatal(err)
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
+
+	if cfg["mixed-port"] != 28002 {
+		t.Fatalf("mixed-port = %#v, want 28002", cfg["mixed-port"])
 	}
-	got := string(raw)
-	for _, want := range []string{
-		"mixed-port: 28002",
-		"external-controller: 127.0.0.1:29002",
-		"secret: secret-token",
-		"allow-lan: false",
-		"bind-address: 127.0.0.1",
+	if cfg["external-controller"] != "127.0.0.1:29002" {
+		t.Fatalf("external-controller = %#v, want 127.0.0.1:29002", cfg["external-controller"])
+	}
+	if cfg["secret"] != "secret-token" {
+		t.Fatalf("secret = %#v, want secret-token", cfg["secret"])
+	}
+	if cfg["allow-lan"] != false {
+		t.Fatalf("allow-lan = %#v, want false", cfg["allow-lan"])
+	}
+	if cfg["bind-address"] != "127.0.0.1" {
+		t.Fatalf("bind-address = %#v, want 127.0.0.1", cfg["bind-address"])
+	}
+	// dns.listen is deliberately NOT stripped (arch M3): it may be an
+	// intentional single-instance choice, so StartContext logs a warning
+	// instead (see TestManagerStartLogsDNSListenWarning in manager_test.go).
+	dns, _ := cfg["dns"].(map[string]any)
+	if dns["listen"] != "0.0.0.0:1053" {
+		t.Fatalf("dns.listen = %#v, want it preserved (0.0.0.0:1053)", dns["listen"])
+	}
+	for _, blocked := range []string{
+		"port", "socks-port", "redir-port", "tproxy-port",
+		"external-ui", "external-controller-unix", "external-controller-pipe",
+		"tun", "listeners",
 	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("runtime config missing %q:\n%s", want, got)
-		}
-	}
-	for _, blocked := range []string{"port: 8080", "socks-port:", "redir-port:", "tproxy-port:", "external-ui:", "tun:", "listeners:"} {
-		if strings.Contains(got, blocked) {
-			t.Fatalf("runtime config kept conflicting port key %q:\n%s", blocked, got)
+		if _, ok := cfg[blocked]; ok {
+			t.Fatalf("runtime config kept conflicting key %q: %#v", blocked, cfg[blocked])
 		}
 	}
 }
@@ -111,7 +146,7 @@ func TestWriteRuntimeConfigAllProxyBindUsesMihomoWildcard(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err != nil {
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
 		t.Fatal(err)
 	}
 	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
@@ -145,7 +180,7 @@ func TestWriteRuntimeConfigSingleProxyBindUsesTopLevelBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err != nil {
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
 		t.Fatal(err)
 	}
 	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
@@ -179,7 +214,7 @@ func TestWriteRuntimeConfigMultiProxyBindEmitsListeners(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err != nil {
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
 		t.Fatal(err)
 	}
 	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
@@ -250,22 +285,15 @@ rules:
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err != nil {
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(item.RuntimeConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatal(err)
-	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
 	if cfg["mixed-port"] != 28003 || cfg["external-controller"] != "127.0.0.1:29003" {
 		t.Fatalf("runtime fields were not injected: %#v", cfg)
 	}
 	if _, ok := cfg["rule-providers"]; ok {
-		t.Fatalf("global-chain config kept rule-providers:\n%s", raw)
+		t.Fatalf("global-chain config kept rule-providers: %#v", cfg)
 	}
 	rules, _ := cfg["rules"].([]any)
 	if len(rules) != 2 || rules[0] != "NETWORK,UDP,REJECT" || rules[1] != "MATCH,"+globalChainSelectGroupName {
@@ -326,17 +354,10 @@ rules:
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err != nil {
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(item.RuntimeConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatal(err)
-	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
 	rules, _ := cfg["rules"].([]any)
 	if len(rules) != 2 || rules[0] != "NETWORK,UDP,REJECT" || rules[1] != "MATCH,local-hop" {
 		t.Fatalf("rules = %#v, want UDP reject then MATCH local-hop", rules)
@@ -378,17 +399,10 @@ rules:
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err != nil {
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(item.RuntimeConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatal(err)
-	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
 	proxies, _ := cfg["proxies"].([]any)
 	if got := proxyMap(t, proxies, "local-b")["dialer-proxy"]; got != "local-a" {
 		t.Fatalf("local-b dialer-proxy = %#v, want local-a", got)
@@ -419,17 +433,10 @@ func TestWriteRuntimeConfigGlobalChainSingleSelectKeepsLocalProxySelectable(t *t
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err != nil {
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(item.RuntimeConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatal(err)
-	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
 	group := cfg["proxy-groups"].([]any)[0].(map[string]any)
 	if got := strings.Join(anyStrings(group["proxies"]), ","); got != "local-hop" {
 		t.Fatalf("select proxies = %q", got)
@@ -457,7 +464,7 @@ func TestWriteRuntimeConfigGlobalChainRejectsLocalProxyTopLevelMap(t *testing.T)
 		t.Fatal(err)
 	}
 	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-	if err := writeRuntimeConfig(item, profile); err == nil || !strings.Contains(err.Error(), "parse local proxies") {
+	if _, err := writeRuntimeConfig(item, profile); err == nil || !strings.Contains(err.Error(), "parse local proxies") {
 		t.Fatalf("writeRuntimeConfig() error = %v, want parse local proxies", err)
 	}
 }
@@ -513,7 +520,7 @@ func TestWriteRuntimeConfigGlobalChainRejectsInvalidChainInputs(t *testing.T) {
 				t.Fatal(err)
 			}
 			profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
-			if err := writeRuntimeConfig(item, profile); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if _, err := writeRuntimeConfig(item, profile); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("writeRuntimeConfig() error = %v, want %q", err, tt.want)
 			}
 		})
@@ -1216,6 +1223,23 @@ func TestStoreDeleteRestoresItemOnSaveFailure(t *testing.T) {
 	}
 }
 
+// withPortFree replaces the package-level isPortFree stub (util.go) for the
+// duration of t's run, guarded by portFreeTestMu so tests that use it
+// serialize against each other instead of racing on the shared package
+// variable.
+//
+// Do NOT combine with t.Parallel() (testing L4,
+// docs/review-2026-07-11-testing-quality.md): portFreeTestMu only
+// serializes tests that themselves call withPortFree against each other. A
+// parallel test that does NOT call withPortFree could still be scheduled
+// concurrently with one that does and observe the stubbed isPortFree
+// instead of the real port-probing implementation, since nothing else
+// prevents the two from interleaving. None of this package's tests
+// currently use t.Parallel, so this has not surfaced in practice -- but
+// adding it to a withPortFree-using test (or a test that runs concurrently
+// with one) would be a silently flaky trap. A more robust long-term fix
+// would thread isPortFree through Store as an injected field instead of a
+// package-level var.
 func withPortFree(t *testing.T, fn func(int) bool) {
 	t.Helper()
 	portFreeTestMu.Lock()
@@ -1269,4 +1293,422 @@ func proxyMap(t *testing.T, proxies []any, name string) map[string]any {
 	}
 	t.Fatalf("proxy %q not found in %#v", name, proxies)
 	return nil
+}
+
+// TestCloneInstanceDeepCopiesReferenceFields covers testing M5:
+// cloneInstance must never let a caller mutate through to another
+// Instance's slice/map/pointer fields. Rather than special-case
+// Chain/SelectedProxies by name, this walks Instance's fields via
+// reflection so a future field addition of slice/map/pointer kind is
+// automatically checked for aliasing (as long as the test below populates
+// it with a non-nil value).
+func TestCloneInstanceDeepCopiesReferenceFields(t *testing.T) {
+	original := &Instance{
+		ID:              "id",
+		Name:            "name",
+		ProfileID:       "profile",
+		ProxyBind:       "127.0.0.1",
+		Chain:           []string{"a", "b"},
+		SelectedProxies: map[string]string{"g": "p"},
+	}
+	clone := cloneInstance(original)
+	if clone == original {
+		t.Fatal("cloneInstance returned the same pointer as its input")
+	}
+
+	typ := reflect.TypeOf(*original)
+	origVal := reflect.ValueOf(original).Elem()
+	cloneVal := reflect.ValueOf(clone).Elem()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		switch field.Type.Kind() {
+		case reflect.Slice, reflect.Map, reflect.Ptr:
+			of := origVal.Field(i)
+			cf := cloneVal.Field(i)
+			if of.IsNil() {
+				continue
+			}
+			if of.Pointer() == cf.Pointer() {
+				t.Fatalf("field %s was not deep-copied: clone shares underlying storage with the original", field.Name)
+			}
+		}
+	}
+
+	// Belt-and-suspenders: mutate through the original's reference fields
+	// and confirm the clone (and vice versa) is unaffected.
+	original.Chain[0] = "mutated"
+	original.SelectedProxies["g"] = "mutated"
+	if clone.Chain[0] == "mutated" {
+		t.Fatal("cloneInstance aliased Chain with the original")
+	}
+	if clone.SelectedProxies["g"] == "mutated" {
+		t.Fatal("cloneInstance aliased SelectedProxies with the original")
+	}
+}
+
+// TestStoreDeleteProfileRemovesUnusedProfileAndPersists covers the M2 happy
+// path: an unreferenced profile's record and on-disk config directory are
+// both removed, and the removal survives a reload.
+func TestStoreDeleteProfileRemovesUnusedProfileAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Unused", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileDir := filepath.Dir(profile.ConfigPath)
+	if _, err := os.Stat(profileDir); err != nil {
+		t.Fatalf("expected profile directory to exist before delete: %v", err)
+	}
+
+	if err := store.DeleteProfile(profile.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.GetProfile(profile.ID); ok {
+		t.Fatal("expected profile record to be removed")
+	}
+	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
+		t.Fatalf("expected profile directory to be removed, stat err = %v", err)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.GetProfile(profile.ID); ok {
+		t.Fatal("deleted profile should not reappear after reload")
+	}
+}
+
+// TestStoreDeleteProfileRejectsWhenReferencedByInstance covers M2: deleting
+// a profile still referenced by an instance must fail with the exact
+// validationError message app.js's errorLabels matches verbatim, and must
+// classify as errValidation.
+func TestStoreDeleteProfileRejectsWhenReferencedByInstance(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("In use", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("Test", profile.ID, "", 28080, 29080); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.DeleteProfile(profile.ID)
+	if err == nil {
+		t.Fatal("expected DeleteProfile to reject a profile referenced by an instance")
+	}
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("err = %v, want errValidation", err)
+	}
+	if err.Error() != "profile is in use by existing instances" {
+		t.Fatalf("err.Error() = %q, want exact message %q", err.Error(), "profile is in use by existing instances")
+	}
+	if _, ok := store.GetProfile(profile.ID); !ok {
+		t.Fatal("profile should remain after a rejected delete")
+	}
+}
+
+// TestStoreDeleteProfileUnknownReturnsNotFoundError covers M2: deleting a
+// nonexistent profile ID classifies as errProfileNotFound.
+func TestStoreDeleteProfileUnknownReturnsNotFoundError(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.DeleteProfile("missing")
+	if !errors.Is(err, errProfileNotFound) {
+		t.Fatalf("err = %v, want errProfileNotFound", err)
+	}
+}
+
+// TestStoreReplaceProfileSubscriptionPersistsURLAndConfig covers arch M4's
+// happy path: URL and fetched config are both applied by a single call.
+func TestStoreReplaceProfileSubscriptionPersistsURLAndConfig(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/old", true, 360, &subscriptionFetchResult{Config: defaultUserConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fetched := &subscriptionFetchResult{
+		Config:  subscriptionConfig,
+		HomeURL: "https://example.com/new-home",
+		Info:    &SubscriptionInfo{Total: 500},
+	}
+	updated, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/new", fetched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SubscriptionURL != "https://example.com/new" {
+		t.Fatalf("SubscriptionURL = %q, want the new URL", updated.SubscriptionURL)
+	}
+	if updated.HomeURL != "https://example.com/new-home" {
+		t.Fatalf("HomeURL = %q, want the new home URL", updated.HomeURL)
+	}
+	if updated.SubscriptionInfo == nil || updated.SubscriptionInfo.Total != 500 {
+		t.Fatalf("SubscriptionInfo = %+v, want Total 500", updated.SubscriptionInfo)
+	}
+	if updated.LastUpdatedAt.IsZero() {
+		t.Fatal("expected LastUpdatedAt to be set")
+	}
+	raw, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != subscriptionConfig {
+		t.Fatalf("profile config file = %q, want the fetched config", raw)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedProfile, ok := reloaded.GetProfile(profile.ID)
+	if !ok {
+		t.Fatal("expected profile to persist across reload")
+	}
+	if reloadedProfile.SubscriptionURL != "https://example.com/new" {
+		t.Fatalf("reloaded SubscriptionURL = %q, want the new URL", reloadedProfile.SubscriptionURL)
+	}
+}
+
+// TestStoreReplaceProfileSubscriptionRollsBackOnSaveFailure covers arch M4's
+// core guarantee: if saveLocked fails after the new URL and config have
+// already been applied in memory/on disk, both must be rolled back together
+// so the URL and config.yaml never diverge.
+func TestStoreReplaceProfileSubscriptionRollsBackOnSaveFailure(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/old", true, 360, &subscriptionFetchResult{Config: defaultUserConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalConfig, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	breakStoreSaves(t, dir)
+
+	fetched := &subscriptionFetchResult{Config: subscriptionConfig, HomeURL: "https://example.com/new-home"}
+	if _, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/new", fetched); err == nil {
+		t.Fatal("expected ReplaceProfileSubscription to fail when saveLocked cannot persist instances.json")
+	}
+
+	gotProfile, ok := store.GetProfile(profile.ID)
+	if !ok {
+		t.Fatal("expected profile to still exist after failed replace")
+	}
+	if gotProfile.SubscriptionURL != "https://example.com/old" {
+		t.Fatalf("SubscriptionURL = %q, want rollback to the original URL", gotProfile.SubscriptionURL)
+	}
+	if gotProfile.HomeURL != "" {
+		t.Fatalf("HomeURL = %q, want rollback to empty", gotProfile.HomeURL)
+	}
+	raw, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(originalConfig) {
+		t.Fatalf("profile config file was not rolled back: got %q", raw)
+	}
+}
+
+// TestStoreCreateRejectsInvalidChainAtCreateTime covers arch L6: a
+// duplicate or unresolvable chain member is rejected at create time (400)
+// instead of only surfacing when the instance is later started.
+func TestStoreCreateRejectsInvalidChainAtCreateTime(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	tests := []struct {
+		name  string
+		chain []string
+		want  string
+	}{
+		{"unknown member", []string{"missing", globalChainSelectGroupName}, `chain references unknown proxy or group "missing"`},
+		{"duplicate member", []string{"US-01", "US-01", globalChainSelectGroupName}, `chain contains duplicate member "US-01"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile, err := store.CreateProfile("Main", subscriptionConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = store.CreateWithOptions(createInstanceOptions{
+				Name:           "Chain gateway",
+				ProfileID:      profile.ID,
+				MixedPort:      28090,
+				ControllerPort: 29090,
+				Mode:           InstanceModeGlobalChain,
+				Chain:          tt.chain,
+			})
+			if err == nil {
+				t.Fatal("expected CreateWithOptions to reject the invalid chain")
+			}
+			if !errors.Is(err, errValidation) {
+				t.Fatalf("err = %v, want errValidation", err)
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("err.Error() = %q, want %q", err.Error(), tt.want)
+			}
+			if _, ok := store.Get("chain-gateway"); ok {
+				t.Fatal("instance should not have been created")
+			}
+		})
+	}
+}
+
+// TestStoreUpdateRejectsInvalidChainAtUpdateTime mirrors the create-time
+// coverage above for UpdateWithOptions.
+func TestStoreUpdateRejectsInvalidChainAtUpdateTime(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Main", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWithOptions(createInstanceOptions{
+		Name:           "Chain gateway",
+		ProfileID:      profile.ID,
+		MixedPort:      28091,
+		ControllerPort: 29091,
+		Mode:           InstanceModeGlobalChain,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	badChain := []string{"missing", globalChainSelectGroupName}
+	_, err = store.UpdateWithOptions(item.ID, updateInstanceOptions{Chain: &badChain})
+	if err == nil {
+		t.Fatal("expected UpdateWithOptions to reject the invalid chain")
+	}
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("err = %v, want errValidation", err)
+	}
+	if err.Error() != `chain references unknown proxy or group "missing"` {
+		t.Fatalf("err.Error() = %q", err.Error())
+	}
+	got, ok := store.Get(item.ID)
+	if !ok {
+		t.Fatal("instance should still exist")
+	}
+	if len(got.Chain) != 0 {
+		t.Fatalf("Chain = %+v, want unchanged (empty) after rejected update", got.Chain)
+	}
+}
+
+// TestStoreCreateAutoMixedPortAvoidsExplicitControllerPortConflict covers
+// arch L5: when the controller port is explicit and the mixed port is
+// auto-allocated, the allocator must not hand back the explicit controller
+// port as the mixed port (which would then make the controller port's own
+// availability check see it as already used and falsely report a
+// conflict).
+func TestStoreCreateAutoMixedPortAvoidsExplicitControllerPortConflict(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Test", "", defaultUserConfig, 0, 28000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.ControllerPort != 28000 {
+		t.Fatalf("ControllerPort = %d, want the explicit 28000", item.ControllerPort)
+	}
+	if item.MixedPort == 28000 {
+		t.Fatal("auto-allocated MixedPort collided with the explicit ControllerPort")
+	}
+}
+
+// TestStoreCreateSubscriptionProfileRejectsUnsafeHomeURL covers security
+// L-1 / item 6: a HomeURL sourced from a subscription response that isn't
+// http(s) is rejected rather than persisted, even though it is currently
+// only rendered as plain text.
+func TestStoreCreateSubscriptionProfileRejectsUnsafeHomeURL(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetched := &subscriptionFetchResult{Config: subscriptionConfig, HomeURL: "javascript:alert(1)"}
+	_, err = store.CreateSubscriptionProfile("Provider", "https://example.com/sub", false, 0, fetched)
+	if err == nil {
+		t.Fatal("expected CreateSubscriptionProfile to reject a non-http(s) HomeURL")
+	}
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("err = %v, want errValidation", err)
+	}
+	if err.Error() != "home URL must start with http:// or https://" {
+		t.Fatalf("err.Error() = %q", err.Error())
+	}
+}
+
+// TestStoreLoadRecoversFromCorruptInstancesJSON covers L11: a corrupt
+// instances.json must not prevent the app from starting. The bad file is
+// preserved under a new name and the store starts empty.
+func TestStoreLoadRecoversFromCorruptInstancesJSON(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "instances.json")
+	if err := os.WriteFile(storePath, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore should recover from a corrupt instances.json, got error: %v", err)
+	}
+	if len(store.List()) != 0 || len(store.ListProfiles()) != 0 {
+		t.Fatal("expected an empty store after recovering from corruption")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preserved bool
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "instances.json.corrupt-") {
+			continue
+		}
+		preserved = true
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != "{not valid json" {
+			t.Fatalf("preserved corrupt file content = %q", raw)
+		}
+	}
+	if !preserved {
+		t.Fatal("expected the corrupt instances.json to be preserved under a new name")
+	}
+	if _, err := os.Stat(storePath); err != nil {
+		t.Fatalf("expected a fresh instances.json to exist after recovery: %v", err)
+	}
 }

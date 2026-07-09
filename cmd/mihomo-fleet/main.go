@@ -38,7 +38,8 @@ func main() {
 		port        = flag.Int("port", 47890, "HTTP bind port")
 		dataDir     = flag.String("data", ".mihomo-fleet", "runtime data directory")
 		mihomoPath  = flag.String("mihomo", "", "path to mihomo binary")
-		openBrowser = flag.Bool("open", false, "print browser URL with emphasis")
+		openBrowser = flag.Bool("open", false, "on startup, print the URL with an emphasized \"ready\" message "+
+			"instead of the plain \"listening\" one -- this does NOT open a browser")
 		showVersion = flag.Bool("version", false, "print version and exit")
 		apiSecret   = flag.String("api-secret", "", "bearer token required on the Authorization header for all "+
 			"/api/ requests. Required (non-empty) when -bind is not a loopback address; optional but recommended "+
@@ -115,12 +116,21 @@ func main() {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
+	// arch L1 (docs/review-2026-07-11-go-architecture.md): server.Shutdown
+	// (draining in-flight HTTP requests) and controller.Shutdown (stopping
+	// every running mihomo process, each with its own SIGTERM-then-SIGKILL
+	// grace period) previously shared one 5s budget -- a slow HTTP drain
+	// could eat into the time meant for gracefully stopping instances, or
+	// vice versa. Each now gets its own.
+	serverShutdownCtx, cancelServerShutdown := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelServerShutdown()
+	if err := server.Shutdown(serverShutdownCtx); err != nil {
 		log.Printf("http shutdown: %v", err)
 	}
-	controller.Shutdown(ctx)
+
+	managerShutdownCtx, cancelManagerShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelManagerShutdown()
+	controller.Shutdown(managerShutdownCtx)
 }
 
 // isLoopbackBind reports whether bind refers to a loopback-only address:

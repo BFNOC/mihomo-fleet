@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,10 +37,19 @@ func TestAllowedHostStrictLoopback(t *testing.T) {
 // exemption is caught here instead of passing silently, per review finding
 // H2 (docs/review-2026-07-11-testing-quality.md): SecureHandler previously
 // had 0% test coverage.
+//
+// security L-4 (docs/review-2026-07-11-security.md) extended the custom
+// X-Mihomo-Fleet header requirement from mutating methods only to GET
+// requests under /api/ as well; the cases below cover both that GET/api/
+// path (blocked without the header, allowed with it) and that GETs outside
+// /api/ (the static UI shell) stay exempt either way.
 func TestSecureHandlerHostAndCSRFChecks(t *testing.T) {
 	c := newBatchTestController(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	handler := c.SecureHandler(mux)
@@ -46,32 +57,53 @@ func TestSecureHandlerHostAndCSRFChecks(t *testing.T) {
 	tests := []struct {
 		name       string
 		method     string
+		path       string
 		host       string
 		headers    map[string]string
 		body       string
 		wantStatus int
 	}{
 		{
-			name:       "GET with loopback Host succeeds",
+			name:       "GET /api/ with loopback Host and custom header succeeds",
 			method:     http.MethodGet,
+			path:       "/api/probe",
+			host:       "127.0.0.1",
+			headers:    map[string]string{"X-Mihomo-Fleet": "1"},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "GET /api/ without X-Mihomo-Fleet header is blocked",
+			method:     http.MethodGet,
+			path:       "/api/probe",
+			host:       "127.0.0.1",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "GET static path without X-Mihomo-Fleet header succeeds",
+			method:     http.MethodGet,
+			path:       "/",
 			host:       "127.0.0.1",
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:       "GET with attacker Host is blocked",
+			name:       "GET /api/ with attacker Host is blocked",
 			method:     http.MethodGet,
+			path:       "/api/probe",
 			host:       "attacker.test",
+			headers:    map[string]string{"X-Mihomo-Fleet": "1"},
 			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:       "POST without X-Mihomo-Fleet header is blocked",
 			method:     http.MethodPost,
+			path:       "/api/probe",
 			host:       "127.0.0.1",
 			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:   "POST with header but wrong Content-Type and a body is rejected",
 			method: http.MethodPost,
+			path:   "/api/probe",
 			host:   "127.0.0.1",
 			headers: map[string]string{
 				"X-Mihomo-Fleet": "1",
@@ -83,6 +115,7 @@ func TestSecureHandlerHostAndCSRFChecks(t *testing.T) {
 		{
 			name:       "POST with header and application/json succeeds",
 			method:     http.MethodPost,
+			path:       "/api/probe",
 			host:       "127.0.0.1",
 			headers:    map[string]string{"X-Mihomo-Fleet": "1", "Content-Type": "application/json"},
 			body:       "{}",
@@ -91,12 +124,14 @@ func TestSecureHandlerHostAndCSRFChecks(t *testing.T) {
 		{
 			name:       "OPTIONS is exempt from the custom-header requirement",
 			method:     http.MethodOptions,
+			path:       "/api/probe",
 			host:       "127.0.0.1",
 			wantStatus: http.StatusOK,
 		},
 		{
 			name:       "HEAD is exempt from the custom-header requirement",
 			method:     http.MethodHead,
+			path:       "/api/probe",
 			host:       "127.0.0.1",
 			wantStatus: http.StatusOK,
 		},
@@ -104,7 +139,7 @@ func TestSecureHandlerHostAndCSRFChecks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, "/api/probe", strings.NewReader(tt.body))
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			req.Host = tt.host
 			for k, v := range tt.headers {
 				req.Header.Set(k, v)
@@ -139,6 +174,11 @@ func TestSecureHandlerAPISecretGatesAPIPathsOnly(t *testing.T) {
 	get := func(path, authHeader string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Host = "127.0.0.1"
+		// app.js's api() helper sends this on every request, GET included
+		// (security L-4); set it unconditionally here since this test is
+		// about api-secret gating specifically, not the header requirement
+		// itself (covered by TestSecureHandlerHostAndCSRFChecks).
+		req.Header.Set("X-Mihomo-Fleet", "1")
 		if authHeader != "" {
 			req.Header.Set("Authorization", authHeader)
 		}
@@ -184,6 +224,8 @@ func TestSecureHandlerAPISecretSkipsHostAllowlist(t *testing.T) {
 	get := func(path, host, authHeader string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Host = host
+		// See the matching comment in TestSecureHandlerAPISecretGatesAPIPathsOnly.
+		req.Header.Set("X-Mihomo-Fleet", "1")
 		if authHeader != "" {
 			req.Header.Set("Authorization", authHeader)
 		}
@@ -218,6 +260,7 @@ func TestSecureHandlerNoAPISecretSkipsAuth(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/probe", nil)
 	req.Host = "127.0.0.1"
+	req.Header.Set("X-Mihomo-Fleet", "1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -573,6 +616,340 @@ func TestHandleInstanceCloneRejectsSameMixedAndControllerPort(t *testing.T) {
 	source := postInstanceJSON(t, c, `{"name":"Source","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
 
 	postCloneJSON(t, c, source.ID, `{"mixedPort":28001,"controllerPort":28001}`, http.StatusBadRequest)
+}
+
+// TestHandleInstanceCloneAcceptsEmptyBody covers arch L10
+// (docs/review-2026-07-11-go-architecture.md): every clone field is
+// optional, so POST .../clone with no body at all (readJSON's decoder
+// returns a bare io.EOF for it) must be treated the same as an explicit
+// "{}" -- previously it surfaced as the distinctly unhelpful
+// {"error":"EOF"} response.
+func TestHandleInstanceCloneAcceptsEmptyBody(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	source := postInstanceJSON(t, c, `{"name":"Source","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+
+	clone := postCloneJSON(t, c, source.ID, ``, http.StatusCreated)
+	if clone.Name != "Source copy" {
+		t.Fatalf("clone name = %q, want %q (default from an all-empty request)", clone.Name, "Source copy")
+	}
+	if clone.MixedPort != 28001 || clone.ControllerPort != 29001 {
+		t.Fatalf("clone ports = (%d, %d), want auto-allocated (28001, 29001)", clone.MixedPort, clone.ControllerPort)
+	}
+}
+
+// TestHandleInstanceCloneRejectsMalformedBody documents that the io.EOF
+// carve-out above is specific to a genuinely empty body -- a syntactically
+// invalid non-empty body must still be rejected as a bad request.
+func TestHandleInstanceCloneRejectsMalformedBody(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	source := postInstanceJSON(t, c, `{"name":"Source","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+
+	postCloneJSON(t, c, source.ID, `{not json`, http.StatusBadRequest)
+}
+
+// TestHandleMihomoProxyRejectsNotRunningInstance covers arch L9
+// (docs/review-2026-07-11-go-architecture.md): forwarding to a stopped
+// instance's ControllerPort would risk handing that instance's controller
+// secret to whatever unrelated local process (if any) now owns the port.
+func TestHandleMihomoProxyRejectsNotRunningInstance(t *testing.T) {
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Stopped")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mihomo/"+item.ID+"/version", nil)
+	rec := httptest.NewRecorder()
+	c.handleMihomoProxy(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleMihomoProxyRejectsUnknownInstance(t *testing.T) {
+	c := newBatchTestController(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/mihomo/missing/version", nil)
+	rec := httptest.NewRecorder()
+	c.handleMihomoProxy(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleMihomoProxyForwardsWhileRunningAndCachesProxy covers arch L9's
+// other half: a running instance's request is forwarded to its
+// ControllerPort with the instance's secret attached, and the underlying
+// *httputil.ReverseProxy is cached (reused across the two requests below)
+// rather than rebuilt per-request.
+func TestHandleMihomoProxyForwardsWhileRunningAndCachesProxy(t *testing.T) {
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Running")
+
+	var gotPaths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+item.Secret {
+			t.Errorf("Authorization = %q, want Bearer %s", got, item.Secret)
+		}
+		gotPaths = append(gotPaths, r.URL.Path)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	target := testMihomoItem(t, upstream.URL)
+	c.store.mu.Lock()
+	c.store.items[item.ID].ControllerPort = target.ControllerPort
+	c.store.mu.Unlock()
+	c.manager.mu.Lock()
+	c.manager.procs[item.ID] = &processState{cmd: &exec.Cmd{}, logs: newLogBuffer(1000), done: make(chan struct{})}
+	c.manager.mu.Unlock()
+	// This fake processState has no real child process behind it (cmd was
+	// never Started), so it must be removed before newBatchTestController's
+	// own t.Cleanup calls c.Shutdown -- otherwise Manager.Shutdown would try
+	// to gracefully stop it and burn several seconds waiting on a ps.done
+	// that nothing will ever close. t.Cleanup runs LIFO, so registering this
+	// after newBatchTestController's own means it runs first.
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.procs, item.ID)
+		c.manager.mu.Unlock()
+	})
+
+	for _, path := range []string{"/version", "/configs"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/mihomo/"+item.ID+path, nil)
+		rec := httptest.NewRecorder()
+		c.handleMihomoProxy(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+		}
+	}
+	if strings.Join(gotPaths, ",") != "/version,/configs" {
+		t.Fatalf("upstream paths = %v, want [/version /configs]", gotPaths)
+	}
+
+	c.mihomoProxiesMu.Lock()
+	cached, ok := c.mihomoProxies[target.ControllerPort]
+	c.mihomoProxiesMu.Unlock()
+	if !ok || cached == nil {
+		t.Fatal("expected a cached ReverseProxy for the instance's controller port")
+	}
+}
+
+// TestHandleSelectionRejectsUnknownGroupOrProxyForStoppedInstance covers
+// arch L4 (docs/review-2026-07-11-go-architecture.md): a stopped instance's
+// selection request must be validated against the profile's actual proxy
+// groups before being persisted -- previously any group/proxy string was
+// accepted and silently saved, only surfacing as broken once
+// restoreSelection (manager.go) spun for 5s on the instance's next start.
+func TestHandleSelectionRejectsUnknownGroupOrProxyForStoppedInstance(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	profile, err := c.store.CreateProfile("Main", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := c.store.Create("Selector", profile.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/selection", strings.NewReader(`{"group":"Proxy","proxy":"Nope"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleSelection(rec, req, item.ID)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != "unknown proxy group or node" {
+		t.Fatalf("error = %q, want the exact validation message", payload.Error)
+	}
+
+	updated, ok := c.store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected the instance to still exist")
+	}
+	if updated.SelectedGroup != "" || updated.SelectedProxy != "" {
+		t.Fatalf("expected the invalid selection to not be persisted, got %#v", updated)
+	}
+}
+
+// TestHandleSelectionAcceptsKnownGroupAndProxyForStoppedInstance is the
+// positive counterpart: a group/proxy pair that actually exists in the
+// profile's proxy groups is validated and persisted as before.
+func TestHandleSelectionAcceptsKnownGroupAndProxyForStoppedInstance(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	profile, err := c.store.CreateProfile("Main", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := c.store.Create("Selector", profile.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/selection", strings.NewReader(`{"group":"Proxy","proxy":"US-01"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleSelection(rec, req, item.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	updated, ok := c.store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected the instance to still exist")
+	}
+	if updated.SelectedGroup != "Proxy" || updated.SelectedProxy != "US-01" {
+		t.Fatalf("selection = %q/%q, want Proxy/US-01", updated.SelectedGroup, updated.SelectedProxy)
+	}
+}
+
+// TestHandleSelectionAcceptsUnknownGroupForStoppedInstanceWithProviderProfile
+// covers N1's stopped-instance half (docs/review-2026-07-11-fix-verification-
+// round4.md): a group absent from the static parse entirely -- as any
+// proxy-provider-backed group is, since parseProfileProxyGroupsBase
+// (subscription.go) only ever sees the static `proxies:` list -- has nothing
+// to validate against, so it must be accepted and persisted rather than
+// rejected as "unknown". restoreSelection (manager.go) already tolerates an
+// unresolvable saved selection at start.
+func TestHandleSelectionAcceptsUnknownGroupForStoppedInstanceWithProviderProfile(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	profile, err := c.store.CreateProfile("Main", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := c.store.Create("Selector", profile.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/selection", strings.NewReader(`{"group":"ProviderGroup","proxy":"provider-node-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleSelection(rec, req, item.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	updated, ok := c.store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected the instance to still exist")
+	}
+	if updated.SelectedGroup != "ProviderGroup" || updated.SelectedProxy != "provider-node-1" {
+		t.Fatalf("selection = %q/%q, want ProviderGroup/provider-node-1", updated.SelectedGroup, updated.SelectedProxy)
+	}
+}
+
+// selectionTestRunningInstance registers item as running against a fake
+// mihomo upstream, mirroring TestHandleMihomoProxyForwardsWhileRunningAndCachesProxy
+// above: item keeps its real store ID/Secret (so putMihomoProxy's
+// Authorization header check and the store lookup by id both still line up),
+// only its ControllerPort is repointed at the upstream test server.
+func selectionTestRunningInstance(t *testing.T, c *Controller, item *Instance, upstream *httptest.Server) {
+	t.Helper()
+	target := testMihomoItem(t, upstream.URL)
+	c.store.mu.Lock()
+	c.store.items[item.ID].ControllerPort = target.ControllerPort
+	c.store.mu.Unlock()
+	c.manager.mu.Lock()
+	c.manager.procs[item.ID] = &processState{cmd: &exec.Cmd{}, logs: newLogBuffer(1000), done: make(chan struct{})}
+	c.manager.mu.Unlock()
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.procs, item.ID)
+		c.manager.mu.Unlock()
+	})
+}
+
+// TestHandleSelectionRunningInstanceAppliesBeforePersisting covers N1's
+// running-instance half (docs/review-2026-07-11-fix-verification-round4.md):
+// a running instance's node panel is populated from mihomo's live API and
+// can include proxy-provider nodes that never appear in the static YAML
+// parse, so handleSelection must skip Store.ProfileProxyGroupsForInstance
+// entirely for a running instance and let mihomo itself be the authority --
+// applying via putMihomoProxy before persisting (completing arch L4's
+// "apply before persist" ordering). The instance's own profile only has a
+// static "Proxy" group with no "provider-node" member, which would have
+// 400'd under the old static-validation-for-everyone behavior.
+func TestHandleSelectionRunningInstanceAppliesBeforePersisting(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Running")
+
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("upstream method = %s, want PUT", r.Method)
+		}
+		if r.URL.Path != "/proxies/Proxy" {
+			t.Errorf("upstream path = %s, want /proxies/Proxy", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	selectionTestRunningInstance(t, c, item, upstream)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/selection", strings.NewReader(`{"group":"Proxy","proxy":"provider-node","apply":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleSelection(rec, req, item.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(gotBody, "provider-node") {
+		t.Fatalf("upstream PUT body = %q, want it to contain the requested proxy name", gotBody)
+	}
+
+	updated, ok := c.store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected the instance to still exist")
+	}
+	if updated.SelectedGroup != "Proxy" || updated.SelectedProxy != "provider-node" {
+		t.Fatalf("selection = %q/%q, want Proxy/provider-node to be persisted after a successful apply", updated.SelectedGroup, updated.SelectedProxy)
+	}
+}
+
+// TestHandleSelectionRunningInstanceRejectsWhenMihomoRejects is the negative
+// counterpart: mihomo's own rejection of an unknown group/node maps to 400,
+// and -- since apply now runs before persist -- the invalid selection must
+// not be saved.
+func TestHandleSelectionRunningInstanceRejectsWhenMihomoRejects(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Running")
+	if _, err := c.store.SetSelection(item.ID, "Proxy", "DIRECT"); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "proxy group not found", http.StatusNotFound)
+	}))
+	defer upstream.Close()
+	selectionTestRunningInstance(t, c, item, upstream)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/selection", strings.NewReader(`{"group":"Nope","proxy":"nope","apply":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleSelection(rec, req, item.ID)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rec.Code, rec.Body.String())
+	}
+
+	updated, ok := c.store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected the instance to still exist")
+	}
+	if updated.SelectedGroup != "Proxy" || updated.SelectedProxy != "DIRECT" {
+		t.Fatalf("selection = %q/%q, want the prior Proxy/DIRECT selection left untouched after a rejected apply", updated.SelectedGroup, updated.SelectedProxy)
+	}
 }
 
 type batchResponse struct {

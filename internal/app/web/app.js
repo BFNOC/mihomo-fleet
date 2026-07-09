@@ -88,6 +88,8 @@ const errorLabels = {
   "global-chain mode requires proxies, proxy-providers, or local proxies": "全局链式模式需要订阅节点、provider 或本地节点。",
   "instance is starting; retry once it finishes starting": "实例正在启动，请稍后重试。",
   "missing or invalid API token": "API 令牌缺失或无效。",
+  "profile is in use by existing instances": "配置档仍被实例使用，无法删除。",
+  "home URL must start with http:// or https://": "主页链接必须以 http:// 或 https:// 开头。",
 };
 
 const errorPatterns = [
@@ -172,6 +174,7 @@ const el = {
   restartBtn: document.querySelector("#restartBtn"),
   cloneBtn: document.querySelector("#cloneBtn"),
   deleteBtn: document.querySelector("#deleteBtn"),
+  pendingRestartHint: document.querySelector("#pendingRestartHint"),
   overviewMixed: document.querySelector("#overviewMixed"),
   overviewProxyBind: document.querySelector("#overviewProxyBind"),
   overviewController: document.querySelector("#overviewController"),
@@ -190,6 +193,7 @@ const el = {
   editChainFields: document.querySelector("#editChainFields"),
   editLocalProxies: document.querySelector("#editLocalProxies"),
   editChain: document.querySelector("#editChain"),
+  editForm: document.querySelector("#editForm"),
   saveBasics: document.querySelector("#saveBasics"),
   profileMeta: document.querySelector("#profileMeta"),
   subscriptionSettings: document.querySelector("#subscriptionSettings"),
@@ -201,6 +205,8 @@ const el = {
   refreshSubscription: document.querySelector("#refreshSubscription"),
   configEditor: document.querySelector("#configEditor"),
   saveConfig: document.querySelector("#saveConfig"),
+  orphanProfileSelect: document.querySelector("#orphanProfileSelect"),
+  deleteOrphanProfileBtn: document.querySelector("#deleteOrphanProfileBtn"),
   proxySource: document.querySelector("#proxySource"),
   latencyUrl: document.querySelector("#latencyUrl"),
   latencyTimeout: document.querySelector("#latencyTimeout"),
@@ -278,10 +284,32 @@ function formatSubscriptionInfo(profile) {
   const info = profile.subscriptionInfo || {};
   if (info.total) parts.push(`流量 ${formatBytes((info.upload || 0) + (info.download || 0))} / ${formatBytes(info.total)}`);
   if (info.expire) parts.push(`到期 ${new Date(info.expire * 1000).toLocaleDateString()}`);
-  if (profile.homeUrl) parts.push(`主页 ${profile.homeUrl}`);
   if (profile.autoUpdate && profile.updateIntervalMinutes) parts.push(`每 ${profile.updateIntervalMinutes} 分钟自动更新`);
   if (!profile.autoUpdate) parts.push("未启用自动更新");
   return parts.join(" · ") || "暂无订阅元数据";
+}
+
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+// homeUrl 渲染为可点击链接；只有以 http(s):// 开头才赋值给 href——与后端新增的校验
+// （"home URL must start with http:// or https://"）保持纵深防御，避免 javascript:
+// 等协议被当作链接打开。
+function renderSubscriptionInfo(profile) {
+  el.subscriptionInfo.textContent = "";
+  const summary = document.createElement("span");
+  summary.textContent = formatSubscriptionInfo(profile);
+  el.subscriptionInfo.append(summary);
+  if (isHttpUrl(profile.homeUrl)) {
+    el.subscriptionInfo.append(document.createTextNode(" · 主页 "));
+    const link = document.createElement("a");
+    link.href = profile.homeUrl.trim();
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = profile.homeUrl.trim();
+    el.subscriptionInfo.append(link);
+  }
 }
 
 function formatBytes(value) {
@@ -321,13 +349,20 @@ function splitProxyLabel(name, sources) {
   return { source: "", name: full };
 }
 
+// 纯读取：不产生副作用。测速路径（每个节点、批量测速数十次）频繁调用它，
+// 不应每次都写 localStorage 或回写 timeout 输入框——那属于写入路径的职责，
+// 见下方 persistLatencySettings，只在 change 事件里显式调用一次。
 function latencySettings() {
   const url = (el.latencyUrl.value || defaultLatencyUrl).trim();
   const timeoutMs = Math.min(15000, Math.max(500, Number(el.latencyTimeout.value) || defaultLatencyTimeout));
+  return { url, timeoutMs };
+}
+
+function persistLatencySettings() {
+  const { url, timeoutMs } = latencySettings();
   el.latencyTimeout.value = String(timeoutMs);
   localStorage.setItem("fleetLatencyUrl", url);
   localStorage.setItem("fleetLatencyTimeout", String(timeoutMs));
-  return { url, timeoutMs };
 }
 
 function latencyKey(instanceId, group, proxy, kind) {
@@ -487,6 +522,27 @@ function clearLatencyStateForInstance(instanceId) {
   }
   for (const key of [...state.latencyRunning]) {
     if (key.startsWith(prefix)) state.latencyRunning.delete(key);
+  }
+}
+
+// 每次节点组刷新成功后按当前 group/proxy 集合对账，删除已不存在的节点残留的测速结果，
+// 避免长会话或反复切换配置档后 state.latencyResults 无界增长（节点被订阅更新/手动删除后
+// 不会再出现在 groups 里，对应的旧延迟数据也就没有意义了）。
+function pruneLatencyResultsForGroups(instanceId, groups) {
+  if (!instanceId) return;
+  const validGroupProxy = new Set();
+  for (const group of groups) {
+    for (const name of group.all || []) {
+      validGroupProxy.add(`${group.name}${latencyKeySeparator}${name}`);
+    }
+  }
+  const prefix = `${instanceId}${latencyKeySeparator}`;
+  for (const key of Object.keys(state.latencyResults)) {
+    if (!key.startsWith(prefix)) continue;
+    const [groupName, proxyName] = key.slice(prefix.length).split(latencyKeySeparator);
+    if (!validGroupProxy.has(`${groupName}${latencyKeySeparator}${proxyName}`)) {
+      delete state.latencyResults[key];
+    }
   }
 }
 
@@ -681,6 +737,7 @@ function render() {
   renderPortMatrix(selected);
   updateBulkControls();
   renderPanels(selected);
+  renderOrphanProfiles();
   updateCreateProfileControls();
 }
 
@@ -699,7 +756,24 @@ function renderSystem() {
   }
 }
 
+let lastInstanceSelectorSnapshot = "";
+
+// 快照只覆盖下拉框实际渲染用到的字段（id/name/status + 当前选中项），数据不变时
+// 跳过重建——原生 <select> 每次 innerHTML="" 都会关闭正在打开的下拉、丢失键盘光标位置。
+function instanceSelectorSnapshot(selected) {
+  return JSON.stringify({
+    selectedId: selected?.id || "",
+    items: state.instances.map((item) => [item.id, item.name, item.status]),
+  });
+}
+
 function renderSelector(selected) {
+  // 下拉框获得焦点时（原生 <select> 无法可靠探测"是否展开"，聚焦是可行的折衷信号）
+  // 整体跳过重建，避免打断用户正在进行的选择操作。
+  if (document.activeElement === el.instanceSelect) return;
+  const snapshot = instanceSelectorSnapshot(selected);
+  if (snapshot === lastInstanceSelectorSnapshot) return;
+  lastInstanceSelectorSnapshot = snapshot;
   el.instanceSelect.innerHTML = "";
   if (!state.instances.length) {
     const opt = document.createElement("option");
@@ -717,12 +791,48 @@ function renderSelector(selected) {
   }
 }
 
+let lastInstanceListSnapshot = "";
+
+// 快照覆盖列表实际渲染用到的字段，包括新引入的 pendingRestart（否则该字段单独变化时
+// 列表不会重绘）。数据不变时跳过重建，避免键盘焦点每 4s 被打断。
+function instanceListSnapshot(selected) {
+  return JSON.stringify({
+    selectedId: selected?.id || "",
+    items: state.instances.map((item) => [
+      item.id,
+      item.name,
+      item.status,
+      item.mixedPort,
+      item.profileName || item.profileId || "",
+      selectionSummary(item),
+      item.pendingRestart === true,
+    ]),
+  });
+}
+
+function capturedInstanceListFocusKey() {
+  return el.instanceList.contains(document.activeElement) ? document.activeElement.dataset.instanceFocus || "" : "";
+}
+
+function restoreInstanceListFocus(focusedKey) {
+  if (!focusedKey) return;
+  const controls = [...el.instanceList.querySelectorAll("[data-instance-focus]")];
+  if (!controls.length) return;
+  const target = controls.find((node) => node.dataset.instanceFocus === focusedKey) || controls[0];
+  target?.focus({ preventScroll: true });
+}
+
 function renderList(selected) {
+  const snapshot = instanceListSnapshot(selected);
+  if (snapshot === lastInstanceListSnapshot) return;
+  lastInstanceListSnapshot = snapshot;
+  const focusedKey = capturedInstanceListFocusKey();
   el.instanceList.innerHTML = "";
   for (const item of state.instances) {
     const button = document.createElement("button");
     button.className = `instance-row ${selected && selected.id === item.id ? "active" : ""}`;
     button.type = "button";
+    button.dataset.instanceFocus = item.id;
     const profile = item.profileName || item.profileId || "未选择配置档";
     const selectedText = selectionSummary(item);
     const choice = selectedText !== "无" ? ` · ${selectedText}` : "";
@@ -736,18 +846,45 @@ function renderList(selected) {
     button.querySelector(".row-name").textContent = item.name;
     button.querySelector(".status").textContent = statusText(item.status);
     button.querySelector(".row-meta").textContent = `混合端口 ${proxyPortLabel(item.mixedPort)} · ${profile}${choice}`;
+    // pendingRestart 是可选字段（后端尚未上线时不存在），未运行的实例展示这个提示没有意义。
+    if (item.pendingRestart === true && item.status === "running") {
+      const hint = document.createElement("span");
+      hint.className = "pending-restart-chip";
+      hint.textContent = "配置已修改，重启后生效";
+      button.querySelector(".row-main").append(hint);
+    }
     button.addEventListener("click", () => selectInstance(item.id));
     el.instanceList.append(button);
   }
+  // 自动刷新会重建列表；恢复实例列表内的焦点，避免键盘用户每 4 秒被打断。
+  restoreInstanceListFocus(focusedKey);
+}
+
+let lastPortMatrixSnapshot = "";
+
+// frontend M3 remainder (docs/review-2026-07-11-fix-verification-round4.md):
+// same snapshot-compare pattern as instanceListSnapshot/renderList above --
+// the port matrix used to rebuild unconditionally every 4s poll, which (focus
+// restore aside) is wasted DOM churn when nothing it renders has changed.
+// Covers every field the row below actually reads: id/name/status for the
+// row itself, mixedPort/proxyBind for the endpoint address and copy actions.
+function portMatrixSnapshot(selected) {
+  return JSON.stringify({
+    selectedId: selected?.id || "",
+    items: state.instances.map((item) => [item.id, item.name, item.status, item.mixedPort, item.proxyBind || ""]),
+  });
 }
 
 function renderPortMatrix(selected) {
-  const focusedKey = el.portMatrixList.contains(document.activeElement)
-    ? document.activeElement.dataset.portFocus
-    : "";
   const countText = `${state.instances.length} 个出口`;
   // 避免 aria-live 区域在每次矩阵重绘时重复播报相同数量。
   if (el.portMatrixCount.textContent !== countText) el.portMatrixCount.textContent = countText;
+  const snapshot = portMatrixSnapshot(selected);
+  if (snapshot === lastPortMatrixSnapshot) return;
+  lastPortMatrixSnapshot = snapshot;
+  const focusedKey = el.portMatrixList.contains(document.activeElement)
+    ? document.activeElement.dataset.portFocus
+    : "";
   el.portMatrixList.innerHTML = "";
   if (!state.instances.length) {
     const empty = document.createElement("li");
@@ -956,6 +1093,12 @@ function updateBulkControls() {
   el.stopAllBtn.disabled = state.bulkRunning || !canStop;
 }
 
+// 编辑表单聚焦时跳过回写：即使 editDirty 还是 false（用户只是把光标移到字段中间，
+// 还没开始输入），4s 轮询也不该把 value 重新赋值一遍——赋值本身会把光标弹到末尾。
+function editFormContainsFocus() {
+  return Boolean(el.editForm && el.editForm.contains(document.activeElement));
+}
+
 function renderPanels(selected) {
   el.createPanel.classList.toggle("hidden", !state.creating);
   el.emptyPanel.classList.toggle("hidden", state.creating || state.instances.length > 0);
@@ -977,7 +1120,9 @@ function renderPanels(selected) {
   el.overviewUserConfig.textContent = selected.profileConfigPath || selected.userConfigPath;
   el.overviewRuntimeConfig.textContent = selected.runtimeConfigPath;
   el.overviewSelection.textContent = selectionSummary(selected);
-  if (!state.editDirty || state.editInstanceId !== selected.id) {
+  // pendingRestart 是可选字段（后端尚未上线时为 undefined），只在实例运行中才有意义提示。
+  el.pendingRestartHint.classList.toggle("hidden", !(selected.pendingRestart === true && selected.status === "running"));
+  if ((!state.editDirty || state.editInstanceId !== selected.id) && !editFormContainsFocus()) {
     state.editInstanceId = selected.id;
     state.editDirty = false;
     state.editVersion = 0;
@@ -1060,7 +1205,7 @@ function renderSubscriptionSettings(selected) {
     el.subscriptionAutoUpdate.checked = Boolean(profile.autoUpdate);
     el.subscriptionInterval.value = profile.updateIntervalMinutes || "";
   }
-  el.subscriptionInfo.textContent = formatSubscriptionInfo(profile);
+  renderSubscriptionInfo(profile);
 }
 
 function renderProfileOptions(select, selectedId, allowNew) {
@@ -1084,6 +1229,45 @@ function renderProfileOptions(select, selectedId, allowNew) {
     select.value = newProfileValue;
   } else if (select.options.length > 0) {
     select.value = select.options[allowNew && state.profiles.length ? 1 : 0].value;
+  }
+}
+
+// orphanProfiles returns the profiles no instance currently references (N3,
+// docs/review-2026-07-11-fix-verification-round4.md): the delete-profile
+// entry used to always target the *selected instance's own* profile, which
+// Store.DeleteProfile (store.go) refuses to delete precisely because it is
+// referenced -- there was no operation sequence that could ever succeed. The
+// profiles this feature actually exists to clean up (an instance's implicit
+// profile left behind after the instance itself was deleted) only ever show
+// up here, decoupled from whichever instance happens to be selected.
+function orphanProfiles() {
+  const referenced = new Set(state.instances.map((item) => item.profileId));
+  return state.profiles.filter((profile) => !referenced.has(profile.id));
+}
+
+function renderOrphanProfiles() {
+  const orphans = orphanProfiles();
+  const current = el.orphanProfileSelect.value;
+  el.orphanProfileSelect.innerHTML = "";
+  if (!orphans.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "没有可清理的配置档";
+    el.orphanProfileSelect.append(opt);
+    el.orphanProfileSelect.disabled = true;
+    el.deleteOrphanProfileBtn.disabled = true;
+    return;
+  }
+  el.orphanProfileSelect.disabled = false;
+  el.deleteOrphanProfileBtn.disabled = false;
+  for (const profile of orphans) {
+    const opt = document.createElement("option");
+    opt.value = profile.id;
+    opt.textContent = profile.name;
+    el.orphanProfileSelect.append(opt);
+  }
+  if (current && orphans.some((profile) => profile.id === current)) {
+    el.orphanProfileSelect.value = current;
   }
 }
 
@@ -1280,6 +1464,7 @@ async function refreshProxies() {
     }
     state.proxyGroups = groups;
     state.proxyApply = apply;
+    pruneLatencyResultsForGroups(selected.id, groups);
     updateLatencyControls();
     if (!groups.length) {
       el.proxiesList.innerHTML = `<div class="warning">没有可显示的节点组。使用 proxy-providers 的订阅需要启动实例后读取 mihomo 运行态节点。</div>`;
@@ -1657,14 +1842,40 @@ async function runBulkAction(action) {
   }
 }
 
-document.querySelectorAll(".tab").forEach((button) => {
+const tabList = document.querySelector(".tabs");
+const tabButtons = [...document.querySelectorAll(".tab")];
+
+// WAI-ARIA APG tabs pattern：同步 aria-selected 与 roving tabindex（只有当前
+// 激活的 tab 是 Tab 键可达的，其余 tabindex="-1"，靠方向键在组内移动）。
+function setActiveTab(button) {
+  state.activeTab = button.dataset.tab;
+  for (const tab of tabButtons) {
+    const isActive = tab === button;
+    tab.classList.toggle("active", isActive);
+    tab.setAttribute("aria-selected", isActive ? "true" : "false");
+    tab.tabIndex = isActive ? 0 : -1;
+  }
+  document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.add("hidden"));
+  document.querySelector(`#tab-${state.activeTab}`).classList.remove("hidden");
+}
+
+tabButtons.forEach((button) => {
   button.addEventListener("click", async () => {
-    state.activeTab = button.dataset.tab;
-    document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab === button));
-    document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.add("hidden"));
-    document.querySelector(`#tab-${state.activeTab}`).classList.remove("hidden");
+    setActiveTab(button);
     await refreshActiveDetails();
   });
+});
+
+tabList.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  const currentIndex = tabButtons.indexOf(document.activeElement);
+  if (currentIndex === -1) return;
+  event.preventDefault();
+  const delta = event.key === "ArrowRight" ? 1 : -1;
+  const nextButton = tabButtons[(currentIndex + delta + tabButtons.length) % tabButtons.length];
+  nextButton.focus();
+  setActiveTab(nextButton);
+  refreshActiveDetails();
 });
 
 el.instanceSelect.addEventListener("change", (event) => selectInstance(event.target.value));
@@ -1847,6 +2058,24 @@ el.saveConfig.addEventListener("click", async () => {
   }
 });
 
+el.deleteOrphanProfileBtn.addEventListener("click", async () => {
+  const profileId = el.orphanProfileSelect.value;
+  const profile = profileId ? profileById(profileId) : null;
+  if (!profile) return;
+  if (!confirm(`确定删除配置档 ${profile.name}？此操作不可撤销。`)) return;
+  try {
+    await api(`/api/profiles/${profile.id}`, { method: "DELETE" });
+    // 新建面板可能缓存了这个配置档的内容；清掉缓存标记，避免下次选它时误用旧缓存。
+    if (el.createConfig.dataset.profileId === profile.id) el.createConfig.dataset.profileId = "";
+    showMessage("配置档已删除。");
+    await refresh({ forceInstances: true });
+  } catch (err) {
+    // 409（配置档仍被实例引用）作为兜底：正常操作路径下 orphanProfiles() 已经
+    // 排除了被引用的配置档，但列表可能与并发的实例创建/改绑短暂不同步。
+    showMessage(err.message, "error");
+  }
+});
+
 el.saveProfileSettings.addEventListener("click", async () => {
   const selected = active();
   if (!selected) return;
@@ -1938,8 +2167,8 @@ window.addEventListener("scroll", hideProxyTooltip, true);
 const storedLatencyUrl = localStorage.getItem("fleetLatencyUrl");
 el.latencyUrl.value = normalizeStoredLatencyUrl(storedLatencyUrl);
 el.latencyTimeout.value = normalizeStoredLatencyTimeout(localStorage.getItem("fleetLatencyTimeout"), storedLatencyUrl);
-el.latencyUrl.addEventListener("change", latencySettings);
-el.latencyTimeout.addEventListener("change", latencySettings);
+el.latencyUrl.addEventListener("change", persistLatencySettings);
+el.latencyTimeout.addEventListener("change", persistLatencySettings);
 el.testAllLatency.addEventListener("click", () => testAllLatency(latencyKinds.url));
 el.testAllRealLatency.addEventListener("click", () => testAllLatency(latencyKinds.real));
 

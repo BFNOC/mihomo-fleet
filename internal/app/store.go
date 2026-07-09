@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -161,7 +162,21 @@ func (s *Store) load() error {
 	}
 	var data storedData
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return err
+		// L11 (docs/review-2026-07-11-go-architecture.md): a corrupt or
+		// unparseable instances.json previously failed NewStore outright,
+		// leaving the whole application unable to start until a human
+		// intervened by hand. Preserve the bad file under a timestamped name
+		// (it may still be partially recoverable -- e.g. hand-editing out a
+		// bad line) and continue with an empty store instead, the same
+		// "degrade, don't die" contract the rest of the store already gives
+		// individual save failures.
+		corruptPath := fmt.Sprintf("%s.corrupt-%d", s.storePath, time.Now().Unix())
+		if renameErr := os.Rename(s.storePath, corruptPath); renameErr != nil {
+			log.Printf("WARNING: mihomo-fleet: %s is corrupt (%v) and could not be preserved as %s (%v); starting with an empty store -- the corrupt file is still at %s, back it up before it gets overwritten", s.storePath, err, corruptPath, renameErr, s.storePath)
+		} else {
+			log.Printf("WARNING: mihomo-fleet: %s was corrupt (%v) and has been preserved as %s; starting with an empty store. Inspect that file if you need to recover instances/profiles by hand.", s.storePath, err, corruptPath)
+		}
+		return s.saveLocked()
 	}
 	for _, item := range data.Instances {
 		copy := *item
@@ -221,11 +236,7 @@ func (s *Store) List() []*Instance {
 	defer s.mu.RUnlock()
 	out := make([]*Instance, 0, len(s.items))
 	for _, item := range s.items {
-		copy := *item
-		copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
-		copy.Chain = append([]string{}, item.Chain...)
-		copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
-		out = append(out, &copy)
+		out = append(out, cloneInstance(item))
 	}
 	return out
 }
@@ -237,11 +248,7 @@ func (s *Store) Get(id string) (*Instance, bool) {
 	if !ok {
 		return nil, false
 	}
-	copy := *item
-	copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
-	copy.Chain = append([]string{}, item.Chain...)
-	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
-	return &copy, true
+	return cloneInstance(item), true
 }
 
 func (s *Store) CreateProfile(name, config string) (*Profile, error) {
@@ -256,6 +263,9 @@ func (s *Store) CreateSubscriptionProfile(name, subscriptionURL string, autoUpda
 
 	if fetched == nil {
 		return nil, errors.New("fetched subscription is required")
+	}
+	if err := validateHomeURL(fetched.HomeURL); err != nil {
+		return nil, err
 	}
 	if name == "" {
 		name = fetched.Name
@@ -390,6 +400,9 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	if fetched == nil {
 		return nil, errors.New("fetched subscription is required")
 	}
+	if err := validateHomeURL(fetched.HomeURL); err != nil {
+		return nil, err
+	}
 	originalProfile := cloneProfile(profile)
 	previousConfig, err := os.ReadFile(profile.ConfigPath)
 	if err != nil {
@@ -398,11 +411,7 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	itemSnapshots := make(map[string]Instance)
 	for _, item := range s.items {
 		if item.ProfileID == id {
-			copy := *item
-			copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
-			copy.Chain = append([]string{}, item.Chain...)
-			copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
-			itemSnapshots[item.ID] = copy
+			itemSnapshots[item.ID] = *cloneInstance(item)
 		}
 	}
 	if err := writeFileAtomic(profile.ConfigPath, []byte(fetched.Config), 0o600); err != nil {
@@ -417,6 +426,18 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	profile.HomeURL = fetched.HomeURL
 	profile.SubscriptionInfo = fetched.Info
 	profile.UpdatedAt = now
+	// N2 (docs/review-2026-07-11-fix-verification-round4.md): a refreshed
+	// subscription config file does change what every instance on this
+	// profile will run with next start, so in principle each affected
+	// item.ConfigUpdatedAt below should bump too. Deliberately left out: this
+	// loop already iterates every instance on the profile for
+	// reconcileInstanceSelection, so bumping is mechanically easy, but a
+	// scheduled background refresh (the subscription scheduler,
+	// controller.go) firing every few hours would then flip PendingRestart
+	// true for every running instance on an auto-updating profile with no
+	// user action involved -- a different, arguably noisier false-positive
+	// than the one N2 fixes for SetSelection/SetError. Revisit if instance
+	// config staleness after a subscription refresh needs its own signal.
 	for _, item := range s.items {
 		if item.ProfileID == id && instanceMode(item.Mode) != InstanceModeGlobalChain {
 			reconcileInstanceSelection(item, validSelections)
@@ -426,9 +447,99 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 		*profile = *originalProfile
 		for itemID, snapshot := range itemSnapshots {
 			if item, ok := s.items[itemID]; ok {
-				restored := snapshot
-				restored.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
-				*item = restored
+				*item = *cloneInstance(&snapshot)
+			}
+		}
+		_ = writeFileAtomic(profile.ConfigPath, previousConfig, 0o600)
+		return nil, err
+	}
+	return cloneProfile(profile), nil
+}
+
+// ReplaceProfileSubscription changes a subscription profile's URL and
+// applies the config fetched for that new URL in a single lock+save (arch
+// M4). The controller's URL-change path previously did this as two separate
+// store calls -- PatchProfile to persist the new URL and reset
+// LastUpdatedAt/HomeURL/SubscriptionInfo, then ApplySubscriptionFetchForURL
+// to write the fetched config -- so a failure in the second call left the
+// profile permanently pointing at a URL whose config.yaml still held the
+// *previous* subscription's content. Every field this touches (URL,
+// LastUpdatedAt, HomeURL, SubscriptionInfo, UpdateIntervalMinutes, the
+// config file, and any instance selections pruned against the new proxy
+// groups) is rolled back together on any failure, mirroring
+// ApplySubscriptionFetchForURL's rollback below.
+//
+// This is only for the URL-changing path. The unchanged-URL refresh path
+// (refreshProfileSubscription / the subscription scheduler) does not touch
+// the URL or reset metadata the same way, so it keeps calling
+// ApplySubscriptionFetchForURL directly.
+func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscriptionFetchResult) (*Profile, error) {
+	if fetched == nil {
+		return nil, errors.New("fetched subscription is required")
+	}
+	newURL = strings.TrimSpace(newURL)
+	if newURL == "" {
+		return nil, validationError{msg: "subscription URL must start with http:// or https://"}
+	}
+	if err := validateHomeURL(fetched.HomeURL); err != nil {
+		return nil, err
+	}
+
+	// See ApplySubscriptionFetchForURL's matching comment above: the YAML
+	// parse is independent of Store state and the most expensive step of a
+	// refresh, so it runs before the lock is taken.
+	groups, _ := parseProfileProxyGroups(fetched.Config, nil)
+	validSelections := profileSelectionSet(groups)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	profile, ok := s.profiles[id]
+	if !ok {
+		return nil, profileNotFoundError{id: id}
+	}
+	originalProfile := cloneProfile(profile)
+	previousConfig, err := os.ReadFile(profile.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	itemSnapshots := make(map[string]Instance)
+	for _, item := range s.items {
+		if item.ProfileID == id {
+			itemSnapshots[item.ID] = *cloneInstance(item)
+		}
+	}
+	if err := writeFileAtomic(profile.ConfigPath, []byte(fetched.Config), 0o600); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	profile.SubscriptionURL = newURL
+	profile.LastUpdatedAt = now
+	profile.LastUpdateError = ""
+	profile.HomeURL = fetched.HomeURL
+	profile.SubscriptionInfo = fetched.Info
+	if fetched.UpdateIntervalMinutes > 0 && profile.UpdateIntervalMinutes <= 0 {
+		profile.UpdateIntervalMinutes = normalizeSubscriptionInterval(fetched.UpdateIntervalMinutes, profile.AutoUpdate)
+	}
+	profile.UpdatedAt = now
+	// N2 (docs/review-2026-07-11-fix-verification-round4.md): see the
+	// matching comment in ApplySubscriptionFetchForURL above -- deliberately
+	// not bumping item.ConfigUpdatedAt here either, for the same reason (this
+	// path is user-initiated rather than scheduled, but treating a URL swap
+	// consistently with a plain refresh keeps the two subscription-update
+	// paths from disagreeing on PendingRestart semantics).
+	for _, item := range s.items {
+		if item.ProfileID == id && instanceMode(item.Mode) != InstanceModeGlobalChain {
+			reconcileInstanceSelection(item, validSelections)
+		}
+	}
+
+	if err := s.saveLocked(); err != nil {
+		*profile = *originalProfile
+		for itemID, snapshot := range itemSnapshots {
+			if item, ok := s.items[itemID]; ok {
+				*item = *cloneInstance(&snapshot)
 			}
 		}
 		_ = writeFileAtomic(profile.ConfigPath, previousConfig, 0o600)
@@ -654,7 +765,21 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		return nil, validationError{msg: "mixed and controller ports must differ"}
 	}
 	if opts.MixedPort == 0 {
-		opts.MixedPort = allocatePort(opts.MixedStart, used)
+		// L5 (docs/review-2026-07-11-go-architecture.md): if the controller
+		// port is explicit, exclude it from the mixed port's candidate set
+		// before auto-allocating. Without this, allocatePort could hand back
+		// the very port the caller explicitly asked for as the controller
+		// port; that port would then already be marked `used` by the time
+		// the explicit-controller-port branch below checks it, producing a
+		// spurious "controller port N is unavailable" self-conflict. The
+		// exclusion is applied via a throwaway copy (markPortUsed) rather
+		// than mutating `used` directly, so it doesn't also poison that same
+		// explicit port's own availability check just below.
+		mixedCandidates := used
+		if opts.ControllerPort > 0 {
+			mixedCandidates = markPortUsed(used, opts.ControllerPort)
+		}
+		opts.MixedPort = allocatePort(opts.MixedStart, mixedCandidates)
 	} else if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
 		return nil, portUnavailableError{msg: fmt.Sprintf("mixed proxy port %d is unavailable", opts.MixedPort)}
 	}
@@ -686,6 +811,12 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 	if !ok {
 		cleanupCreatedProfile()
 		return nil, profileNotFoundError{id: opts.ProfileID}
+	}
+	if mode == InstanceModeGlobalChain {
+		if err := validateChainStatic(profile.ConfigPath, opts.LocalProxies, opts.Chain); err != nil {
+			cleanupCreatedProfile()
+			return nil, err
+		}
 	}
 	secret, err := randomToken()
 	if err != nil {
@@ -727,11 +858,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		cleanupCreatedProfile()
 		return nil, err
 	}
-	copy := *item
-	copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
-	copy.Chain = append([]string{}, item.Chain...)
-	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
-	return &copy, nil
+	return cloneInstance(item), nil
 }
 
 func nextClonePortStart(sourcePort, fallback int) int {
@@ -741,6 +868,14 @@ func nextClonePortStart(sourcePort, fallback int) int {
 	return fallback
 }
 
+// SuggestPorts returns a mixed/controller port pair for a create form to
+// pre-fill. These are suggestions, not reservations: SuggestPorts does not
+// mark the returned ports as used, so two concurrent callers (e.g. two
+// browser tabs open on the create form at once) can be handed the identical
+// pair. The actual port only becomes claimed when an instance is
+// subsequently created with it, at which point createInstanceLocked
+// re-validates availability and one of the two callers will get a 409. See
+// L4 in REVIEW-2026-07-04.md.
 func (s *Store) SuggestPorts() (int, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -856,9 +991,40 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 			return nil, err
 		}
 	}
-	snapshot := *item
-	snapshot.Chain = append([]string{}, item.Chain...)
-	snapshot.SelectedProxies = cloneStringMap(item.SelectedProxies)
+	nextChain := item.Chain
+	if opts.Chain != nil {
+		nextChain = normalizeChainNames(*opts.Chain)
+	}
+	if nextMode == InstanceModeGlobalChain && len(nextChain) > 0 {
+		// L6 (docs/review-2026-07-11-go-architecture.md): validate the
+		// candidate chain against the (possibly also-changing) profile and
+		// local proxies now, at update time, instead of only when the
+		// instance is next started. See createInstanceLocked's matching
+		// check and validateChainStatic's doc comment.
+		chainProfile, ok := s.profiles[nextProfileID]
+		if !ok {
+			return nil, profileNotFoundError{id: nextProfileID}
+		}
+		if err := validateChainStatic(chainProfile.ConfigPath, nextLocalProxies, nextChain); err != nil {
+			return nil, err
+		}
+	}
+	// N2 (docs/review-2026-07-11-fix-verification-round4.md): ConfigUpdatedAt
+	// only tracks mutations that actually change the generated runtime
+	// config -- compare next* against item's current (still unmutated at
+	// this point) fields before assigning them below. Name-only edits and a
+	// no-op ProfileID/port/etc. (opts field set but equal to the current
+	// value) must not count, matching decorateStatus's use of this field to
+	// avoid a running instance incorrectly reporting PendingRestart forever.
+	configChanged := opts.Config != "" ||
+		(opts.ProfileID != "" && nextProfileID != item.ProfileID) ||
+		(opts.MixedPort > 0 && nextMixedPort != item.MixedPort) ||
+		(opts.ControllerPort > 0 && nextControllerPort != item.ControllerPort) ||
+		(opts.ProxyBind != nil && nextProxyBind != item.ProxyBind) ||
+		(opts.Mode != "" && nextMode != item.Mode) ||
+		(opts.LocalProxies != nil && nextLocalProxies != item.LocalProxies) ||
+		(opts.Chain != nil && !slices.Equal(nextChain, item.Chain))
+	snapshot := *cloneInstance(item)
 	item.Name = nextName
 	if clearSelection {
 		item.SelectedGroup = ""
@@ -873,38 +1039,34 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	item.Mode = nextMode
 	item.LocalProxies = nextLocalProxies
 	if opts.Chain != nil {
-		item.Chain = normalizeChainNames(*opts.Chain)
+		item.Chain = nextChain
 	}
 	var previousConfig []byte
 	if opts.Config != "" {
 		profile, ok := s.profiles[item.ProfileID]
 		if !ok {
-			*item = snapshot
-			item.Chain = append([]string{}, snapshot.Chain...)
-			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
+			*item = *cloneInstance(&snapshot)
 			return nil, profileNotFoundError{id: item.ProfileID}
 		}
 		var err error
 		previousConfig, err = os.ReadFile(profile.ConfigPath)
 		if err != nil {
-			*item = snapshot
-			item.Chain = append([]string{}, snapshot.Chain...)
-			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
+			*item = *cloneInstance(&snapshot)
 			return nil, err
 		}
 		if err := writeFileAtomic(profile.ConfigPath, []byte(opts.Config), 0o600); err != nil {
-			*item = snapshot
-			item.Chain = append([]string{}, snapshot.Chain...)
-			item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
+			*item = *cloneInstance(&snapshot)
 			return nil, err
 		}
 		profile.UpdatedAt = time.Now().UTC()
 	}
-	item.UpdatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	item.UpdatedAt = now
+	if configChanged {
+		item.ConfigUpdatedAt = now
+	}
 	if err := s.saveLocked(); err != nil {
-		*item = snapshot
-		item.Chain = append([]string{}, snapshot.Chain...)
-		item.SelectedProxies = cloneStringMap(snapshot.SelectedProxies)
+		*item = *cloneInstance(&snapshot)
 		if opts.Config != "" && previousConfig != nil {
 			profile, ok := s.profiles[nextProfileID]
 			if ok {
@@ -915,11 +1077,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		}
 		return nil, err
 	}
-	copy := *item
-	copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
-	copy.Chain = append([]string{}, item.Chain...)
-	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
-	return &copy, nil
+	return cloneInstance(item), nil
 }
 
 func (s *Store) SetSelection(id, group, proxy string) (*Instance, error) {
@@ -939,11 +1097,7 @@ func (s *Store) SetSelection(id, group, proxy string) (*Instance, error) {
 	if err := s.saveLocked(); err != nil {
 		return nil, err
 	}
-	copy := *item
-	copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
-	copy.Chain = append([]string{}, item.Chain...)
-	copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
-	return &copy, nil
+	return cloneInstance(item), nil
 }
 
 func (s *Store) SetError(id, message string) {
@@ -952,7 +1106,13 @@ func (s *Store) SetError(id, message string) {
 	if item, ok := s.items[id]; ok && item.LastError != message {
 		item.LastError = message
 		item.UpdatedAt = time.Now().UTC()
-		_ = s.saveLocked()
+		if err := s.saveLocked(); err != nil {
+			// L11: previously silently discarded (`_ = s.saveLocked()`),
+			// inconsistent with SetProfileUpdateError's style just below,
+			// which already logs. A failed save here means LastError only
+			// exists in memory until the next successful save.
+			log.Printf("save instance error failed for instance %s: %v", id, err)
+		}
 	}
 }
 
@@ -970,6 +1130,42 @@ func (s *Store) Delete(id string) error {
 		return err
 	}
 	return os.RemoveAll(filepath.Join(s.dataDir, "instances", id))
+}
+
+// DeleteProfile removes a profile record and its on-disk config directory
+// (arch M2). It refuses to delete a profile still referenced by any
+// instance -- deleting out from under a running/stopped instance would leave
+// UserConfigPath pointing at nothing -- and mirrors Delete's rollback
+// pattern: the directory is only removed after saveLocked succeeds, and a
+// save failure restores the in-memory record.
+//
+// Deliberate scope limit: this is the only way a profile gets deleted.
+// There is no cascade-delete of a profile an instance implicitly created
+// for itself (createInstanceLocked, when ProfileID is empty) when that
+// instance is later deleted -- Store.Delete does not track which profiles
+// were implicitly created, and deleting a profile record with no
+// "implicit"/reference-count marker is unsafe to guess at (a since-cloned or
+// manually-repointed instance could still depend on it). See M2 in
+// docs/review-2026-07-11-go-architecture.md.
+func (s *Store) DeleteProfile(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	profile, ok := s.profiles[id]
+	if !ok {
+		return profileNotFoundError{id: id}
+	}
+	for _, item := range s.items {
+		if item.ProfileID == id {
+			return validationError{msg: "profile is in use by existing instances"}
+		}
+	}
+	delete(s.profiles, id)
+	if err := s.saveLocked(); err != nil {
+		s.profiles[id] = profile
+		return err
+	}
+	return os.RemoveAll(filepath.Dir(profile.ConfigPath))
 }
 
 func (s *Store) ReadUserConfig(id string) (string, error) {
@@ -991,11 +1187,7 @@ func (s *Store) ReadUserConfig(id string) (string, error) {
 func (s *Store) saveLocked() error {
 	data := storedData{Instances: make([]*Instance, 0, len(s.items))}
 	for _, item := range s.items {
-		copy := *item
-		copy.ProxyBind = instanceProxyBind(copy.ProxyBind)
-		copy.Chain = append([]string{}, item.Chain...)
-		copy.SelectedProxies = cloneStringMap(item.SelectedProxies)
-		data.Instances = append(data.Instances, &copy)
+		data.Instances = append(data.Instances, cloneInstance(item))
 	}
 	data.Profiles = make([]*Profile, 0, len(s.profiles))
 	for _, item := range s.profiles {
@@ -1017,6 +1209,91 @@ func normalizeSelections(selections map[string]string, group, proxy string) map[
 		return nil
 	}
 	return map[string]string{group: proxy}
+}
+
+// cloneInstance returns a deep copy of in: ProxyBind is normalized to its
+// display default (matching instanceProxyBind's historical "empty means
+// 127.0.0.1" contract) and Chain/SelectedProxies are copied rather than
+// aliased. Every Store method that hands an *Instance to a caller, or
+// restores one from a rollback snapshot, needs exactly this -- previously
+// each of the ~10 call sites re-implemented it by hand as three lines
+// (`copy := *item; copy.ProxyBind = ...; copy.Chain = append(...);
+// copy.SelectedProxies = cloneStringMap(...)`), so adding a reference-typed
+// field to Instance meant finding and updating all of them (testing M5).
+// See TestCloneInstanceDeepCopiesReferenceFields for the guard this enables.
+func cloneInstance(in *Instance) *Instance {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.ProxyBind = instanceProxyBind(in.ProxyBind)
+	out.Chain = append([]string{}, in.Chain...)
+	out.SelectedProxies = cloneStringMap(in.SelectedProxies)
+	return &out
+}
+
+// validateHomeURL rejects a non-empty HomeURL that doesn't start with
+// http:// or https://. HomeURL (Profile.HomeURL) is sourced from a
+// subscription server's `profile-web-page-url` response header --
+// subscription.go's fetchSubscription -- and is fully attacker-controlled.
+// It is currently rendered as plain text only (see L-1 in
+// docs/review-2026-07-11-security.md: "no XSS today"), but it is the only
+// remote-controlled URL surfaced to the UI, so every Store write path that
+// persists a fetched HomeURL rejects an unsafe scheme here as cheap
+// defense-in-depth against a future regression that renders it as a
+// clickable link (a "javascript:" HomeURL would then be an XSS/click-hijack
+// vector).
+func validateHomeURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		return validationError{msg: "home URL must start with http:// or https://"}
+	}
+	return nil
+}
+
+// validateChainStatic performs, at create/update time, the same
+// duplicate-member and unknown-reference checks config.go's
+// buildGlobalChainPlan otherwise only runs when the instance is actually
+// started (arch L6): a chain with a typo'd or duplicated member previously
+// saved successfully and only surfaced as an error when the user clicked
+// start. It reuses parseGlobalChainProxyGroups (config.go) -- the same
+// parse-and-plan path the proxies-tab endpoint already relies on -- against
+// the resolved profile config plus the candidate LocalProxies/Chain,
+// discarding the resulting groups and only surfacing the error, wrapped as
+// validationError so it classifies as a 400 while preserving the exact
+// message text buildGlobalChainPlan produces (matched verbatim by app.js's
+// errorPatterns: "chain contains duplicate member ...", "chain references
+// unknown proxy or group ..."). The start-time check remains as a backstop
+// for cases this static check cannot see, e.g. the profile config changing
+// between this validation and the instance actually starting.
+func validateChainStatic(configPath, localProxies string, chain []string) error {
+	if len(normalizeChainNames(chain)) == 0 {
+		return nil
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	if _, err := parseGlobalChainProxyGroups(string(raw), &Instance{LocalProxies: localProxies, Chain: chain}); err != nil {
+		return validationError{msg: err.Error()}
+	}
+	return nil
+}
+
+// markPortUsed returns a copy of used with port additionally marked
+// occupied, leaving the caller's map untouched. createInstanceLocked uses
+// this to keep an explicitly-given port out of the *other* port's
+// auto-allocation candidate set (L5) without polluting the map that port's
+// own later availability check reads.
+func markPortUsed(used map[int]bool, port int) map[int]bool {
+	out := make(map[int]bool, len(used)+1)
+	for k, v := range used {
+		out[k] = v
+	}
+	out[port] = true
+	return out
 }
 
 func cloneProfile(in *Profile) *Profile {

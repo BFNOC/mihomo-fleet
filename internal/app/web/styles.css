@@ -1,20 +1,57 @@
 :root {
   color-scheme: light;
-  --bg: oklch(0.975 0.006 175);
-  --surface: oklch(0.995 0.004 175);
-  --panel: oklch(0.982 0.006 175);
-  --line: oklch(0.88 0.012 175);
-  --text: oklch(0.22 0.018 175);
-  --muted: oklch(0.48 0.018 175);
-  --soft: oklch(0.93 0.014 175);
-  --accent: oklch(0.54 0.105 178);
-  --accent-strong: oklch(0.44 0.11 178);
-  --accent-soft: oklch(0.91 0.045 178);
-  --warn: oklch(0.78 0.11 78);
-  --warn-soft: oklch(0.96 0.04 78);
-  --danger: oklch(0.57 0.14 28);
-  --danger-soft: oklch(0.95 0.035 28);
-  --shadow: 0 16px 44px oklch(0.48 0.025 175 / 0.12);
+  /* 老浏览器（不支持 oklch，见下方 @supports 覆盖）的 hex 回退，渐进增强：
+     先声明 plain hex，支持 oklch() 的浏览器再用 @supports 覆盖为原色值。
+     这几个是全文重复出现的字面量，顺带提取成变量方便改主题时统一替换。 */
+  --accent-border: #66a798;
+  --line-hover: #95b2a9;
+  --warn-text: #4d3919;
+  /* frontend L3 remainder (docs/review-2026-07-11-fix-verification-round4.md):
+     the main palette below was still bare oklch() with no fallback -- on a
+     browser without oklch() support every var() referencing one of these
+     resolves to nothing, dropping the whole rule to the UA default instead
+     of just losing the intended hue. Same progressive-enhancement pattern as
+     the three variables above: plain hex here, oklch override in the
+     @supports block. Hex values are visually-equivalent approximations, not
+     exact conversions. */
+  --bg: #f6faf8;
+  --surface: #fdfffe;
+  --panel: #f8fbf9;
+  --line: #d6dfda;
+  --text: #1f2b27;
+  --muted: #5c6c66;
+  --soft: #e5ece8;
+  --accent: #1c9179;
+  --accent-strong: #146857;
+  --accent-soft: #cfece1;
+  --warn: #d9a13a;
+  --warn-soft: #f8ecd3;
+  --danger: #cf5039;
+  --danger-soft: #f7ded7;
+  --shadow: 0 16px 44px rgba(108, 125, 120, 0.12);
+}
+
+@supports (color: oklch(0% 0 0)) {
+  :root {
+    --accent-border: oklch(0.68 0.07 178);
+    --line-hover: oklch(0.74 0.035 175);
+    --warn-text: oklch(0.36 0.055 78);
+    --bg: oklch(0.975 0.006 175);
+    --surface: oklch(0.995 0.004 175);
+    --panel: oklch(0.982 0.006 175);
+    --line: oklch(0.88 0.012 175);
+    --text: oklch(0.22 0.018 175);
+    --muted: oklch(0.48 0.018 175);
+    --soft: oklch(0.93 0.014 175);
+    --accent: oklch(0.54 0.105 178);
+    --accent-strong: oklch(0.44 0.11 178);
+    --accent-soft: oklch(0.91 0.045 178);
+    --warn: oklch(0.78 0.11 78);
+    --warn-soft: oklch(0.96 0.04 78);
+    --danger: oklch(0.57 0.14 28);
+    --danger-soft: oklch(0.95 0.035 28);
+    --shadow: 0 16px 44px oklch(0.48 0.025 175 / 0.12);
+  }
 }
 
 * {
@@ -33,12 +70,6 @@ input,
 select,
 textarea {
   font: inherit;
-}
-
-button,
-select,
-input,
-textarea {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
@@ -55,7 +86,7 @@ button:hover,
 select:hover,
 input:hover,
 textarea:hover {
-  border-color: oklch(0.74 0.035 175);
+  border-color: var(--line-hover);
 }
 
 button:focus-visible,
@@ -255,7 +286,7 @@ label span {
 }
 
 .instance-row.active {
-  border-color: oklch(0.68 0.07 178);
+  border-color: var(--accent-border);
   background: var(--accent-soft);
 }
 
@@ -319,11 +350,11 @@ label span {
 }
 
 .port-row:focus-within {
-  border-color: oklch(0.68 0.07 178);
+  border-color: var(--accent-border);
 }
 
 .port-row.active {
-  border-color: oklch(0.68 0.07 178);
+  border-color: var(--accent-border);
   background: var(--accent-soft);
 }
 
@@ -361,7 +392,7 @@ label span {
 
 @media (hover: hover) and (pointer: fine) {
   .port-row:not(.active):hover:not(:focus-within) {
-    border-color: oklch(0.74 0.035 175);
+    border-color: var(--line-hover);
   }
 }
 
@@ -426,13 +457,31 @@ label span {
   background: var(--danger);
 }
 
+.pending-restart-chip {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.detail-head .pending-restart-chip {
+  margin-top: 4px;
+}
+
 .warning,
 .message {
   padding: 10px 12px;
   border-radius: 6px;
   border: 1px solid oklch(0.84 0.07 78);
   background: var(--warn-soft);
-  color: oklch(0.36 0.055 78);
+  color: var(--warn-text);
   margin-top: 12px;
 }
 
@@ -586,6 +635,24 @@ label,
   display: grid;
   gap: 12px;
   margin: 14px 0;
+}
+
+.orphan-profiles {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.orphan-profiles p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.orphan-profiles .form-grid.two {
+  align-items: end;
+  margin: 0;
 }
 
 .checkline {
@@ -783,11 +850,6 @@ label,
   text-align: center;
 }
 
-.latency-chip.idle {
-  background: var(--soft);
-  color: var(--muted);
-}
-
 .latency-chip.good {
   background: var(--accent-soft);
   color: var(--accent-strong);
@@ -795,7 +857,7 @@ label,
 
 .latency-chip.warn {
   background: var(--warn-soft);
-  color: oklch(0.36 0.055 78);
+  color: var(--warn-text);
 }
 
 .latency-chip.bad {
@@ -810,7 +872,7 @@ label,
 
 .proxy-choice.selected {
   background: var(--accent-soft);
-  border-color: oklch(0.68 0.07 178);
+  border-color: var(--accent-border);
   color: var(--accent-strong);
   font-weight: 700;
 }

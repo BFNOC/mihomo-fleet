@@ -13,12 +13,19 @@ import (
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
-func uniqueID(name string, existing map[string]*Instance) string {
+// uniqueSlug slugifies name (lowercase, non-alphanumeric runs collapsed to a
+// single "-") and disambiguates it against existing by appending "-2", "-3",
+// etc. until it no longer collides. fallback is used verbatim when name
+// slugifies to the empty string. This is the shared implementation behind
+// uniqueID and uniqueProfileID (testing L1): the two were previously
+// identical line-for-line except for the map's value type and the fallback
+// string, which Go 1.22 generics let us collapse into one function.
+func uniqueSlug[T any](name, fallback string, existing map[string]T) string {
 	base := strings.ToLower(strings.TrimSpace(name))
 	base = nonSlug.ReplaceAllString(base, "-")
 	base = strings.Trim(base, "-")
 	if base == "" {
-		base = "instance"
+		base = fallback
 	}
 	id := base
 	for i := 2; ; i++ {
@@ -29,20 +36,12 @@ func uniqueID(name string, existing map[string]*Instance) string {
 	}
 }
 
+func uniqueID(name string, existing map[string]*Instance) string {
+	return uniqueSlug(name, "instance", existing)
+}
+
 func uniqueProfileID(name string, existing map[string]*Profile) string {
-	base := strings.ToLower(strings.TrimSpace(name))
-	base = nonSlug.ReplaceAllString(base, "-")
-	base = strings.Trim(base, "-")
-	if base == "" {
-		base = "profile"
-	}
-	id := base
-	for i := 2; ; i++ {
-		if _, ok := existing[id]; !ok {
-			return id
-		}
-		id = fmt.Sprintf("%s-%d", base, i)
-	}
+	return uniqueSlug(name, "profile", existing)
 }
 
 func randomToken() (string, error) {
@@ -99,6 +98,19 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	// L8 (docs/review-2026-07-11-go-architecture.md): without an explicit
+	// fsync here, the rename below is only guaranteed atomic with respect to
+	// the directory entry -- the data itself may still be sitting in the
+	// page cache. A crash/power loss between rename and the OS's own
+	// eventual flush can then leave the destination pointing at a
+	// zero-length or partially-written file. instances.json and profile
+	// config.yaml are the two files this matters for; the ~1ms fsync cost
+	// per write is worth it for data that would otherwise need manual
+	// recovery (see Store.load's corrupt-file handling below).
+	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}

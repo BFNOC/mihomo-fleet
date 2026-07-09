@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestMihomoProxyDelay(t *testing.T) {
@@ -300,19 +302,47 @@ func TestMihomoProxyDelayReturnsUnmatchedTimeoutError(t *testing.T) {
 	}
 }
 
-func TestNormalizeLatencyRequest(t *testing.T) {
-	if got := clampLatencyTimeoutMS(1); got != minLatencyTimeoutMS {
-		t.Fatalf("short timeout = %d", got)
+// TestClampLatencyTimeoutMS, TestNormalizeLatencyRequestURL and
+// TestLatencyRequestBudgetMS split what used to be a single
+// TestNormalizeLatencyRequest test covering three unrelated functions
+// (testing L7, docs/review-2026-07-11-testing-quality.md): clamping,
+// URL validation and budget computation don't share behavior, so a failure
+// in one previously masked whether the other two still passed, and the name
+// didn't point at which one broke.
+func TestClampLatencyTimeoutMS(t *testing.T) {
+	tests := []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{name: "zero uses the default", input: 0, want: defaultLatencyTimeoutMS},
+		{name: "below minimum clamps up", input: 1, want: minLatencyTimeoutMS},
+		{name: "above maximum clamps down", input: 99999, want: maxLatencyTimeoutMS},
+		{name: "within range passes through unchanged", input: 3000, want: 3000},
 	}
-	if got := clampLatencyTimeoutMS(99999); got != maxLatencyTimeoutMS {
-		t.Fatalf("long timeout = %d", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clampLatencyTimeoutMS(tt.input); got != tt.want {
+				t.Fatalf("clampLatencyTimeoutMS(%d) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
 	}
+}
+
+func TestNormalizeLatencyRequestURL(t *testing.T) {
 	if _, err := normalizeLatencyRequestURL("file:///etc/passwd"); err == nil {
-		t.Fatal("expected invalid URL error")
+		t.Fatal("expected an error for a non-http(s) scheme")
 	}
 	if got, err := normalizeLatencyRequestURL(""); err != nil || got != defaultLatencyURL {
-		t.Fatalf("default URL = %q, %v", got, err)
+		t.Fatalf("default URL = %q, %v, want %q, nil", got, err, defaultLatencyURL)
 	}
+	const explicit = "https://example.com/generate_204"
+	if got, err := normalizeLatencyRequestURL(explicit); err != nil || got != explicit {
+		t.Fatalf("explicit URL = %q, %v, want %q, nil", got, err, explicit)
+	}
+}
+
+func TestLatencyRequestBudgetMS(t *testing.T) {
 	if got := latencyRequestBudgetMS("url", 3000); got != 8000 {
 		t.Fatalf("url budget = %d, want 8000", got)
 	}
@@ -512,19 +542,34 @@ func testMihomoItem(t *testing.T, rawURL string) *Instance {
 	}
 }
 
+// testLatencyController builds a real Store (backed by a temp dir, via
+// NewStore) and Manager for the handleLatency tests above, rather than a
+// literal &Store{} (no dataDir/storePath) and an empty processState{} with a
+// nil cmd (testing L6, docs/review-2026-07-11-testing-quality.md). The
+// previous fixture would panic on any code path that calls
+// store.saveLocked (empty storePath) or dereferences ps.cmd.Process (nil
+// *exec.Cmd) -- handleLatency happens not to touch either today, but the
+// fixture itself no longer models an impossible state, so a future handler
+// that does exercise those paths fails with a normal test assertion instead
+// of a confusing panic.
 func testLatencyController(t *testing.T, rawURL string, running bool) (*Controller, string) {
 	t.Helper()
-	item := testMihomoItem(t, rawURL)
-	item.ID = "latency-test"
-	store := &Store{
-		items: map[string]*Instance{
-			item.ID: item,
-		},
-		profiles: make(map[string]*Profile),
+	withPortFree(t, func(int) bool { return true })
+
+	target := testMihomoItem(t, rawURL)
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("latency-test", "", defaultUserConfig, 28500, target.ControllerPort)
+	if err != nil {
+		t.Fatal(err)
 	}
 	manager := NewManager(store, "")
 	if running {
-		manager.procs[item.ID] = &processState{}
+		manager.mu.Lock()
+		manager.procs[item.ID] = &processState{cmd: &exec.Cmd{}, started: time.Now().UTC(), done: make(chan struct{})}
+		manager.mu.Unlock()
 	}
 	return &Controller{store: store, manager: manager}, item.ID
 }

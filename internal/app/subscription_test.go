@@ -1,16 +1,41 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+var subscriptionTargetTestMu sync.Mutex
+
+// withSubscriptionTargetAllowed overrides validateSubscriptionTargetFn so
+// fetchSubscription's SSRF pre-check does not reject the loopback
+// httptest.Server address these tests use (testing M2 in
+// docs/review-2026-07-11-testing-quality.md). It must be paired with a
+// plain *http.Client (e.g. server.Client()) rather than
+// newSubscriptionHTTPClient's client: that client's custom DialContext
+// independently re-checks blockedSubscriptionIP on every connection
+// attempt via safeSubscriptionIPs, so it would still refuse loopback even
+// with this override in place.
+func withSubscriptionTargetAllowed(t *testing.T) {
+	t.Helper()
+	subscriptionTargetTestMu.Lock()
+	original := validateSubscriptionTargetFn
+	validateSubscriptionTargetFn = func(context.Context, *url.URL) error { return nil }
+	t.Cleanup(func() {
+		validateSubscriptionTargetFn = original
+		subscriptionTargetTestMu.Unlock()
+	})
+}
 
 const subscriptionConfig = `mixed-port: 7890
 proxies:
@@ -320,6 +345,142 @@ func TestSanitizeSubscriptionErrorFallsBackForUnparsableURL(t *testing.T) {
 	}
 	if strings.Contains(msg, "secret123") {
 		t.Fatalf("sanitized error still contains the query token: %q", msg)
+	}
+}
+
+// TestFetchSubscriptionStripsBOM covers testing M2: fetchSubscription must
+// strip a leading UTF-8 BOM from the response body before it is treated as
+// YAML/persisted as the profile config.
+func TestFetchSubscriptionStripsBOM(t *testing.T) {
+	withSubscriptionTargetAllowed(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("\ufeff" + subscriptionConfig))
+	}))
+	defer server.Close()
+
+	fetched, err := fetchSubscription(context.Background(), server.Client(), server.URL, "test-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(fetched.Config, "\ufeff") {
+		t.Fatalf("BOM was not stripped, config starts with: %q", fetched.Config[:10])
+	}
+	if !strings.Contains(fetched.Config, "US-01") {
+		t.Fatalf("config content was lost: %q", fetched.Config)
+	}
+}
+
+// TestFetchSubscriptionRejectsOversizedBody covers testing M2: a response
+// larger than the 16MB cap must be rejected rather than buffered in full.
+func TestFetchSubscriptionRejectsOversizedBody(t *testing.T) {
+	withSubscriptionTargetAllowed(t)
+	huge := bytes.Repeat([]byte("a"), maxSubscriptionBytes+1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(huge)
+	}))
+	defer server.Close()
+
+	_, err := fetchSubscription(context.Background(), server.Client(), server.URL, "test-agent")
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("err = %v, want a size-limit error", err)
+	}
+}
+
+// TestFetchSubscriptionNonSuccessStatus covers testing M2: a non-2xx
+// response must surface as an error rather than being parsed as a config.
+func TestFetchSubscriptionNonSuccessStatus(t *testing.T) {
+	withSubscriptionTargetAllowed(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	_, err := fetchSubscription(context.Background(), server.Client(), server.URL, "test-agent")
+	if err == nil || !strings.Contains(err.Error(), "subscription server returned") {
+		t.Fatalf("err = %v, want a status error", err)
+	}
+}
+
+// TestFetchSubscriptionParsesHeaderMetadata covers testing M2: the
+// update-interval, subscription-userinfo, and profile-web-page-url response
+// headers must be parsed into the fetch result.
+func TestFetchSubscriptionParsesHeaderMetadata(t *testing.T) {
+	withSubscriptionTargetAllowed(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("profile-update-interval", "12")
+		w.Header().Set("subscription-userinfo", "upload=1; download=2; total=3; expire=4")
+		w.Header().Set("profile-web-page-url", " https://example.com/home ")
+		_, _ = w.Write([]byte(subscriptionConfig))
+	}))
+	defer server.Close()
+
+	fetched, err := fetchSubscription(context.Background(), server.Client(), server.URL, "test-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.UpdateIntervalMinutes != 720 {
+		t.Fatalf("UpdateIntervalMinutes = %d, want 720", fetched.UpdateIntervalMinutes)
+	}
+	if fetched.HomeURL != "https://example.com/home" {
+		t.Fatalf("HomeURL = %q, want trimmed home URL", fetched.HomeURL)
+	}
+	if fetched.Info == nil || fetched.Info.Upload != 1 || fetched.Info.Download != 2 || fetched.Info.Total != 3 || fetched.Info.Expire != 4 {
+		t.Fatalf("Info = %+v, want upload/download/total/expire 1/2/3/4", fetched.Info)
+	}
+}
+
+// TestFetchSubscriptionUsesFilenameStarNameWithLanguageTag exercises the
+// 07-04 review L5 fix end to end through a real httptest server: an RFC
+// 5987 filename* value with a non-empty language tag
+// (charset'language'value, as opposed to the empty-language
+// charset”value form) must still have its name extracted correctly.
+func TestFetchSubscriptionUsesFilenameStarNameWithLanguageTag(t *testing.T) {
+	withSubscriptionTargetAllowed(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename*=UTF-8'en'my-nodes.yaml`)
+		_, _ = w.Write([]byte(subscriptionConfig))
+	}))
+	defer server.Close()
+
+	fetched, err := fetchSubscription(context.Background(), server.Client(), server.URL, "test-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.Name != "my-nodes" {
+		t.Fatalf("Name = %q, want %q", fetched.Name, "my-nodes")
+	}
+}
+
+// TestSubscriptionNameParsesContentDisposition table-tests subscriptionName
+// directly (testing M2's "immediately doable" pure-function suggestion),
+// including the RFC 5987 filename* forms with an empty and a non-empty
+// language tag (07-04 review L5).
+func TestSubscriptionNameParsesContentDisposition(t *testing.T) {
+	parsedURL, err := url.Parse("https://example.com/path/sub.yaml?token=x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name        string
+		disposition string
+		want        string
+	}{
+		{"plain filename", `attachment; filename="nodes.yaml"`, "nodes"},
+		{"filename* empty language tag", `attachment; filename*=UTF-8''nodes.yaml`, "nodes"},
+		{"filename* non-empty language tag", `attachment; filename*=UTF-8'en'nodes.yaml`, "nodes"},
+		{"filename* percent-encoded value", `attachment; filename*=UTF-8''%E8%AE%A2%E9%98%85.yaml`, "订阅"},
+		{"no content-disposition falls back to URL path", "", "sub"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			header := http.Header{}
+			if tt.disposition != "" {
+				header.Set("Content-Disposition", tt.disposition)
+			}
+			if got := subscriptionName(header, parsedURL); got != tt.want {
+				t.Fatalf("subscriptionName() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -41,7 +41,7 @@ func fetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 	if parsed.Host == "" {
 		return nil, errors.New("subscription URL host is required")
 	}
-	if err := validateSubscriptionTarget(ctx, parsed); err != nil {
+	if err := validateSubscriptionTargetFn(ctx, parsed); err != nil {
 		return nil, sanitizeSubscriptionError(err)
 	}
 	if userAgent == "" {
@@ -155,7 +155,13 @@ func newSubscriptionHTTPClient() *http.Client {
 	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			DialContext:           subscriptionDialContext(dialer),
+			DialContext: subscriptionDialContext(dialer),
+			// L-4 (docs/review-2026-07-11-go-concurrency-performance.md):
+			// http.Transport disables automatic HTTP/2 negotiation whenever a
+			// custom DialContext is set, unless explicitly re-enabled here.
+			// Subscription hosts are frequently CDN-fronted (h2-capable), so
+			// this was silently pinning every subscription fetch to HTTP/1.1.
+			ForceAttemptHTTP2:     true,
 			ResponseHeaderTimeout: 15 * time.Second,
 			IdleConnTimeout:       30 * time.Second,
 		},
@@ -165,7 +171,7 @@ func newSubscriptionHTTPClient() *http.Client {
 		if len(via) >= 5 {
 			return errors.New("subscription redirect limit exceeded")
 		}
-		return validateSubscriptionTarget(req.Context(), req.URL)
+		return validateSubscriptionTargetFn(req.Context(), req.URL)
 	}
 	return client
 }
@@ -197,6 +203,15 @@ func subscriptionDialContext(dialer *net.Dialer) func(context.Context, string, s
 		return nil, errors.New("subscription host did not resolve")
 	}
 }
+
+// validateSubscriptionTargetFn is a package-level indirection over
+// validateSubscriptionTarget, following the same pattern as util.go's
+// isPortFree: fetchSubscription and newSubscriptionHTTPClient's
+// CheckRedirect call the var (never the function directly) so tests can
+// substitute a permissive check and drive fetchSubscription against a
+// loopback httptest.Server, which the real SSRF guard below would otherwise
+// always reject (testing M2 in docs/review-2026-07-11-testing-quality.md).
+var validateSubscriptionTargetFn = validateSubscriptionTarget
 
 func validateSubscriptionTarget(ctx context.Context, parsed *url.URL) error {
 	if parsed == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
@@ -295,10 +310,22 @@ func subscriptionName(header http.Header, parsed *url.URL) string {
 		if !ok {
 			continue
 		}
-		if strings.EqualFold(key, "filename") || strings.EqualFold(key, "filename*") {
+		isExtValue := strings.EqualFold(key, "filename*")
+		if isExtValue || strings.EqualFold(key, "filename") {
 			value = strings.Trim(value, `"`)
-			if idx := strings.LastIndex(value, "''"); idx >= 0 {
-				value = value[idx+2:]
+			if isExtValue {
+				// RFC 5987 ext-value = charset "'" [ language ] "'" value-chars.
+				// Splitting on the first two single quotes strips the
+				// charset/language prefix whether or not a language tag is
+				// present (e.g. both "UTF-8''name.yaml" and
+				// "UTF-8'en'name.yaml"). The previous implementation only
+				// searched for a literal "''" (adjacent quotes), which only
+				// matches the empty-language-tag form and left a non-empty
+				// language tag (07-04 review, L5) unstripped in the parsed
+				// name.
+				if parts := strings.SplitN(value, "'", 3); len(parts) == 3 {
+					value = parts[2]
+				}
 			}
 			if unescaped, err := url.QueryUnescape(value); err == nil {
 				value = unescaped

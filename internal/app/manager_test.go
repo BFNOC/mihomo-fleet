@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,8 +121,17 @@ func TestManagerStartAndStopUsesDoneChannel(t *testing.T) {
 		t.Fatalf("Stop() error = %v", err)
 	}
 	elapsed := time.Since(started)
-	if elapsed >= time.Second {
-		t.Fatalf("Stop() took %s, want well under 1s via the done channel (no 100ms polling)", elapsed)
+	// N5 (docs/review-2026-07-11-fix-verification-round4.md): this bound
+	// guards against a regression to the old 100ms-polling-plus-3s-SIGTERM-
+	// window Stop() path, not against reasonable scheduling jitter -- a 1s
+	// bound flaked under parallel test load (observed 1.006s) even though
+	// the done-channel path was taken. 3s is still far below what the old
+	// polling path would take (its own worst case is exercised separately by
+	// TestManagerStopForceKillsStubbornProcess, asserting >= 3s), so this
+	// still proves the done-channel path fired instead of falling through to
+	// polling.
+	if elapsed >= 3*time.Second {
+		t.Fatalf("Stop() took %s, want well under 3s via the done channel (no 100ms polling)", elapsed)
 	}
 	if manager.state(item.ID) != nil {
 		t.Fatal("expected procs to be cleared after Stop")
@@ -357,5 +367,221 @@ func TestManagerBeginDeleteBlocksStartUntilEndDelete(t *testing.T) {
 	}
 	if manager.state(item.ID) == nil {
 		t.Fatal("expected a registered process after Start() succeeds post-EndDelete")
+	}
+}
+
+// TestManagerStartLogsDNSListenWarning covers arch M3
+// (docs/review-2026-07-11-go-architecture.md): dns.listen is deliberately
+// not stripped from the runtime config (it may be an intentional
+// single-instance choice), but starting an instance whose profile sets it
+// should log a warning about the cross-instance bind-conflict risk instead
+// of staying silent about it.
+func TestManagerStartLogsDNSListenWarning(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store := newManagerTestStore(t)
+	manager := NewManager(store, writeFakeMihomo(t, true, 0))
+	item := createManagerTestInstance(t, store, "DNSListen", 28110, 29110)
+	t.Cleanup(func() { _ = manager.Stop(item.ID) })
+
+	profile, ok := store.GetProfile(item.ProfileID)
+	if !ok {
+		t.Fatal("expected the auto-created profile to exist")
+	}
+	config := defaultUserConfig + "dns:\n  enable: true\n  listen: 0.0.0.0:1053\n"
+	if err := os.WriteFile(profile.ConfigPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Start(item.ID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	found := false
+	for _, line := range manager.Logs(item.ID) {
+		if strings.Contains(line, "dns.listen") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a dns.listen warning in the instance log, got: %v", manager.Logs(item.ID))
+	}
+}
+
+// TestManagerStartDoesNotLogDNSListenWarningWithoutIt is the negative
+// counterpart of TestManagerStartLogsDNSListenWarning: a profile that never
+// sets dns.listen should never produce the warning.
+func TestManagerStartDoesNotLogDNSListenWarningWithoutIt(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store := newManagerTestStore(t)
+	manager := NewManager(store, writeFakeMihomo(t, true, 0))
+	item := createManagerTestInstance(t, store, "NoDNSListen", 28111, 29111)
+	t.Cleanup(func() { _ = manager.Stop(item.ID) })
+
+	if err := manager.Start(item.ID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	for _, line := range manager.Logs(item.ID) {
+		if strings.Contains(line, "dns.listen") {
+			t.Fatalf("unexpected dns.listen warning with no dns.listen in the profile config: %q", line)
+		}
+	}
+}
+
+// TestManagerViewReportsPendingRestartAfterRunningUpdate covers arch M5
+// (docs/review-2026-07-11-go-architecture.md): editing a running instance's
+// stored fields (here, Mode) must surface as InstanceView.PendingRestart
+// until the instance is actually restarted, instead of silently implying
+// the change already took effect. The Mode change here must be an actual
+// change (rule -> global-chain, not rule -> rule) now that PendingRestart is
+// derived from ConfigUpdatedAt (N2, docs/review-2026-07-11-fix-verification-
+// round4.md), which UpdateWithOptions only bumps when a config-affecting
+// field's *value* actually changes.
+func TestManagerViewReportsPendingRestartAfterRunningUpdate(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store := newManagerTestStore(t)
+	manager := NewManager(store, writeFakeMihomo(t, true, 0))
+	item := createManagerTestInstance(t, store, "PendingRestart", 28112, 29112)
+	t.Cleanup(func() { _ = manager.Stop(item.ID) })
+
+	if err := manager.Start(item.ID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	waitForFakeMihomoReady(t, item)
+
+	view, ok := manager.View(item.ID)
+	if !ok {
+		t.Fatal("expected a view for the running instance")
+	}
+	if view.PendingRestart {
+		t.Fatal("expected PendingRestart to be false immediately after start")
+	}
+
+	// Ensure the update's ConfigUpdatedAt strictly postdates ps.started.
+	time.Sleep(5 * time.Millisecond)
+	if _, err := store.UpdateWithOptions(item.ID, updateInstanceOptions{Mode: InstanceModeGlobalChain}); err != nil {
+		t.Fatalf("UpdateWithOptions() error = %v", err)
+	}
+
+	view, ok = manager.View(item.ID)
+	if !ok {
+		t.Fatal("expected a view for the running instance")
+	}
+	if !view.PendingRestart {
+		t.Fatal("expected PendingRestart to be true after updating the running instance's stored fields")
+	}
+
+	views := manager.Views()
+	found := false
+	for _, v := range views {
+		if v.ID == item.ID {
+			found = true
+			if !v.PendingRestart {
+				t.Fatal("expected Views() to also report PendingRestart for the updated running instance")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected Views() to include %q", item.ID)
+	}
+}
+
+// TestManagerViewPendingRestartUnaffectedBySetSelection covers N2's main
+// fix (docs/review-2026-07-11-fix-verification-round4.md): decorateStatus
+// used to compare item.UpdatedAt, which Store.SetSelection also bumps on
+// every call -- so selecting a node on a running instance (already applied
+// live via putMihomoProxy, controller.go, before SetSelection ever runs)
+// incorrectly and permanently flipped PendingRestart true, contradicting the
+// "already applied" message the UI shows for that same action.
+func TestManagerViewPendingRestartUnaffectedBySetSelection(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store := newManagerTestStore(t)
+	manager := NewManager(store, writeFakeMihomo(t, true, 0))
+	item := createManagerTestInstance(t, store, "SelectionNoRestart", 28120, 29120)
+	t.Cleanup(func() { _ = manager.Stop(item.ID) })
+
+	if err := manager.Start(item.ID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	waitForFakeMihomoReady(t, item)
+
+	time.Sleep(5 * time.Millisecond)
+	if _, err := store.SetSelection(item.ID, "Proxy", "DIRECT"); err != nil {
+		t.Fatalf("SetSelection() error = %v", err)
+	}
+
+	view, ok := manager.View(item.ID)
+	if !ok {
+		t.Fatal("expected a view for the running instance")
+	}
+	if view.PendingRestart {
+		t.Fatal("expected PendingRestart to stay false after SetSelection on a running instance")
+	}
+}
+
+// TestManagerViewPendingRestartUnaffectedByNameOnlyUpdate is N2's other
+// false-positive case: renaming a running instance does not change anything
+// the generated runtime config depends on.
+func TestManagerViewPendingRestartUnaffectedByNameOnlyUpdate(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store := newManagerTestStore(t)
+	manager := NewManager(store, writeFakeMihomo(t, true, 0))
+	item := createManagerTestInstance(t, store, "RenameNoRestart", 28121, 29121)
+	t.Cleanup(func() { _ = manager.Stop(item.ID) })
+
+	if err := manager.Start(item.ID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	waitForFakeMihomoReady(t, item)
+
+	time.Sleep(5 * time.Millisecond)
+	if _, err := store.UpdateWithOptions(item.ID, updateInstanceOptions{Name: "Renamed"}); err != nil {
+		t.Fatalf("UpdateWithOptions() error = %v", err)
+	}
+
+	view, ok := manager.View(item.ID)
+	if !ok {
+		t.Fatal("expected a view for the running instance")
+	}
+	if view.PendingRestart {
+		t.Fatal("expected PendingRestart to stay false after a name-only update on a running instance")
+	}
+}
+
+// TestManagerRestoreSelectionExitsWhenProcessDies covers conc L-3
+// (docs/review-2026-07-11-go-concurrency-performance.md): once ps.done
+// closes, restoreSelection must give up promptly instead of continuing its
+// up-to-5s retry loop against a controller port nothing is listening on
+// anymore. item.ControllerPort here points nowhere real, so every
+// putMihomoProxy attempt fails immediately (connection refused); the old
+// implementation's unconditional time.Sleep(200ms) loop had no way to
+// notice ps.done at all and would have run for the entire 5s window.
+func TestManagerRestoreSelectionExitsWhenProcessDies(t *testing.T) {
+	store := newManagerTestStore(t)
+	manager := NewManager(store, "")
+	item := createManagerTestInstance(t, store, "RestoreExit", 28113, 29113)
+	if _, err := store.SetSelection(item.ID, "Proxy", "US-01"); err != nil {
+		t.Fatal(err)
+	}
+	fresh, ok := store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected the instance to still exist")
+	}
+
+	ps := &processState{done: make(chan struct{})}
+	buf := newLogBuffer(100)
+
+	returned := make(chan struct{})
+	go func() {
+		manager.restoreSelection(context.Background(), fresh, ps, buf)
+		close(returned)
+	}()
+	close(ps.done)
+
+	select {
+	case <-returned:
+	case <-time.After(1 * time.Second):
+		t.Fatal("restoreSelection did not exit promptly after ps.done closed (want well under the 5s retry window)")
 	}
 }

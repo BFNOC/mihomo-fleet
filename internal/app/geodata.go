@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 var geodataFiles = []struct {
@@ -257,16 +255,15 @@ type geodataNeeds struct {
 	ip   bool
 }
 
-func configGeodataNeeds(profile *Profile) geodataNeeds {
-	if profile == nil || profile.ConfigPath == "" {
-		return geodataNeeds{}
-	}
-	raw, err := os.ReadFile(profile.ConfigPath)
-	if err != nil {
-		return geodataNeeds{}
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+// configGeodataNeeds inspects a profile's already-parsed config for GEOSITE/
+// GEOIP rule references. It takes the parsed map directly (conc L-6,
+// docs/review-2026-07-11-go-concurrency-performance.md) rather than a
+// *Profile it would read and YAML-parse itself -- the start path already has
+// this from writeRuntimeConfig's returned snapshot, and re-parsing a
+// potentially multi-MB subscription config a second time on every single
+// start was wasted work.
+func configGeodataNeeds(cfg map[string]any) geodataNeeds {
+	if cfg == nil {
 		return geodataNeeds{}
 	}
 	rules, ok := cfg["rules"].([]any)

@@ -1,11 +1,20 @@
+import os
+
 from playwright.sync_api import expect, sync_playwright
+
+# 07-04 L9: hardcoded macOS-only path, unusable outside a local manual run on
+# that platform. FLEET_SMOKE_CHROME lets CI or a non-macOS dev machine point
+# at their own Chrome/Chromium binary; the macOS path stays as the default so
+# this remains a drop-in replacement for the previous hardcoded behavior.
+DEFAULT_CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
 def main():
+    chrome_path = os.environ.get("FLEET_SMOKE_CHROME", DEFAULT_CHROME_PATH)
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            executable_path=chrome_path,
         )
         page = browser.new_page(viewport={"width": 1366, "height": 820})
         page.goto("http://127.0.0.1:47891")

@@ -36,13 +36,18 @@ const (
 // caller-supplied budget.
 var mihomoAPIClient = &http.Client{}
 
-func putMihomoProxy(item *Instance, group, proxy string) error {
+// putMihomoProxy pushes a single group -> proxy selection to item's mihomo
+// controller. ctx (conc L-3, docs/review-2026-07-11-go-concurrency-performance.md)
+// lets callers bound/cancel the request against their own lifetime --
+// handleSelection uses the HTTP request's context, restoreSelection uses the
+// Manager's -- on top of the fixed 2s request budget applied below.
+func putMihomoProxy(ctx context.Context, item *Instance, group, proxy string) error {
 	endpoint := "http://127.0.0.1:" + strconv.Itoa(item.ControllerPort) + "/proxies/" + url.PathEscape(group)
 	body, err := json.Marshal(map[string]string{"name": proxy})
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
 	if err != nil {

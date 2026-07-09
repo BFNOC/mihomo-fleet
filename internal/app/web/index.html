@@ -136,6 +136,7 @@
               <div>
                 <h2 id="detailName">实例</h2>
                 <p id="detailMeta">已停止</p>
+                <span id="pendingRestartHint" class="pending-restart-chip hidden">配置已修改，重启后生效</span>
               </div>
               <div class="actions">
                 <button id="startBtn" class="primary" type="button">启动</button>
@@ -153,14 +154,14 @@
               <div><span>控制端口</span><strong id="metricController">0</strong></div>
             </div>
 
-            <div class="tabs" role="tablist">
-              <button class="tab active" data-tab="overview" type="button">概览</button>
-              <button class="tab" data-tab="config" type="button">配置</button>
-              <button class="tab" data-tab="proxies" type="button">节点</button>
-              <button class="tab" data-tab="logs" type="button">日志</button>
+            <div class="tabs" role="tablist" aria-label="实例详情">
+              <button id="tab-btn-overview" class="tab active" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="tab-overview">概览</button>
+              <button id="tab-btn-config" class="tab" data-tab="config" type="button" role="tab" aria-selected="false" aria-controls="tab-config" tabindex="-1">配置</button>
+              <button id="tab-btn-proxies" class="tab" data-tab="proxies" type="button" role="tab" aria-selected="false" aria-controls="tab-proxies" tabindex="-1">节点</button>
+              <button id="tab-btn-logs" class="tab" data-tab="logs" type="button" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1">日志</button>
             </div>
 
-            <div id="tab-overview" class="tab-panel">
+            <div id="tab-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-overview" tabindex="-1">
               <div class="split">
                 <section class="panel">
                   <h3>端口</h3>
@@ -185,7 +186,7 @@
                     <dd id="overviewSelection"></dd>
                   </dl>
                 </section>
-                <section class="panel">
+                <section id="editForm" class="panel">
                   <h3>编辑基础信息</h3>
                   <label class="stacked">
                     <span>名称</span>
@@ -231,7 +232,7 @@
               </div>
             </div>
 
-            <div id="tab-config" class="tab-panel hidden">
+            <div id="tab-config" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-btn-config" tabindex="-1">
               <section class="panel">
                 <div class="panel-title">
                   <h3>配置档</h3>
@@ -262,10 +263,21 @@
                 <div class="actions">
                   <button id="saveConfig" class="primary" type="button">保存配置</button>
                 </div>
+                <div class="orphan-profiles">
+                  <h3>清理未使用的配置档</h3>
+                  <p>仅列出未被任何实例引用的配置档（例如实例删除后残留的配置），避免误删仍在使用中的配置。</p>
+                  <div class="form-grid two">
+                    <label class="stacked">
+                      <span>未使用的配置档</span>
+                      <select id="orphanProfileSelect"></select>
+                    </label>
+                    <button id="deleteOrphanProfileBtn" class="danger" type="button" disabled>删除所选配置档</button>
+                  </div>
+                </div>
               </section>
             </div>
 
-            <div id="tab-proxies" class="tab-panel hidden">
+            <div id="tab-proxies" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-btn-proxies" tabindex="-1">
               <section class="panel">
                 <div class="panel-title">
                   <h3>Mihomo 节点组</h3>
@@ -283,18 +295,18 @@
                   <button id="testAllLatency" type="button">测速各组当前</button>
                   <button id="testAllRealLatency" type="button">真延迟各组当前</button>
                 </div>
-                <input id="proxyFilter" class="proxy-filter" placeholder="筛选节点">
+                <input id="proxyFilter" class="proxy-filter" placeholder="筛选节点" aria-label="筛选节点">
                 <div id="proxiesList" class="proxy-list"></div>
               </section>
             </div>
 
-            <div id="tab-logs" class="tab-panel hidden">
+            <div id="tab-logs" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-btn-logs" tabindex="-1">
               <section class="panel">
                 <div class="panel-title">
                   <h3>进程日志</h3>
                   <p>当前实例最近的标准输出和错误输出。</p>
                 </div>
-                <pre id="logs" class="logs" tabindex="0"></pre>
+                <pre id="logs" class="logs" tabindex="0" aria-label="实例日志"></pre>
               </section>
             </div>
           </section>
