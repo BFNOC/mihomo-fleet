@@ -28,8 +28,9 @@ Python 服务。
 ./mihomo-fleet -version
 ```
 
-WebUI 的 YAML 编辑器使用 CodeMirror 6，源码位于 `internal/app/web-src`，构建产物会提交到
-`internal/app/web/vendor` 并由 Go 二进制嵌入。修改前端编辑器后使用 pnpm 重新构建和校验：
+WebUI 源码位于 `internal/app/web-src`（模块化 ES modules）。构建产物提交到
+`internal/app/web/app.js` 与 `internal/app/web/vendor`，并由 Go 二进制嵌入。
+修改前端后使用 pnpm 重新构建和校验：
 
 ```bash
 pnpm install --frozen-lockfile

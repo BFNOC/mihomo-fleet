@@ -5,8 +5,8 @@
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
-    "test:web": "node --test internal/app/web-src/*.test.js",
-    "verify:web": "pnpm build:web && git diff --exit-code -- internal/app/web/vendor/yaml-editor.js internal/app/web/vendor/THIRD_PARTY_NOTICES.txt"
+    "test:web": "node --test internal/app/web-src/app-logic.test.js internal/app/web-src/format.test.js",
+    "verify:web": "pnpm build:web && git diff --exit-code -- internal/app/web/app.js internal/app/web/vendor/THIRD_PARTY_NOTICES.txt"
   },
   "dependencies": {
     "@codemirror/lang-yaml": "6.1.3",

@@ -4,15 +4,16 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
-const outputDir = path.join(root, "internal/app/web/vendor");
+const webDir = path.join(root, "internal/app/web");
+const outputDir = path.join(webDir, "vendor");
 
 await mkdir(outputDir, { recursive: true });
+
 await build({
-  entryPoints: [path.join(root, "internal/app/web-src/yaml-editor.js")],
-  outfile: path.join(outputDir, "yaml-editor.js"),
+  entryPoints: [path.join(root, "internal/app/web-src/app.js")],
+  outfile: path.join(webDir, "app.js"),
   bundle: true,
   format: "iife",
-  globalName: "MihomoFleetWeb",
   legalComments: "eof",
   minify: true,
   platform: "browser",

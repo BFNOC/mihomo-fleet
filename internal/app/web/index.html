@@ -10,15 +10,15 @@
     <div class="shell">
       <header class="topbar">
         <div class="brand">
-          <div class="mark">MF</div>
-          <div>
+          <div class="mark" aria-hidden="true">MF</div>
+          <div class="brand-copy">
             <h1>Mihomo Fleet</h1>
             <p id="systemLine">正在加载本地控制器</p>
           </div>
         </div>
         <label class="selector">
           <span>当前实例</span>
-          <select id="instanceSelect"></select>
+          <select id="instanceSelect" aria-label="当前实例"></select>
         </label>
       </header>
 
@@ -126,6 +126,7 @@
           </section>
 
           <section id="emptyPanel" class="empty">
+            <div class="empty-mark" aria-hidden="true">MF</div>
             <h2>还没有实例</h2>
             <p>创建一个本地 mihomo 实例。Fleet 会分配端口、写入运行配置，并让控制器绑定到本机回环地址。</p>
             <button id="emptyCreate" class="primary" type="button">创建第一个实例</button>
@@ -154,7 +155,7 @@
               <div><span>控制端口</span><strong id="metricController">0</strong></div>
             </div>
 
-            <div class="tabs" role="tablist" aria-label="实例详情">
+            <div id="tabList" class="tabs" role="tablist" aria-label="实例详情">
               <button id="tab-btn-overview" class="tab active" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="tab-overview">概览</button>
               <button id="tab-btn-config" class="tab" data-tab="config" type="button" role="tab" aria-selected="false" aria-controls="tab-config" tabindex="-1">配置</button>
               <button id="tab-btn-proxies" class="tab" data-tab="proxies" type="button" role="tab" aria-selected="false" aria-controls="tab-proxies" tabindex="-1">节点</button>
@@ -322,7 +323,6 @@
         </section>
       </main>
     </div>
-    <script src="/vendor/yaml-editor.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

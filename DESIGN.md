@@ -6,24 +6,29 @@ Quiet workstation utility. The UI should feel like a reliable local control surf
 
 ## Theme
 
-Light theme by default. The operator is likely configuring ports and instances during normal desktop work, with terminal windows and browser docs open, where a clear light surface is easier to scan.
+Light theme only. Warm paper neutrals under normal desktop ambient light. No dark mode.
 
 ## Color
 
-Use restrained tinted neutrals with one green-blue accent for active control state and a muted amber for warnings. Avoid dark blue/slate dominance and avoid purple gradients.
+Restrained strategy: warm tinted neutrals (paper beige / soft stone) with one teal-green accent for active control state, muted amber for warnings, and coral for danger. Avoid slate-blue dominance, purple gradients, and pure black/white.
 
 ## Typography
 
-Use system UI fonts. Keep labels compact, numeric fields aligned, and large headings rare.
+System UI stack with CJK fallbacks. Compact labels, tabular numbers for ports and latency, rare large headings.
 
 ## Layout
 
-Persistent top bar with the active instance selector. Main workspace uses a sidebar for fleet membership and a detail pane for selected instance controls. Use tables and compact panels rather than marketing cards.
+Sticky top bar with brand + active instance selector. Sidebar for fleet membership and port matrix. Detail pane for selected instance controls. Prefer compact panels, metric strips, and tables over marketing cards.
 
 ## Components
 
 - Dropdown for active instance selection.
-- Icon buttons for lifecycle actions.
-- Segmented controls for views.
+- Dense buttons for lifecycle actions.
+- Segmented controls for create-source and detail tabs.
 - Inline forms for create/edit; avoid modal-first workflows.
-- Fixed-height log and config editor surfaces.
+- Fixed-height light log and YAML editor surfaces.
+- Status dots and pending-restart chips for runtime evidence.
+
+## Frontend structure
+
+Source lives in `internal/app/web-src` as ES modules (`app.js`, `api.js`, `state.js`, `format.js`, `latency.js`, `dom.js`, `i18n.js`, `constants.js`, `yaml-editor.js`). `pnpm build:web` bundles into `internal/app/web/app.js` for Go embed.
