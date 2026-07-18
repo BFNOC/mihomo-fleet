@@ -568,6 +568,133 @@ func TestStoreSharesProfileAndPersistsPerInstanceSelection(t *testing.T) {
 	}
 }
 
+func TestStoreCreateAtomicallyCreatesProfileWithInstance(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWithOptions(createInstanceOptions{
+		Name:           "HK",
+		ProfileName:    "HK 配置档",
+		Config:         defaultUserConfig,
+		MixedPort:      28021,
+		ControllerPort: 29021,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.ProfileID == "" {
+		t.Fatal("expected an implicitly created profile")
+	}
+	profile, ok := store.GetProfile(item.ProfileID)
+	if !ok {
+		t.Fatal("expected the implicit profile to exist")
+	}
+	if item.UserConfigPath != profile.ConfigPath {
+		t.Fatalf("instance config path = %q, profile config path = %q", item.UserConfigPath, profile.ConfigPath)
+	}
+	if got := len(store.List()); got != 1 {
+		t.Fatalf("instances = %d, want 1", got)
+	}
+	if got := len(store.ListProfiles()); got != 1 {
+		t.Fatalf("profiles = %d, want 1", got)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reloaded.Get(item.ID)
+	if !ok || got.ProfileID != profile.ID {
+		t.Fatalf("reloaded instance = %+v, want profile %q", got, profile.ID)
+	}
+	if _, ok := reloaded.GetProfile(profile.ID); !ok {
+		t.Fatal("expected the implicit profile to persist with the instance")
+	}
+}
+
+func TestStoreCreateWithImplicitProfileCleansUpAfterValidationFailure(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.CreateWithOptions(createInstanceOptions{
+		Name:           "Chain gateway",
+		ProfileName:    "Chain profile",
+		Config:         subscriptionConfig,
+		MixedPort:      28022,
+		ControllerPort: 29022,
+		Mode:           InstanceModeGlobalChain,
+		Chain:          []string{"missing", globalChainSelectGroupName},
+	})
+	if err == nil {
+		t.Fatal("expected CreateWithOptions to reject the invalid chain")
+	}
+	if !errors.Is(err, errValidation) {
+		t.Fatalf("err = %v, want errValidation", err)
+	}
+	if err.Error() != `chain references unknown proxy or group "missing"` {
+		t.Fatalf("err.Error() = %q", err.Error())
+	}
+	if got := len(store.List()); got != 0 {
+		t.Fatalf("instances = %d, want 0", got)
+	}
+	if got := len(store.ListProfiles()); got != 0 {
+		t.Fatalf("profiles = %d, want 0", got)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "profiles"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("profile directory contains %d entries after rollback", len(entries))
+	}
+}
+
+func TestStoreCreateWithImplicitSubscriptionProfileCleansUpAfterValidationFailure(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.CreateWithOptions(createInstanceOptions{
+		Name:                   "Subscription chain",
+		ProfileName:            "Subscription profile",
+		SubscriptionURL:        "https://example.com/sub",
+		SubscriptionAutoUpdate: true,
+		SubscriptionInterval:   360,
+		SubscriptionFetch:      &subscriptionFetchResult{Config: subscriptionConfig},
+		MixedPort:              28023,
+		ControllerPort:         29023,
+		Mode:                   InstanceModeGlobalChain,
+		Chain:                  []string{"missing", globalChainSelectGroupName},
+	})
+	if err == nil || !errors.Is(err, errValidation) {
+		t.Fatalf("err = %v, want errValidation", err)
+	}
+	if got := len(store.List()); got != 0 {
+		t.Fatalf("instances = %d, want 0", got)
+	}
+	if got := len(store.ListProfiles()); got != 0 {
+		t.Fatalf("profiles = %d, want 0", got)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "profiles"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("profile directory contains %d entries after subscription rollback", len(entries))
+	}
+}
+
 func TestStorePersistsGlobalChainFieldsAndCloneCopiesThem(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 
@@ -919,6 +1046,46 @@ func TestStoreUpdateWithOptionsSwitchingProfileClearsSelection(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateWithOptionsRejectsProfileAndConfigChangeTogether(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, err := store.CreateProfile("A", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileB, err := store.CreateProfile("B", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Test", profileA.ID, "", 28042, 29042)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.UpdateWithOptions(item.ID, updateInstanceOptions{
+		ProfileID: profileB.ID,
+		Config:    "proxies: []\nrules:\n  - MATCH,REJECT\n",
+	})
+	if err == nil || !errors.Is(err, errValidation) {
+		t.Fatalf("err = %v, want errValidation", err)
+	}
+	got, _ := store.Get(item.ID)
+	if got.ProfileID != profileA.ID {
+		t.Fatalf("ProfileID = %q, want unchanged %q", got.ProfileID, profileA.ID)
+	}
+	config, err := store.ReadProfileConfig(profileB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config != subscriptionConfig {
+		t.Fatalf("profile B config = %q, want unchanged", config)
+	}
+}
+
 func TestStoreUpdateWithOptionsConfigRewritesProfileFile(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 
@@ -1164,6 +1331,7 @@ func TestStoreUpdateWithOptionsRollsBackOnSaveFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	originalName := item.Name
+	originalProfileUpdatedAt := profile.UpdatedAt
 
 	breakStoreSaves(t, dir)
 
@@ -1184,6 +1352,13 @@ func TestStoreUpdateWithOptionsRollsBackOnSaveFailure(t *testing.T) {
 	}
 	if string(raw) != defaultUserConfig {
 		t.Fatalf("profile config file was not rolled back: got %q", raw)
+	}
+	gotProfile, ok := store.GetProfile(profile.ID)
+	if !ok {
+		t.Fatal("expected profile to remain after failed update")
+	}
+	if !gotProfile.UpdatedAt.Equal(originalProfileUpdatedAt) {
+		t.Fatalf("profile UpdatedAt = %s, want rollback to %s", gotProfile.UpdatedAt, originalProfileUpdatedAt)
 	}
 }
 

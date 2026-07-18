@@ -28,6 +28,17 @@ Python 服务。
 ./mihomo-fleet -version
 ```
 
+WebUI 的 YAML 编辑器使用 CodeMirror 6，源码位于 `internal/app/web-src`，构建产物会提交到
+`internal/app/web/vendor` 并由 Go 二进制嵌入。修改前端编辑器后使用 pnpm 重新构建和校验：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm test:web
+pnpm verify:web
+```
+
+最终程序运行时仍不需要 Node.js 或 pnpm。
+
 ## 版本和发布
 
 当前版本以根目录 `VERSION` 文件为准。
@@ -43,6 +54,9 @@ mihomo-fleet-darwin-arm64
 mihomo-fleet-windows-amd64.exe
 mihomo-fleet-windows-arm64.exe
 ```
+
+构建 artifact 保留 14 天；每周清理 14 天前的 artifact 和 30 天前已完成的 workflow run，
+不会删除 Release 及其 assets。
 
 ## 运行
 

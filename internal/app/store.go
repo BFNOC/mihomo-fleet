@@ -50,6 +50,7 @@ var (
 	errProfileNotFound = errors.New("profile not found")
 	errPortUnavailable = errors.New("port unavailable")
 	errValidation      = errors.New("invalid instance configuration")
+	errConflict        = errors.New("instance state conflict")
 )
 
 type profileNotFoundError struct {
@@ -80,6 +81,14 @@ func (err validationError) Error() string { return err.msg }
 
 func (err validationError) Is(target error) bool { return target == errValidation }
 
+type conflictError struct {
+	msg string
+}
+
+func (err conflictError) Error() string { return err.msg }
+
+func (err conflictError) Is(target error) bool { return target == errConflict }
+
 type Store struct {
 	mu              sync.RWMutex
 	dataDir         string
@@ -98,32 +107,38 @@ type ProfilePatch struct {
 }
 
 type createInstanceOptions struct {
-	Name            string
-	ProfileID       string
-	Config          string
-	MixedPort       int
-	ProxyBind       string
-	ControllerPort  int
-	MixedStart      int
-	ControllerStart int
-	Mode            string
-	LocalProxies    string
-	Chain           []string
-	SelectedProxies map[string]string
-	SelectedGroup   string
-	SelectedProxy   string
+	Name                   string
+	ProfileID              string
+	ProfileName            string
+	Config                 string
+	SubscriptionURL        string
+	SubscriptionAutoUpdate bool
+	SubscriptionInterval   int
+	SubscriptionFetch      *subscriptionFetchResult
+	MixedPort              int
+	ProxyBind              string
+	ControllerPort         int
+	MixedStart             int
+	ControllerStart        int
+	Mode                   string
+	LocalProxies           string
+	Chain                  []string
+	SelectedProxies        map[string]string
+	SelectedGroup          string
+	SelectedProxy          string
 }
 
 type updateInstanceOptions struct {
-	Name           string
-	ProfileID      string
-	Config         string
-	MixedPort      int
-	ProxyBind      *string
-	ControllerPort int
-	Mode           string
-	LocalProxies   *string
-	Chain          *[]string
+	Name              string
+	ProfileID         string
+	ExpectedProfileID string
+	Config            string
+	MixedPort         int
+	ProxyBind         *string
+	ControllerPort    int
+	Mode              string
+	LocalProxies      *string
+	Chain             *[]string
 }
 
 func NewStore(dataDir string) (*Store, error) {
@@ -261,6 +276,19 @@ func (s *Store) CreateSubscriptionProfile(name, subscriptionURL string, autoUpda
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	profile, err := s.createSubscriptionProfileRecordLocked(name, subscriptionURL, autoUpdate, intervalMinutes, fetched)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.saveLocked(); err != nil {
+		delete(s.profiles, profile.ID)
+		_ = os.RemoveAll(filepath.Dir(profile.ConfigPath))
+		return nil, err
+	}
+	return cloneProfile(profile), nil
+}
+
+func (s *Store) createSubscriptionProfileRecordLocked(name, subscriptionURL string, autoUpdate bool, intervalMinutes int, fetched *subscriptionFetchResult) (*Profile, error) {
 	if fetched == nil {
 		return nil, errors.New("fetched subscription is required")
 	}
@@ -291,12 +319,7 @@ func (s *Store) CreateSubscriptionProfile(name, subscriptionURL string, autoUpda
 	profile.HomeURL = fetched.HomeURL
 	profile.SubscriptionInfo = fetched.Info
 	profile.UpdatedAt = now
-	if err := s.saveLocked(); err != nil {
-		delete(s.profiles, profile.ID)
-		_ = os.RemoveAll(filepath.Dir(profile.ConfigPath))
-		return nil, err
-	}
-	return cloneProfile(profile), nil
+	return profile, nil
 }
 
 func (s *Store) UpdateProfile(id, name, config string) (*Profile, error) {
@@ -794,7 +817,22 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 	}
 	var createdProfile *Profile
 	if opts.ProfileID == "" {
-		profile, err := s.createProfileRecordLocked(opts.Name+" profile", opts.Config)
+		profileName := strings.TrimSpace(opts.ProfileName)
+		if profileName == "" {
+			profileName = opts.Name + " profile"
+		}
+		var profile *Profile
+		if opts.SubscriptionFetch != nil {
+			profile, err = s.createSubscriptionProfileRecordLocked(
+				profileName,
+				opts.SubscriptionURL,
+				opts.SubscriptionAutoUpdate,
+				opts.SubscriptionInterval,
+				opts.SubscriptionFetch,
+			)
+		} else {
+			profile, err = s.createProfileRecordLocked(profileName, opts.Config)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -914,6 +952,12 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	item, ok := s.items[id]
 	if !ok {
 		return nil, fmt.Errorf("instance %q not found", id)
+	}
+	if opts.Config != "" && opts.ProfileID != "" && item.ProfileID != opts.ProfileID {
+		return nil, validationError{msg: "profileId and config cannot be changed in the same request"}
+	}
+	if opts.ExpectedProfileID != "" && item.ProfileID != opts.ExpectedProfileID {
+		return nil, conflictError{msg: "profile changed while configuration was being edited"}
 	}
 	nextName := item.Name
 	if opts.Name != "" {
@@ -1042,6 +1086,9 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		item.Chain = nextChain
 	}
 	var previousConfig []byte
+	var configPath string
+	var configProfile *Profile
+	var previousProfileUpdatedAt time.Time
 	if opts.Config != "" {
 		profile, ok := s.profiles[item.ProfileID]
 		if !ok {
@@ -1054,7 +1101,10 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 			*item = *cloneInstance(&snapshot)
 			return nil, err
 		}
-		if err := writeFileAtomic(profile.ConfigPath, []byte(opts.Config), 0o600); err != nil {
+		configPath = profile.ConfigPath
+		configProfile = profile
+		previousProfileUpdatedAt = profile.UpdatedAt
+		if err := writeFileAtomic(configPath, []byte(opts.Config), 0o600); err != nil {
 			*item = *cloneInstance(&snapshot)
 			return nil, err
 		}
@@ -1067,12 +1117,12 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	}
 	if err := s.saveLocked(); err != nil {
 		*item = *cloneInstance(&snapshot)
-		if opts.Config != "" && previousConfig != nil {
-			profile, ok := s.profiles[nextProfileID]
-			if ok {
-				if rollbackErr := writeFileAtomic(profile.ConfigPath, previousConfig, 0o600); rollbackErr != nil {
-					log.Printf("rollback profile config %s failed: %v", nextProfileID, rollbackErr)
-				}
+		if configProfile != nil {
+			configProfile.UpdatedAt = previousProfileUpdatedAt
+		}
+		if configPath != "" && previousConfig != nil {
+			if rollbackErr := writeFileAtomic(configPath, previousConfig, 0o600); rollbackErr != nil {
+				log.Printf("rollback profile config failed: %v", rollbackErr)
 			}
 		}
 		return nil, err

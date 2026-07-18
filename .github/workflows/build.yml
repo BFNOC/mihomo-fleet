@@ -45,6 +45,23 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: 安装 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: 启用 pnpm
+        run: corepack enable
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 测试前端逻辑
+        run: pnpm test:web
+
+      - name: 校验前端构建产物
+        run: pnpm verify:web
+
       - name: 读取版本
         id: version
         shell: bash
@@ -87,6 +104,7 @@ jobs:
           name: mihomo-fleet-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/mihomo-fleet-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           if-no-files-found: error
+          retention-days: 14
 
   release:
     name: 发布 Release

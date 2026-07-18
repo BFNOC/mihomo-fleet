@@ -552,6 +552,50 @@ func TestHandleInstanceUpdateReportsPortConflict(t *testing.T) {
 	}
 }
 
+func TestHandleInstanceUpdateRejectsStaleExpectedProfileIDWithoutOverwritingNewProfile(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	profileA, err := c.store.CreateProfile("Profile A", "proxies: []\nrules:\n  - MATCH,DIRECT\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileB, err := c.store.CreateProfile("Profile B", "proxies: []\nrules:\n  - MATCH,REJECT\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := postInstanceJSON(t, c, `{"name":"First","profileId":"`+profileA.ID+`","mixedPort":28005,"controllerPort":29005}`, http.StatusCreated)
+	if _, err := c.store.UpdateWithOptions(instance.ID, updateInstanceOptions{ProfileID: profileB.ID}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := c.store.ReadProfileConfig(profileB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"expectedProfileId":"` + profileA.ID + `","config":"proxies: []\nrules:\n  - MATCH,DIRECT\n"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/instances/"+instance.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstance(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "profile changed while configuration was being edited") {
+		t.Fatalf("body = %q, want stale-profile error", rec.Body.String())
+	}
+	got, ok := c.store.Get(instance.ID)
+	if !ok || got.ProfileID != profileB.ID {
+		t.Fatalf("instance = %+v, want profile %q", got, profileB.ID)
+	}
+	after, err := c.store.ReadProfileConfig(profileB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("new profile config was overwritten: got %q, want %q", after, before)
+	}
+}
+
 // TestHandleInstanceUpdateSamePortsReturnsBadRequest covers H1
 // (REVIEW-2026-07-04.md): setting mixedPort == controllerPort on update is a
 // validation failure (400), not a port-availability conflict (409) -- unlike

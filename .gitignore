@@ -1,6 +1,8 @@
 /.mihomo-fleet/
 /mihomo-fleet
 /.ccg/
+/graphify-out/
+/node_modules/
 /.antigravitycli/
 /.claude/
 /.codex/

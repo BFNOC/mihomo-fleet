@@ -677,10 +677,80 @@ label,
   overflow-wrap: anywhere;
 }
 
+.config-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0 8px;
+}
+
+.config-editor-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-weight: 650;
+}
+
+.config-editor-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.config-editor-status[data-state="dirty"],
+.config-editor-status[data-state="saving"] {
+  color: var(--warn-text);
+}
+
+.config-editor-status[data-state="error"] {
+  color: var(--danger);
+}
+
 .code {
+  height: min(56vh, 560px);
   min-height: 430px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   tab-size: 2;
+}
+
+.code:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.code .cm-editor,
+.code .cm-scroller {
+  height: 100%;
+}
+
+.code .cm-editor.cm-focused {
+  outline: 0;
+}
+
+.code .cm-gutters {
+  border-right-color: var(--line);
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.code .cm-activeLine,
+.code .cm-activeLineGutter {
+  background: var(--accent-soft);
+}
+
+.config-editor-error {
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .kv {
@@ -935,9 +1005,15 @@ label,
   .detail-head,
   .side-head,
   .panel-title,
+  .config-editor-toolbar,
   .actions {
     align-items: stretch;
     flex-wrap: wrap;
+  }
+
+  .code {
+    height: min(58vh, 480px);
+    min-height: 340px;
   }
 
   .proxy-group-head {

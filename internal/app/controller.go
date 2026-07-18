@@ -499,15 +499,19 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			Name           string   `json:"name"`
-			ProfileID      string   `json:"profileId"`
-			Config         string   `json:"config"`
-			MixedPort      int      `json:"mixedPort"`
-			ProxyBind      string   `json:"proxyBind"`
-			ControllerPort int      `json:"controllerPort"`
-			Mode           string   `json:"mode"`
-			LocalProxies   string   `json:"localProxies"`
-			Chain          []string `json:"chain"`
+			Name                  string   `json:"name"`
+			ProfileID             string   `json:"profileId"`
+			ProfileName           string   `json:"profileName"`
+			Config                string   `json:"config"`
+			SubscriptionURL       string   `json:"subscriptionUrl"`
+			AutoUpdate            *bool    `json:"autoUpdate"`
+			UpdateIntervalMinutes int      `json:"updateIntervalMinutes"`
+			MixedPort             int      `json:"mixedPort"`
+			ProxyBind             string   `json:"proxyBind"`
+			ControllerPort        int      `json:"controllerPort"`
+			Mode                  string   `json:"mode"`
+			LocalProxies          string   `json:"localProxies"`
+			Chain                 []string `json:"chain"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -516,16 +520,46 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.Name) == "" {
 			req.Name = "New instance"
 		}
+		subscriptionURL := strings.TrimSpace(req.SubscriptionURL)
+		if subscriptionURL != "" && strings.TrimSpace(req.Config) != "" {
+			writeError(w, http.StatusBadRequest, errors.New("subscriptionUrl and config cannot both be set"))
+			return
+		}
+		if req.ProfileID != "" && subscriptionURL != "" {
+			writeError(w, http.StatusBadRequest, errors.New("subscriptionUrl requires a new profile"))
+			return
+		}
+		var subscriptionFetched *subscriptionFetchResult
+		autoUpdate := false
+		if subscriptionURL != "" {
+			autoUpdate = true
+			if req.AutoUpdate != nil {
+				autoUpdate = *req.AutoUpdate
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+			defer cancel()
+			var err error
+			subscriptionFetched, err = fetchSubscription(ctx, c.subscriptionClient, subscriptionURL, c.subscriptionUserAgent())
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
 		item, err := c.store.CreateWithOptions(createInstanceOptions{
-			Name:           req.Name,
-			ProfileID:      req.ProfileID,
-			Config:         req.Config,
-			MixedPort:      req.MixedPort,
-			ProxyBind:      req.ProxyBind,
-			ControllerPort: req.ControllerPort,
-			Mode:           req.Mode,
-			LocalProxies:   req.LocalProxies,
-			Chain:          req.Chain,
+			Name:                   req.Name,
+			ProfileID:              req.ProfileID,
+			ProfileName:            req.ProfileName,
+			Config:                 req.Config,
+			SubscriptionURL:        subscriptionURL,
+			SubscriptionAutoUpdate: autoUpdate,
+			SubscriptionInterval:   req.UpdateIntervalMinutes,
+			SubscriptionFetch:      subscriptionFetched,
+			MixedPort:              req.MixedPort,
+			ProxyBind:              req.ProxyBind,
+			ControllerPort:         req.ControllerPort,
+			Mode:                   req.Mode,
+			LocalProxies:           req.LocalProxies,
+			Chain:                  req.Chain,
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -646,15 +680,16 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, view)
 	case http.MethodPut:
 		var req struct {
-			Name           string    `json:"name"`
-			ProfileID      string    `json:"profileId"`
-			Config         string    `json:"config"`
-			MixedPort      int       `json:"mixedPort"`
-			ProxyBind      *string   `json:"proxyBind"`
-			ControllerPort int       `json:"controllerPort"`
-			Mode           string    `json:"mode"`
-			LocalProxies   *string   `json:"localProxies"`
-			Chain          *[]string `json:"chain"`
+			Name              string    `json:"name"`
+			ProfileID         string    `json:"profileId"`
+			ExpectedProfileID string    `json:"expectedProfileId"`
+			Config            string    `json:"config"`
+			MixedPort         int       `json:"mixedPort"`
+			ProxyBind         *string   `json:"proxyBind"`
+			ControllerPort    int       `json:"controllerPort"`
+			Mode              string    `json:"mode"`
+			LocalProxies      *string   `json:"localProxies"`
+			Chain             *[]string `json:"chain"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -663,6 +698,10 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		current, ok := c.store.Get(id)
 		if !ok {
 			http.NotFound(w, r)
+			return
+		}
+		if req.ExpectedProfileID != "" && current.ProfileID != req.ExpectedProfileID {
+			writeError(w, http.StatusConflict, errors.New("profile changed while configuration was being edited"))
 			return
 		}
 		if c.manager.Busy(id) && (req.MixedPort > 0 || req.ControllerPort > 0) {
@@ -700,15 +739,16 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			}
 		}
 		item, err := c.store.UpdateWithOptions(id, updateInstanceOptions{
-			Name:           req.Name,
-			ProfileID:      req.ProfileID,
-			Config:         req.Config,
-			MixedPort:      req.MixedPort,
-			ProxyBind:      req.ProxyBind,
-			ControllerPort: req.ControllerPort,
-			Mode:           req.Mode,
-			LocalProxies:   req.LocalProxies,
-			Chain:          req.Chain,
+			Name:              req.Name,
+			ProfileID:         req.ProfileID,
+			ExpectedProfileID: req.ExpectedProfileID,
+			Config:            req.Config,
+			MixedPort:         req.MixedPort,
+			ProxyBind:         req.ProxyBind,
+			ControllerPort:    req.ControllerPort,
+			Mode:              req.Mode,
+			LocalProxies:      req.LocalProxies,
+			Chain:             req.Chain,
 		})
 		if err != nil {
 			status := http.StatusBadRequest
@@ -716,6 +756,8 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			case errors.Is(err, errProfileNotFound):
 				status = http.StatusNotFound
 			case errors.Is(err, errPortUnavailable):
+				status = http.StatusConflict
+			case errors.Is(err, errConflict):
 				status = http.StatusConflict
 			}
 			writeError(w, status, err)

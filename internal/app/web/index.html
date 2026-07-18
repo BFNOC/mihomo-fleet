@@ -259,10 +259,19 @@
                     <button id="refreshSubscription" class="primary" type="button">立即更新</button>
                   </div>
                 </div>
-                <textarea id="configEditor" class="code" spellcheck="false" wrap="off"></textarea>
-                <div class="actions">
-                  <button id="saveConfig" class="primary" type="button">保存配置</button>
+                <div class="config-editor-toolbar">
+                  <div class="config-editor-heading">
+                    <span id="configEditorLabel">YAML 配置</span>
+                    <span id="configEditorStatus" class="config-editor-status" role="status" aria-live="polite">正在加载</span>
+                  </div>
+                  <div class="actions" role="toolbar" aria-label="配置编辑操作">
+                    <button id="findConfig" type="button">查找</button>
+                    <button id="discardConfig" type="button" disabled>放弃修改</button>
+                    <button id="saveConfig" class="primary" type="button">保存配置</button>
+                  </div>
                 </div>
+                <div id="configEditor" class="code" aria-labelledby="configEditorLabel"></div>
+                <div id="configEditorError" class="config-editor-error hidden" role="alert"></div>
                 <div class="orphan-profiles">
                   <h3>清理未使用的配置档</h3>
                   <p>仅列出未被任何实例引用的配置档（例如实例删除后残留的配置），避免误删仍在使用中的配置。</p>
@@ -313,6 +322,7 @@
         </section>
       </main>
     </div>
+    <script src="/vendor/yaml-editor.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>
