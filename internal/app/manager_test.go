@@ -487,6 +487,51 @@ func TestManagerViewReportsPendingRestartAfterRunningUpdate(t *testing.T) {
 	}
 }
 
+func TestManagerViewsReportPendingRestartForAllSharedProfileInstances(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store := newManagerTestStore(t)
+	manager := NewManager(store, writeFakeMihomo(t, true, 0))
+	first := createManagerTestInstance(t, store, "Shared A", 28113, 29113)
+	second, err := store.Create("Shared B", first.ProfileID, "", 28114, 29114)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated := createManagerTestInstance(t, store, "Unrelated", 28115, 29115)
+	for _, item := range []*Instance{first, second, unrelated} {
+		item := item
+		t.Cleanup(func() { _ = manager.Stop(item.ID) })
+		if err := manager.Start(item.ID); err != nil {
+			t.Fatalf("Start(%s) error = %v", item.ID, err)
+		}
+		waitForFakeMihomoReady(t, item)
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	nextConfig := defaultUserConfig + "\n# shared update\n"
+	if _, err := store.PatchProfile(first.ProfileID, ProfilePatch{Config: &nextConfig}); err != nil {
+		t.Fatalf("PatchProfile() error = %v", err)
+	}
+
+	wantPending := map[string]bool{
+		first.ID:     true,
+		second.ID:    true,
+		unrelated.ID: false,
+	}
+	for _, view := range manager.Views() {
+		want, ok := wantPending[view.ID]
+		if !ok {
+			continue
+		}
+		if view.PendingRestart != want {
+			t.Fatalf("PendingRestart for %s = %v, want %v", view.ID, view.PendingRestart, want)
+		}
+		delete(wantPending, view.ID)
+	}
+	if len(wantPending) != 0 {
+		t.Fatalf("missing views for instances: %v", wantPending)
+	}
+}
+
 // TestManagerViewPendingRestartUnaffectedBySetSelection covers N2's main
 // fix (docs/review-2026-07-11-fix-verification-round4.md): decorateStatus
 // used to compare item.UpdatedAt, which Store.SetSelection also bumps on

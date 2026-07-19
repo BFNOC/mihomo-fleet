@@ -12,7 +12,6 @@ rules:
   - MATCH,DIRECT
 `;
 
-export const newProfileValue = "__new__";
 export const legacyDefaultLatencyUrl = "https://www.gstatic.com/generate_204";
 export const legacyDefaultLatencyTimeout = "5000";
 export const defaultLatencyUrl = "http://cp.cloudflare.com/generate_204";

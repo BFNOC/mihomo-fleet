@@ -16,10 +16,13 @@
             <p id="systemLine">正在加载本地控制器</p>
           </div>
         </div>
-        <label class="selector">
-          <span>当前实例</span>
-          <select id="instanceSelect" aria-label="当前实例"></select>
-        </label>
+        <div class="topbar-tools">
+          <button id="manageProfilesBtn" type="button">配置档管理</button>
+          <label id="instanceSelectorWrap" class="selector">
+            <span>当前实例</span>
+            <select id="instanceSelect" aria-label="当前实例"></select>
+          </label>
+        </div>
       </header>
 
       <main class="workspace">
@@ -45,12 +48,101 @@
 
         <section class="content">
           <div id="message" class="message hidden" role="status" aria-live="polite"></div>
+          <section id="profilePanel" class="profile-manager hidden" aria-labelledby="profileManagerTitle">
+            <div class="profile-manager-head">
+              <div class="panel-title">
+                <div>
+                  <h2 id="profileManagerTitle">配置档管理</h2>
+                  <p>配置档保存共享 YAML 或订阅，多个实例可以同时引用同一份配置。</p>
+                </div>
+              </div>
+              <button id="newProfileBtn" class="primary" type="button">新建配置档</button>
+            </div>
+            <div class="profile-manager-grid">
+              <nav class="profile-catalog" aria-label="配置档列表">
+                <div class="profile-catalog-head">
+                  <h3>配置档</h3>
+                  <span id="profileCount">0 个</span>
+                </div>
+                <div id="profileList" class="profile-list"></div>
+              </nav>
+              <div class="profile-editor-pane">
+                <div id="profileEditorEmpty" class="profile-editor-empty">
+                  <h3>选择配置档</h3>
+                  <p>从左侧选择已有配置档，或新建一份手写配置或订阅配置。</p>
+                </div>
+                <section id="profileEditor" class="hidden" aria-labelledby="profileEditorTitle">
+                  <div class="profile-editor-head">
+                    <div>
+                      <h3 id="profileEditorTitle">配置档</h3>
+                      <p id="profileMeta">未选择配置档。</p>
+                    </div>
+                    <span id="profileReferenceBadge" class="reference-badge">未使用</span>
+                  </div>
+                  <div class="form-grid profile-basics">
+                    <label>
+                      <span>名称</span>
+                      <input id="profileName" placeholder="我的订阅">
+                    </label>
+                    <label>
+                      <span>配置档 ID</span>
+                      <input id="profileId" readonly>
+                    </label>
+                  </div>
+                  <div id="profileSourceTabs" class="segmented hidden" role="group" aria-label="配置来源">
+                    <button id="profileManualMode" class="active" type="button">手写配置</button>
+                    <button id="profileSubscriptionMode" type="button">订阅链接</button>
+                  </div>
+                  <div id="subscriptionSettings" class="subscription-settings hidden">
+                    <label class="stacked">
+                      <span>订阅链接</span>
+                      <input id="subscriptionUrl" placeholder="https://example.com/sub">
+                    </label>
+                    <div class="form-grid subscription-fields">
+                      <label>
+                        <span>更新间隔（分钟）</span>
+                        <input id="subscriptionInterval" type="number" min="15" placeholder="360">
+                      </label>
+                      <label class="checkline">
+                        <input id="subscriptionAutoUpdate" type="checkbox">
+                        <span>自动更新</span>
+                      </label>
+                      <div id="subscriptionInfo" class="subscription-info"></div>
+                    </div>
+                    <div class="actions">
+                      <button id="refreshSubscription" type="button">立即更新</button>
+                    </div>
+                  </div>
+                  <div id="profileConfigSection">
+                    <div class="config-editor-toolbar">
+                      <div class="config-editor-heading">
+                        <span id="configEditorLabel">YAML 配置</span>
+                        <span id="configEditorStatus" class="config-editor-status" role="status" aria-live="polite">正在加载</span>
+                      </div>
+                      <div class="actions" role="toolbar" aria-label="配置编辑操作">
+                        <button id="findConfig" type="button">查找</button>
+                        <button id="discardConfig" type="button" disabled>放弃修改</button>
+                      </div>
+                    </div>
+                    <div id="configEditor" class="code" aria-labelledby="configEditorLabel"></div>
+                    <div id="configEditorError" class="config-editor-error hidden" role="alert"></div>
+                  </div>
+                  <p id="profileDeleteHint" class="profile-delete-hint"></p>
+                  <div class="profile-editor-actions">
+                    <button id="saveProfile" class="primary" type="button">保存配置档</button>
+                    <button id="deleteProfile" class="danger" type="button">删除配置档</button>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </section>
+
           <section id="createPanel" class="panel hidden">
             <div class="panel-title">
               <h2>新建实例</h2>
               <p>端口可以留空，系统会自动分配本机回环端口。</p>
             </div>
-            <div class="form-grid">
+            <div class="form-grid two">
               <label>
                 <span>名称</span>
                 <input id="createName" placeholder="香港网关">
@@ -59,14 +151,10 @@
                 <span>配置档</span>
                 <select id="createProfile"></select>
               </label>
-              <label>
-                <span>新配置档名称</span>
-                <input id="createProfileName" placeholder="我的订阅">
-              </label>
             </div>
-            <div id="createSourceTabs" class="segmented" role="group" aria-label="配置来源">
-              <button id="createManualMode" class="active" data-source="manual" type="button">手写配置</button>
-              <button id="createSubscriptionMode" data-source="subscription" type="button">订阅链接</button>
+            <div id="createProfileRequired" class="inline-notice hidden">
+              <span>请先创建配置档，再创建引用它的实例。</span>
+              <button id="createManageProfiles" type="button">打开配置档管理</button>
             </div>
             <div class="form-grid two">
               <label>
@@ -75,20 +163,6 @@
                   <option value="rule">规则分流</option>
                   <option value="global-chain">全局链式</option>
                 </select>
-              </label>
-            </div>
-            <div id="createSubscriptionFields" class="form-grid subscription-fields hidden">
-              <label>
-                <span>订阅链接</span>
-                <input id="createSubscriptionUrl" placeholder="https://example.com/sub">
-              </label>
-              <label>
-                <span>更新间隔（分钟）</span>
-                <input id="createUpdateInterval" type="number" min="15" placeholder="360">
-              </label>
-              <label class="checkline">
-                <input id="createAutoUpdate" type="checkbox" checked>
-                <span>自动更新</span>
               </label>
             </div>
             <div class="form-grid two">
@@ -105,10 +179,6 @@
                 <input id="createControllerPort" type="number" min="1" max="65535" placeholder="自动">
               </label>
             </div>
-            <label id="createConfigWrap" class="stacked">
-              <span>配置内容</span>
-              <textarea id="createConfig" spellcheck="false" wrap="off"></textarea>
-            </label>
             <div id="createChainFields" class="chain-fields hidden">
               <label class="stacked">
                 <span>本地节点 YAML</span>
@@ -157,7 +227,6 @@
 
             <div id="tabList" class="tabs" role="tablist" aria-label="实例详情">
               <button id="tab-btn-overview" class="tab active" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="tab-overview">概览</button>
-              <button id="tab-btn-config" class="tab" data-tab="config" type="button" role="tab" aria-selected="false" aria-controls="tab-config" tabindex="-1">配置</button>
               <button id="tab-btn-proxies" class="tab" data-tab="proxies" type="button" role="tab" aria-selected="false" aria-controls="tab-proxies" tabindex="-1">节点</button>
               <button id="tab-btn-logs" class="tab" data-tab="logs" type="button" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1">日志</button>
             </div>
@@ -231,60 +300,6 @@
                   <button id="saveBasics" type="button">保存基础信息</button>
                 </section>
               </div>
-            </div>
-
-            <div id="tab-config" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-btn-config" tabindex="-1">
-              <section class="panel">
-                <div class="panel-title">
-                  <h3>配置档</h3>
-                  <p id="profileMeta">这份共享配置可以被多个实例复用。</p>
-                </div>
-                <div id="subscriptionSettings" class="subscription-settings hidden">
-                  <label class="stacked">
-                    <span>订阅链接</span>
-                    <input id="subscriptionUrl">
-                  </label>
-                  <div class="form-grid subscription-fields">
-                    <label>
-                      <span>更新间隔（分钟）</span>
-                      <input id="subscriptionInterval" type="number" min="15" placeholder="360">
-                    </label>
-                    <label class="checkline">
-                      <input id="subscriptionAutoUpdate" type="checkbox">
-                      <span>自动更新</span>
-                    </label>
-                    <div id="subscriptionInfo" class="subscription-info"></div>
-                  </div>
-                  <div class="actions">
-                    <button id="saveProfileSettings" type="button">保存订阅设置</button>
-                    <button id="refreshSubscription" class="primary" type="button">立即更新</button>
-                  </div>
-                </div>
-                <div class="config-editor-toolbar">
-                  <div class="config-editor-heading">
-                    <span id="configEditorLabel">YAML 配置</span>
-                    <span id="configEditorStatus" class="config-editor-status" role="status" aria-live="polite">正在加载</span>
-                  </div>
-                  <div class="actions" role="toolbar" aria-label="配置编辑操作">
-                    <button id="findConfig" type="button">查找</button>
-                    <button id="discardConfig" type="button" disabled>放弃修改</button>
-                    <button id="saveConfig" class="primary" type="button">保存配置</button>
-                  </div>
-                </div>
-                <div id="configEditor" class="code" aria-labelledby="configEditorLabel"></div>
-                <div id="configEditorError" class="config-editor-error hidden" role="alert"></div>
-                <div class="orphan-profiles">
-                  <h3>清理未使用的配置档</h3>
-                  <p>仅列出未被任何实例引用的配置档（例如实例删除后残留的配置），避免误删仍在使用中的配置。</p>
-                  <div class="form-grid two">
-                    <label class="stacked">
-                      <span>未使用的配置档</span>
-                      <select id="orphanProfileSelect"></select>
-                    </label>
-                    <button id="deleteOrphanProfileBtn" class="danger" type="button" disabled>删除所选配置档</button>
-                  </div>
-                </div>
-              </section>
             </div>
 
             <div id="tab-proxies" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-btn-proxies" tabindex="-1">

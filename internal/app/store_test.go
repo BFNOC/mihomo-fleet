@@ -960,6 +960,112 @@ func TestStorePatchProfileRenamePersistsAcrossReload(t *testing.T) {
 	}
 }
 
+func TestStorePatchProfileConfigMarksAllReferencingInstancesUpdated(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := store.CreateProfile("Shared", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.CreateProfile("Other", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Create("First", shared.ID, "", 28091, 29091)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Create("Second", shared.ID, "", 28092, 29092)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := store.Create("Unrelated", other.ID, "", 28093, 29093)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sameConfig := defaultUserConfig
+	if _, err := store.PatchProfile(shared.ID, ProfilePatch{Config: &sameConfig}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{first.ID, second.ID, unrelated.ID} {
+		item, ok := store.Get(id)
+		if !ok || !item.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("no-op profile save changed ConfigUpdatedAt for %s: %+v", id, item)
+		}
+	}
+
+	nextConfig := subscriptionConfig
+	if _, err := store.PatchProfile(shared.ID, ProfilePatch{Config: &nextConfig}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		item, ok := store.Get(id)
+		if !ok || item.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("shared profile update did not mark instance %s: %+v", id, item)
+		}
+	}
+	item, ok := store.Get(unrelated.ID)
+	if !ok || !item.ConfigUpdatedAt.IsZero() {
+		t.Fatalf("unrelated instance was marked by shared profile update: %+v", item)
+	}
+}
+
+func TestStoreInstanceConfigUpdateMarksAllReferencingInstancesUpdated(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := store.CreateProfile("Shared", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.CreateProfile("Other", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Create("First", shared.ID, "", 28094, 29094)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Create("Second", shared.ID, "", 28095, 29095)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := store.Create("Unrelated", other.ID, "", 28096, 29096)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.UpdateWithOptions(first.ID, updateInstanceOptions{Config: defaultUserConfig}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{first.ID, second.ID, unrelated.ID} {
+		item, ok := store.Get(id)
+		if !ok || !item.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("no-op instance config save changed ConfigUpdatedAt for %s: %+v", id, item)
+		}
+	}
+
+	if _, err := store.UpdateWithOptions(first.ID, updateInstanceOptions{Config: subscriptionConfig}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		item, ok := store.Get(id)
+		if !ok || item.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("instance config update did not mark shared reference %s: %+v", id, item)
+		}
+	}
+	item, ok := store.Get(unrelated.ID)
+	if !ok || !item.ConfigUpdatedAt.IsZero() {
+		t.Fatalf("unrelated instance was marked by instance config update: %+v", item)
+	}
+}
+
 func TestStorePatchProfileChangingURLClearsSubscriptionMetadata(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -1213,12 +1319,29 @@ func breakStoreSaves(t *testing.T, dataDir string) {
 // both back exactly as they were (see store.go's PatchProfile, the
 // `*profile = *original` / writeFileAtomic(previousConfig) block).
 func TestStorePatchProfileRollsBackOnSaveFailure(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
 	dir := t.TempDir()
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	profile, err := store.CreateProfile("Original", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Shared user", profile.ID, "", 28121, 29121)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Create("Second shared user", profile.ID, "", 28122, 29122)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherProfile, err := store.CreateProfile("Other", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := store.Create("Unrelated user", otherProfile.ID, "", 28123, 29123)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1243,6 +1366,12 @@ func TestStorePatchProfileRollsBackOnSaveFailure(t *testing.T) {
 	}
 	if string(raw) != defaultUserConfig {
 		t.Fatalf("profile config file was not rolled back: got %q", raw)
+	}
+	for _, id := range []string{item.ID, second.ID, unrelated.ID} {
+		gotItem, ok := store.Get(id)
+		if !ok || !gotItem.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("instance ConfigUpdatedAt was not rolled back for %s: %+v", id, gotItem)
+		}
 	}
 }
 
@@ -1309,6 +1438,9 @@ func TestStoreApplySubscriptionFetchForURLRollsBackOnSaveFailure(t *testing.T) {
 	if gotItem.SelectedProxies["Proxy"] != "US-01" || gotItem.SelectedGroup != "Proxy" || gotItem.SelectedProxy != "US-01" {
 		t.Fatalf("instance selection was not rolled back: %#v", gotItem.SelectedProxies)
 	}
+	if !gotItem.ConfigUpdatedAt.IsZero() {
+		t.Fatalf("instance ConfigUpdatedAt was not rolled back: %+v", gotItem)
+	}
 }
 
 // TestStoreUpdateWithOptionsRollsBackOnSaveFailure covers the H3 gap for
@@ -1330,6 +1462,18 @@ func TestStoreUpdateWithOptionsRollsBackOnSaveFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	second, err := store.Create("Second", profile.ID, "", 28074, 29074)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherProfile, err := store.CreateProfile("Other", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := store.Create("Unrelated", otherProfile.ID, "", 28075, 29075)
+	if err != nil {
+		t.Fatal(err)
+	}
 	originalName := item.Name
 	originalProfileUpdatedAt := profile.UpdatedAt
 
@@ -1345,6 +1489,12 @@ func TestStoreUpdateWithOptionsRollsBackOnSaveFailure(t *testing.T) {
 	}
 	if got.Name != originalName {
 		t.Fatalf("instance name = %q, want rollback to %q", got.Name, originalName)
+	}
+	for _, id := range []string{item.ID, second.ID, unrelated.ID} {
+		gotItem, ok := store.Get(id)
+		if !ok || !gotItem.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("instance ConfigUpdatedAt was not rolled back for %s: %+v", id, gotItem)
+		}
 	}
 	raw, err := os.ReadFile(profile.ConfigPath)
 	if err != nil {
@@ -1665,12 +1815,29 @@ func TestStoreReplaceProfileSubscriptionPersistsURLAndConfig(t *testing.T) {
 // already been applied in memory/on disk, both must be rolled back together
 // so the URL and config.yaml never diverge.
 func TestStoreReplaceProfileSubscriptionRollsBackOnSaveFailure(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
 	dir := t.TempDir()
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/old", true, 360, &subscriptionFetchResult{Config: defaultUserConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Create("First", profile.ID, "", 28124, 29124)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Create("Second", profile.ID, "", 28125, 29125)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherProfile, err := store.CreateProfile("Other", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := store.Create("Unrelated", otherProfile.ID, "", 28126, 29126)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1702,6 +1869,12 @@ func TestStoreReplaceProfileSubscriptionRollsBackOnSaveFailure(t *testing.T) {
 	}
 	if string(raw) != string(originalConfig) {
 		t.Fatalf("profile config file was not rolled back: got %q", raw)
+	}
+	for _, id := range []string{first.ID, second.ID, unrelated.ID} {
+		item, ok := store.Get(id)
+		if !ok || !item.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("instance ConfigUpdatedAt was not rolled back for %s: %+v", id, item)
+		}
 	}
 }
 

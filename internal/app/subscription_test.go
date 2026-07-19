@@ -123,8 +123,21 @@ func TestApplySubscriptionFetchClearsRemovedSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	second, err := store.Create("Second gateway", profile.ID, "", 28031, 29031)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.SetSelection(item.ID, "Proxy", "US-01"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: subscriptionConfig}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{item.ID, second.ID} {
+		updated, ok := store.Get(id)
+		if !ok || !updated.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("unchanged subscription marked shared reference %s: %+v", id, updated)
+		}
 	}
 	nextConfig := strings.Replace(subscriptionConfig, "      - US-01\n", "", 1)
 	if _, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: nextConfig}); err != nil {
@@ -133,6 +146,12 @@ func TestApplySubscriptionFetchClearsRemovedSelection(t *testing.T) {
 	updated, _ := store.Get(item.ID)
 	if updated.SelectedProxy != "" || len(updated.SelectedProxies) != 0 {
 		t.Fatalf("removed selection was not cleared: %+v", updated)
+	}
+	for _, id := range []string{item.ID, second.ID} {
+		updated, ok := store.Get(id)
+		if !ok || updated.ConfigUpdatedAt.IsZero() {
+			t.Fatalf("subscription refresh did not mark shared reference %s: %+v", id, updated)
+		}
 	}
 }
 

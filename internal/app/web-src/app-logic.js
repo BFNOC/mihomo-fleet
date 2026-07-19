@@ -15,21 +15,29 @@ export function createActionGate() {
   };
 }
 
-export function shouldApplyCreateProfileConfig({ requestSeq, currentSeq, requestedProfileId, currentProfileId }) {
-  return requestSeq === currentSeq && requestedProfileId !== "" && requestedProfileId === currentProfileId;
+export function shouldApplyProfileConfigLoad({ requestSeq, currentSeq, requestedProfileId, activeProfileId, dirty }) {
+  return !dirty && requestSeq === currentSeq && requestedProfileId !== "" && requestedProfileId === activeProfileId;
 }
 
-export function shouldApplyConfigLoad({ requestedInstanceId, requestedProfileId, activeInstanceId, activeProfileId, dirty }) {
-  return !dirty && requestedInstanceId === activeInstanceId && requestedProfileId === activeProfileId;
+export function canClearSavedProfileConfig({ savedProfileId, savedVersion, activeProfileId, currentVersion }) {
+  return savedProfileId === activeProfileId && savedVersion === currentVersion;
 }
 
-export function canClearSavedConfig({ savedInstanceId, savedProfileId, savedVersion, activeInstanceId, activeProfileId, currentVersion }) {
-  return savedInstanceId === activeInstanceId && savedProfileId === activeProfileId && savedVersion === currentVersion;
+export function shouldApplyProfileOperation({
+  requestContextSeq,
+  currentContextSeq,
+  requestedProfileId,
+  activeProfileId,
+  view,
+}) {
+  return requestContextSeq === currentContextSeq
+    && view === "profiles"
+    && requestedProfileId !== ""
+    && requestedProfileId === activeProfileId;
 }
 
 export function profileOptionLabel(profile, referenceCount) {
   const name = String(profile?.name || "未命名配置档");
-  const id = String(profile?.id || "unknown");
   const count = Math.max(0, Number(referenceCount) || 0);
-  return `${name} · ${id} · ${count > 0 ? `${count} 实例` : "未使用"}`;
+  return `${name} · ${count > 0 ? `${count} 个实例` : "未使用"}`;
 }

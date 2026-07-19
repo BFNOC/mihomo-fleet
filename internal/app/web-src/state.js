@@ -5,9 +5,14 @@ export function createState() {
     system: null,
     profiles: [],
     instances: [],
+    view: "instances",
     activeId: localStorage.getItem("activeInstance") || "",
+    activeProfileId: "",
     activeTab: "overview",
-    createSource: "manual",
+    profileCreating: false,
+    profileCreateSource: "manual",
+    profileFormDirty: false,
+    profileFormVersion: 0,
     creating: false,
     proxyGroups: [],
     proxyApply: false,
@@ -33,11 +38,6 @@ export function profileById(state, id) {
 
 export function profileReferenceCount(state, profileId) {
   return state.instances.filter((item) => item.profileId === profileId).length;
-}
-
-export function orphanProfiles(state) {
-  const referenced = new Set(state.instances.map((item) => item.profileId));
-  return state.profiles.filter((profile) => !referenced.has(profile.id));
 }
 
 export function latencyKey(instanceId, group, proxy, kind) {

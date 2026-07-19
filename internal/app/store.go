@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -330,6 +331,43 @@ func (s *Store) UpdateProfile(id, name, config string) (*Profile, error) {
 	return s.PatchProfile(id, ProfilePatch{Name: name, Config: cfg})
 }
 
+// snapshotProfileInstancesLocked 保存共享配置变更前的引用实例状态，调用方须持有 s.mu。
+func (s *Store) snapshotProfileInstancesLocked(profileID string) map[string]Instance {
+	snapshots := make(map[string]Instance)
+	for _, item := range s.items {
+		if item.ProfileID == profileID {
+			snapshots[item.ID] = *cloneInstance(item)
+		}
+	}
+	return snapshots
+}
+
+// markProfileConfigUpdatedLocked 让所有引用实例都反映共享配置已变化，调用方须持有 s.mu。
+func (s *Store) markProfileConfigUpdatedLocked(profileID string, updatedAt time.Time) {
+	for _, item := range s.items {
+		if item.ProfileID == profileID {
+			item.ConfigUpdatedAt = updatedAt
+		}
+	}
+}
+
+// restoreInstanceSnapshotsLocked 恢复共享配置写入失败前的实例状态，调用方须持有 s.mu。
+func (s *Store) restoreInstanceSnapshotsLocked(snapshots map[string]Instance) {
+	for itemID, snapshot := range snapshots {
+		if item, ok := s.items[itemID]; ok {
+			*item = *cloneInstance(&snapshot)
+		}
+	}
+}
+
+// rollbackConfigFile 在元数据持久化失败后恢复配置文件，并保留原错误的分类信息。
+func rollbackConfigFile(path string, previous []byte, cause error) error {
+	if rollbackErr := writeFileAtomic(path, previous, 0o600); rollbackErr != nil {
+		return fmt.Errorf("%w; rollback config file failed: %v", cause, rollbackErr)
+	}
+	return cause
+}
+
 func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -341,6 +379,8 @@ func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
 	original := cloneProfile(profile)
 	originalURL := profile.SubscriptionURL
 	var previousConfig []byte
+	configChanged := false
+	itemSnapshots := make(map[string]Instance)
 	if patch.Config != nil {
 		var err error
 		previousConfig, err = os.ReadFile(profile.ConfigPath)
@@ -349,6 +389,10 @@ func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
 		}
 		if err := writeFileAtomic(profile.ConfigPath, []byte(*patch.Config), 0o600); err != nil {
 			return nil, err
+		}
+		configChanged = !bytes.Equal(previousConfig, []byte(*patch.Config))
+		if configChanged {
+			itemSnapshots = s.snapshotProfileInstancesLocked(id)
 		}
 	}
 	if patch.Name != "" {
@@ -376,11 +420,18 @@ func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
 	if profile.SubscriptionURL != "" {
 		profile.UpdateIntervalMinutes = normalizeSubscriptionInterval(profile.UpdateIntervalMinutes, profile.AutoUpdate)
 	}
-	profile.UpdatedAt = time.Now().UTC()
+	updatedAt := time.Now().UTC()
+	profile.UpdatedAt = updatedAt
+	// 手动修改共享 YAML 时，所有引用实例的下次运行配置都会变化。
+	// 统一更新时间，确保运行中的每个实例都提示“重启后生效”。
+	if configChanged {
+		s.markProfileConfigUpdatedLocked(id, updatedAt)
+	}
 	if err := s.saveLocked(); err != nil {
 		*profile = *original
+		s.restoreInstanceSnapshotsLocked(itemSnapshots)
 		if patch.Config != nil {
-			_ = writeFileAtomic(profile.ConfigPath, previousConfig, 0o600)
+			err = rollbackConfigFile(profile.ConfigPath, previousConfig, err)
 		}
 		return nil, err
 	}
@@ -431,15 +482,11 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	if err != nil {
 		return nil, err
 	}
-	itemSnapshots := make(map[string]Instance)
-	for _, item := range s.items {
-		if item.ProfileID == id {
-			itemSnapshots[item.ID] = *cloneInstance(item)
-		}
-	}
+	itemSnapshots := s.snapshotProfileInstancesLocked(id)
 	if err := writeFileAtomic(profile.ConfigPath, []byte(fetched.Config), 0o600); err != nil {
 		return nil, err
 	}
+	configChanged := !bytes.Equal(previousConfig, []byte(fetched.Config))
 	now := time.Now().UTC()
 	if fetched.UpdateIntervalMinutes > 0 && profile.UpdateIntervalMinutes <= 0 {
 		profile.UpdateIntervalMinutes = normalizeSubscriptionInterval(fetched.UpdateIntervalMinutes, profile.AutoUpdate)
@@ -449,18 +496,10 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	profile.HomeURL = fetched.HomeURL
 	profile.SubscriptionInfo = fetched.Info
 	profile.UpdatedAt = now
-	// N2 (docs/review-2026-07-11-fix-verification-round4.md): a refreshed
-	// subscription config file does change what every instance on this
-	// profile will run with next start, so in principle each affected
-	// item.ConfigUpdatedAt below should bump too. Deliberately left out: this
-	// loop already iterates every instance on the profile for
-	// reconcileInstanceSelection, so bumping is mechanically easy, but a
-	// scheduled background refresh (the subscription scheduler,
-	// controller.go) firing every few hours would then flip PendingRestart
-	// true for every running instance on an auto-updating profile with no
-	// user action involved -- a different, arguably noisier false-positive
-	// than the one N2 fixes for SetSelection/SetError. Revisit if instance
-	// config staleness after a subscription refresh needs its own signal.
+	// 订阅内容变化后，运行实例仍使用旧运行配置，因此所有引用实例都应提示重启。
+	if configChanged {
+		s.markProfileConfigUpdatedLocked(id, now)
+	}
 	for _, item := range s.items {
 		if item.ProfileID == id && instanceMode(item.Mode) != InstanceModeGlobalChain {
 			reconcileInstanceSelection(item, validSelections)
@@ -468,13 +507,8 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	}
 	if err := s.saveLocked(); err != nil {
 		*profile = *originalProfile
-		for itemID, snapshot := range itemSnapshots {
-			if item, ok := s.items[itemID]; ok {
-				*item = *cloneInstance(&snapshot)
-			}
-		}
-		_ = writeFileAtomic(profile.ConfigPath, previousConfig, 0o600)
-		return nil, err
+		s.restoreInstanceSnapshotsLocked(itemSnapshots)
+		return nil, rollbackConfigFile(profile.ConfigPath, previousConfig, err)
 	}
 	return cloneProfile(profile), nil
 }
@@ -526,15 +560,11 @@ func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscript
 	if err != nil {
 		return nil, err
 	}
-	itemSnapshots := make(map[string]Instance)
-	for _, item := range s.items {
-		if item.ProfileID == id {
-			itemSnapshots[item.ID] = *cloneInstance(item)
-		}
-	}
+	itemSnapshots := s.snapshotProfileInstancesLocked(id)
 	if err := writeFileAtomic(profile.ConfigPath, []byte(fetched.Config), 0o600); err != nil {
 		return nil, err
 	}
+	configChanged := !bytes.Equal(previousConfig, []byte(fetched.Config))
 
 	now := time.Now().UTC()
 	profile.SubscriptionURL = newURL
@@ -546,12 +576,9 @@ func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscript
 		profile.UpdateIntervalMinutes = normalizeSubscriptionInterval(fetched.UpdateIntervalMinutes, profile.AutoUpdate)
 	}
 	profile.UpdatedAt = now
-	// N2 (docs/review-2026-07-11-fix-verification-round4.md): see the
-	// matching comment in ApplySubscriptionFetchForURL above -- deliberately
-	// not bumping item.ConfigUpdatedAt here either, for the same reason (this
-	// path is user-initiated rather than scheduled, but treating a URL swap
-	// consistently with a plain refresh keeps the two subscription-update
-	// paths from disagreeing on PendingRestart semantics).
+	if configChanged {
+		s.markProfileConfigUpdatedLocked(id, now)
+	}
 	for _, item := range s.items {
 		if item.ProfileID == id && instanceMode(item.Mode) != InstanceModeGlobalChain {
 			reconcileInstanceSelection(item, validSelections)
@@ -560,13 +587,8 @@ func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscript
 
 	if err := s.saveLocked(); err != nil {
 		*profile = *originalProfile
-		for itemID, snapshot := range itemSnapshots {
-			if item, ok := s.items[itemID]; ok {
-				*item = *cloneInstance(&snapshot)
-			}
-		}
-		_ = writeFileAtomic(profile.ConfigPath, previousConfig, 0o600)
-		return nil, err
+		s.restoreInstanceSnapshotsLocked(itemSnapshots)
+		return nil, rollbackConfigFile(profile.ConfigPath, previousConfig, err)
 	}
 	return cloneProfile(profile), nil
 }
@@ -959,6 +981,10 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	if opts.ExpectedProfileID != "" && item.ProfileID != opts.ExpectedProfileID {
 		return nil, conflictError{msg: "profile changed while configuration was being edited"}
 	}
+	var profileItemSnapshots map[string]Instance
+	if opts.Config != "" {
+		profileItemSnapshots = s.snapshotProfileInstancesLocked(item.ProfileID)
+	}
 	nextName := item.Name
 	if opts.Name != "" {
 		nextName = opts.Name
@@ -1060,8 +1086,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	// no-op ProfileID/port/etc. (opts field set but equal to the current
 	// value) must not count, matching decorateStatus's use of this field to
 	// avoid a running instance incorrectly reporting PendingRestart forever.
-	configChanged := opts.Config != "" ||
-		(opts.ProfileID != "" && nextProfileID != item.ProfileID) ||
+	configChanged := (opts.ProfileID != "" && nextProfileID != item.ProfileID) ||
 		(opts.MixedPort > 0 && nextMixedPort != item.MixedPort) ||
 		(opts.ControllerPort > 0 && nextControllerPort != item.ControllerPort) ||
 		(opts.ProxyBind != nil && nextProxyBind != item.ProxyBind) ||
@@ -1089,6 +1114,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	var configPath string
 	var configProfile *Profile
 	var previousProfileUpdatedAt time.Time
+	sharedConfigChanged := false
 	if opts.Config != "" {
 		profile, ok := s.profiles[item.ProfileID]
 		if !ok {
@@ -1108,22 +1134,28 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 			*item = *cloneInstance(&snapshot)
 			return nil, err
 		}
+		sharedConfigChanged = !bytes.Equal(previousConfig, []byte(opts.Config))
 		profile.UpdatedAt = time.Now().UTC()
 	}
 	now := time.Now().UTC()
 	item.UpdatedAt = now
+	if sharedConfigChanged {
+		s.markProfileConfigUpdatedLocked(item.ProfileID, now)
+	}
 	if configChanged {
 		item.ConfigUpdatedAt = now
 	}
 	if err := s.saveLocked(); err != nil {
-		*item = *cloneInstance(&snapshot)
+		if profileItemSnapshots != nil {
+			s.restoreInstanceSnapshotsLocked(profileItemSnapshots)
+		} else {
+			*item = *cloneInstance(&snapshot)
+		}
 		if configProfile != nil {
 			configProfile.UpdatedAt = previousProfileUpdatedAt
 		}
 		if configPath != "" && previousConfig != nil {
-			if rollbackErr := writeFileAtomic(configPath, previousConfig, 0o600); rollbackErr != nil {
-				log.Printf("rollback profile config failed: %v", rollbackErr)
-			}
+			err = rollbackConfigFile(configPath, previousConfig, err)
 		}
 		return nil, err
 	}

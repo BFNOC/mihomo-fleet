@@ -18,11 +18,12 @@ System UI stack with CJK fallbacks. Compact labels, tabular numbers for ports an
 
 ## Layout
 
-Sticky top bar with brand + active instance selector. Sidebar for fleet membership and port matrix. Detail pane for selected instance controls. Prefer compact panels, metric strips, and tables over marketing cards.
+Sticky top bar with brand, profile-management command, and active instance selector. Sidebar for fleet membership and port matrix. Detail pane for selected instance controls. Profile management is a separate two-column resource view with a profile catalog and an editor pane. Prefer compact panels, metric strips, and tables over marketing cards.
 
 ## Components
 
 - Dropdown for active instance selection.
+- Separate profile catalog for Profile CRUD; instance forms only reference existing profiles.
 - Dense buttons for lifecycle actions.
 - Segmented controls for create-source and detail tabs.
 - Inline forms for create/edit; avoid modal-first workflows.
@@ -31,4 +32,4 @@ Sticky top bar with brand + active instance selector. Sidebar for fleet membersh
 
 ## Frontend structure
 
-Source lives in `internal/app/web-src` as ES modules (`app.js`, `api.js`, `state.js`, `format.js`, `latency.js`, `dom.js`, `i18n.js`, `constants.js`, `yaml-editor.js`). `pnpm build:web` bundles into `internal/app/web/app.js` for Go embed.
+Source lives in `internal/app/web-src` as ES modules (`app.js`, `api.js`, `state.js`, `format.js`, `latency.js`, `dom.js`, `i18n.js`, `constants.js`, `yaml-editor.js`, `app-logic.js`). `pnpm build:web` bundles into `internal/app/web/app.js` for Go embed.

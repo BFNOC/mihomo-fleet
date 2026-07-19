@@ -8,7 +8,6 @@ import {
   latencyKeySeparator,
   latencyKinds,
   logStickThreshold,
-  newProfileValue,
   slowPollIntervalMs,
 } from "./constants.js";
 import { api, writeClipboard } from "./api.js";
@@ -46,18 +45,17 @@ import {
   createState,
   isLatencyRunning,
   latencyResult,
-  orphanProfiles,
   profileById,
   profileReferenceCount,
   pruneLatencyResultsForGroups,
 } from "./state.js";
 import {
-  canClearSavedConfig,
+  canClearSavedProfileConfig,
   createActionGate,
   createYamlEditor,
   profileOptionLabel,
-  shouldApplyConfigLoad,
-  shouldApplyCreateProfileConfig,
+  shouldApplyProfileConfigLoad,
+  shouldApplyProfileOperation,
 } from "./yaml-editor.js";
 
 const state = createState();
@@ -65,28 +63,31 @@ const el = bindElements();
 
 const createGate = createActionGate();
 const saveBasicsGate = createActionGate();
-const saveConfigGate = createActionGate();
-let createProfileConfigSeq = 0;
-let configLoadSeq = 0;
+const saveProfileGate = createActionGate();
+const deleteProfileGate = createActionGate();
+const refreshSubscriptionGate = createActionGate();
+let profileConfigLoadSeq = 0;
+let profileContextSeq = 0;
 let refreshSeq = 0;
 let proxiesRequestSeq = 0;
 let messageClearTimer = null;
 let lastInstanceSelectorSnapshot = "";
 let lastInstanceListSnapshot = "";
 let lastPortMatrixSnapshot = "";
+let lastProfileListSnapshot = "";
 let lastProxyGroupsSnapshot = "";
 let slowPollTimer = null;
 let fastPollTimer = null;
 
 const configEditor = createYamlEditor(el.configEditor, {
-  ariaLabel: "配置 YAML 编辑器",
+  ariaLabel: "配置档 YAML 编辑器",
   onChange() {
     el.configEditor.dataset.dirty = "1";
     setConfigEditorError("");
     renderConfigEditorState();
   },
   onSave() {
-    saveActiveConfig();
+    saveProfile();
   },
 });
 configEditor.setReadOnly(true);
@@ -124,12 +125,52 @@ function active() {
   return activeInstance(state);
 }
 
+function activeProfile() {
+  return profileById(state, state.activeProfileId);
+}
+
 function configEditorDirty() {
   return el.configEditor.dataset.dirty === "1";
 }
 
+function profileOperationRunning() {
+  return saveProfileGate.isRunning()
+    || deleteProfileGate.isRunning()
+    || refreshSubscriptionGate.isRunning();
+}
+
+function beginProfileOperation(gate) {
+  if (profileOperationRunning() || !gate.begin()) return false;
+  render();
+  return true;
+}
+
+function activeProfileContextId() {
+  return state.profileCreating ? "__new__" : state.activeProfileId;
+}
+
+function captureProfileOperationContext(profileId = activeProfileContextId()) {
+  return { contextSeq: profileContextSeq, profileId };
+}
+
+function profileOperationContextMatches(context) {
+  const activeProfileId = activeProfileContextId();
+  return el.profileEditor.dataset.profileId === activeProfileId
+    && shouldApplyProfileOperation({
+      requestContextSeq: context.contextSeq,
+      currentContextSeq: profileContextSeq,
+      requestedProfileId: context.profileId,
+      activeProfileId,
+      view: state.view,
+    });
+}
+
+function advanceProfileContext() {
+  profileContextSeq += 1;
+}
+
 function hasUnsavedChanges() {
-  return state.editDirty || configEditorDirty() || el.subscriptionSettings.dataset.dirty === "1";
+  return state.editDirty || state.profileFormDirty || configEditorDirty();
 }
 
 function confirmDiscardChanges(action) {
@@ -143,22 +184,29 @@ function setConfigEditorError(message) {
   el.configEditorError.classList.toggle("hidden", !text);
 }
 
-function renderConfigEditorState(selected = active()) {
-  const profile = selected ? profileById(state, selected.profileId) : null;
-  const isSubscription = Boolean(profile?.subscriptionUrl);
+function renderConfigEditorState(profile = activeProfile()) {
+  const isSubscription = state.profileCreating
+    ? state.profileCreateSource === "subscription"
+    : Boolean(profile?.subscriptionUrl);
   const dirty = configEditorDirty();
   const contextMatches = Boolean(
-    selected
-      && el.configEditor.dataset.id === selected.id
-      && el.configEditor.dataset.profileId === selected.profileId,
+    state.profileCreating
+      ? el.configEditor.dataset.profileId === "__new__"
+      : profile && el.configEditor.dataset.profileId === profile.id,
   );
   let text = "正在加载";
   let status = "loading";
-  if (!selected) {
-    text = "未选择实例";
+  if (!profile && !state.profileCreating) {
+    text = "未选择配置档";
     status = "idle";
-  } else if (saveConfigGate.isRunning()) {
+  } else if (saveProfileGate.isRunning()) {
     text = "正在保存";
+    status = "saving";
+  } else if (deleteProfileGate.isRunning()) {
+    text = "正在删除配置档";
+    status = "saving";
+  } else if (refreshSubscriptionGate.isRunning()) {
+    text = "正在更新订阅";
     status = "saving";
   } else if (!el.configEditorError.classList.contains("hidden")) {
     text = "操作失败，修改未丢失";
@@ -175,16 +223,18 @@ function renderConfigEditorState(selected = active()) {
   }
   el.configEditorStatus.textContent = text;
   el.configEditorStatus.dataset.state = status;
-  el.saveConfig.disabled = !selected || isSubscription || !contextMatches || !dirty || saveConfigGate.isRunning();
-  el.discardConfig.disabled = !dirty || saveConfigGate.isRunning();
-  el.findConfig.disabled = !selected;
+  const profileBusy = profileOperationRunning();
+  el.saveProfile.disabled = (!profile && !state.profileCreating)
+    || (!isSubscription && !contextMatches)
+    || profileBusy;
+  el.discardConfig.disabled = !dirty || profileBusy;
+  el.findConfig.disabled = (!profile && !state.profileCreating) || isSubscription || profileBusy;
 }
 
 function resetConfigEditor() {
-  configLoadSeq += 1;
+  profileConfigLoadSeq += 1;
   configEditor.setValue("");
   configEditor.setReadOnly(true);
-  el.configEditor.dataset.id = "";
   el.configEditor.dataset.profileId = "";
   el.configEditor.dataset.dirty = "";
   setConfigEditorError("");
@@ -284,6 +334,9 @@ async function refresh(options = {}) {
     if (seq !== refreshSeq) return;
     state.system = system;
     state.profiles = profiles.profiles || [];
+    if (!state.profileCreating && state.activeProfileId && !state.profiles.some((profile) => profile.id === state.activeProfileId)) {
+      state.activeProfileId = state.profiles[0]?.id || "";
+    }
     if (!state.bulkRunning || options.forceInstances) {
       state.instances = list.instances || [];
       if (!state.activeId && state.instances.length) state.activeId = state.instances[0].id;
@@ -303,13 +356,22 @@ async function refresh(options = {}) {
 function render() {
   const selected = active();
   renderSystem();
+  renderViewNavigation();
   renderSelector(selected);
   renderList(selected);
   renderPortMatrix(selected);
   updateBulkControls();
   renderPanels(selected);
-  renderOrphanProfiles();
+  renderProfileManager();
   updateCreateProfileControls();
+}
+
+function renderViewNavigation() {
+  const managingProfiles = state.view === "profiles";
+  el.manageProfilesBtn.textContent = managingProfiles ? "返回实例" : "配置档管理";
+  el.manageProfilesBtn.classList.toggle("active", managingProfiles);
+  el.manageProfilesBtn.disabled = profileOperationRunning();
+  el.instanceSelectorWrap.classList.toggle("muted-control", managingProfiles);
 }
 
 function renderSystem() {
@@ -533,15 +595,15 @@ function editFormContainsFocus() {
 }
 
 function renderPanels(selected) {
-  el.createPanel.classList.toggle("hidden", !state.creating);
-  el.emptyPanel.classList.toggle("hidden", state.creating || state.instances.length > 0);
-  el.detailPanel.classList.toggle("hidden", state.creating || !selected);
+  const profilesView = state.view === "profiles";
+  el.profilePanel.classList.toggle("hidden", !profilesView);
+  el.createPanel.classList.toggle("hidden", profilesView || !state.creating);
+  el.emptyPanel.classList.toggle("hidden", profilesView || state.creating || state.instances.length > 0);
+  el.detailPanel.classList.toggle("hidden", profilesView || state.creating || !selected);
   el.createSubmit.disabled = createGate.isRunning();
+  el.emptyCreate.textContent = state.profiles.length ? "创建第一个实例" : "先创建配置档";
   el.saveBasics.disabled = !selected || saveBasicsGate.isRunning();
-  if (!selected) {
-    renderConfigEditorState(null);
-    return;
-  }
+  if (profilesView || !selected) return;
 
   el.detailName.textContent = selected.name;
   el.detailMeta.textContent = selected.lastError
@@ -584,8 +646,6 @@ function renderPanels(selected) {
   el.cloneBtn.disabled = state.bulkRunning || state.cloneRunning;
   el.deleteBtn.disabled = state.bulkRunning;
   updateLatencyControls();
-  renderSubscriptionSettings(selected);
-  renderConfigEditorState(selected);
 }
 
 function applyModeFields(prefix, mode) {
@@ -593,42 +653,9 @@ function applyModeFields(prefix, mode) {
   el[`${prefix}ChainFields`].classList.toggle("hidden", !chainMode);
 }
 
-function renderSubscriptionSettings(selected) {
-  const profile = profileById(state, selected.profileId);
-  if (!profile) {
-    el.profileMeta.textContent = "配置档尚未加载。";
-    el.subscriptionSettings.classList.add("hidden");
-    configEditor.setReadOnly(true);
-    return;
-  }
-  const isSubscription = Boolean(profile.subscriptionUrl);
-  el.profileMeta.textContent = isSubscription
-    ? `订阅缓存：${formatProfileUpdate(profile)}`
-    : "手写配置：可以直接编辑 YAML。";
-  el.subscriptionSettings.classList.toggle("hidden", !isSubscription);
-  const editorReady = el.configEditor.dataset.id === selected.id
-    && el.configEditor.dataset.profileId === selected.profileId;
-  configEditor.setReadOnly(isSubscription || !editorReady);
-  if (!isSubscription) return;
-  const editing = el.subscriptionSettings.dataset.dirty === "1" && el.subscriptionSettings.dataset.profileId === profile.id;
-  el.subscriptionSettings.dataset.profileId = profile.id;
-  if (!editing) {
-    el.subscriptionUrl.value = profile.subscriptionUrl || "";
-    el.subscriptionAutoUpdate.checked = Boolean(profile.autoUpdate);
-    el.subscriptionInterval.value = profile.updateIntervalMinutes || "";
-  }
-  renderSubscriptionInfo(profile);
-}
-
 function renderProfileOptions(select, selectedId, allowNew) {
   const current = selectedId || select.value;
   select.innerHTML = "";
-  if (allowNew) {
-    const opt = document.createElement("option");
-    opt.value = newProfileValue;
-    opt.textContent = "创建新配置档";
-    select.append(opt);
-  }
   for (const profile of state.profiles) {
     const opt = document.createElement("option");
     opt.value = profile.id;
@@ -637,87 +664,233 @@ function renderProfileOptions(select, selectedId, allowNew) {
   }
   if (current && [...select.options].some((opt) => opt.value === current)) {
     select.value = current;
-  } else if (allowNew && state.profiles.length === 0) {
-    select.value = newProfileValue;
   } else if (select.options.length > 0) {
-    select.value = select.options[allowNew && state.profiles.length ? 1 : 0].value;
+    select.value = select.options[0].value;
   }
 }
 
-function renderOrphanProfiles() {
-  const orphans = orphanProfiles(state);
-  const current = el.orphanProfileSelect.value;
-  el.orphanProfileSelect.innerHTML = "";
-  if (!orphans.length) {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "没有可清理的配置档";
-    el.orphanProfileSelect.append(opt);
-    el.orphanProfileSelect.disabled = true;
-    el.deleteOrphanProfileBtn.disabled = true;
-    return;
-  }
-  el.orphanProfileSelect.disabled = false;
-  el.deleteOrphanProfileBtn.disabled = false;
-  for (const profile of orphans) {
-    const opt = document.createElement("option");
-    opt.value = profile.id;
-    opt.textContent = profileOptionLabel(profile, 0);
-    el.orphanProfileSelect.append(opt);
-  }
-  if (current && orphans.some((profile) => profile.id === current)) {
-    el.orphanProfileSelect.value = current;
-  }
+function profileListSnapshot() {
+  return JSON.stringify({
+    activeProfileId: state.activeProfileId,
+    creating: state.profileCreating,
+    busy: profileOperationRunning(),
+    profiles: state.profiles.map((profile) => [
+      profile.id,
+      profile.name,
+      profile.subscriptionUrl || "",
+      profileReferenceCount(state, profile.id),
+    ]),
+  });
 }
 
-async function updateCreateProfileControls() {
-  if (!el.createProfile.options.length) {
-    renderProfileOptions(el.createProfile, el.createProfile.value, true);
+function renderProfileList() {
+  const snapshot = profileListSnapshot();
+  if (snapshot === lastProfileListSnapshot) return;
+  lastProfileListSnapshot = snapshot;
+  const focusedId = el.profileList.contains(document.activeElement)
+    ? document.activeElement.dataset.profileId || ""
+    : "";
+  el.profileList.innerHTML = "";
+  for (const profile of state.profiles) {
+    const references = profileReferenceCount(state, profile.id);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `profile-row ${!state.profileCreating && state.activeProfileId === profile.id ? "active" : ""}`;
+    button.disabled = profileOperationRunning();
+    button.dataset.profileId = profile.id;
+    button.setAttribute("aria-current", !state.profileCreating && state.activeProfileId === profile.id ? "true" : "false");
+    button.innerHTML = `
+      <span class="profile-row-main"></span>
+      <span class="profile-row-meta"></span>
+      <code class="profile-row-id"></code>
+    `;
+    button.querySelector(".profile-row-main").textContent = profile.name || "未命名配置档";
+    button.querySelector(".profile-row-meta").textContent = `${profile.subscriptionUrl ? "订阅配置" : "手写配置"} · ${references > 0 ? `${references} 个实例` : "未使用"}`;
+    button.querySelector(".profile-row-id").textContent = profile.id;
+    button.addEventListener("click", () => selectProfile(profile.id));
+    el.profileList.append(button);
   }
-  const createNew = el.createProfile.value === newProfileValue || state.profiles.length === 0;
-  const subscriptionMode = state.createSource === "subscription" && createNew;
-  const chainMode = el.createMode.value === instanceModes.globalChain;
-  el.createSourceTabs.classList.toggle("hidden", !createNew);
-  el.createManualMode.classList.toggle("active", state.createSource === "manual");
-  el.createSubscriptionMode.classList.toggle("active", state.createSource === "subscription");
-  el.createSubscriptionFields.classList.toggle("hidden", !subscriptionMode);
-  el.createConfigWrap.classList.toggle("hidden", subscriptionMode || chainMode);
-  applyModeFields("create", el.createMode.value);
-  el.createProfileName.disabled = !createNew;
-  el.createConfig.disabled = !createNew || subscriptionMode || chainMode;
-  el.createSubscriptionUrl.disabled = !subscriptionMode;
-  el.createAutoUpdate.disabled = !subscriptionMode;
-  el.createUpdateInterval.disabled = !subscriptionMode;
-  if (subscriptionMode) {
-    createProfileConfigSeq += 1;
-    if (!el.createUpdateInterval.value) el.createUpdateInterval.value = "360";
+  if (!state.profiles.length) {
+    const empty = document.createElement("p");
+    empty.className = "profile-list-empty";
+    empty.textContent = "还没有配置档。";
+    el.profileList.append(empty);
+  }
+  if (focusedId) el.profileList.querySelector(`[data-profile-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
+}
+
+function renderProfileManager() {
+  el.profileCount.textContent = `${state.profiles.length} 个`;
+  renderProfileList();
+  const profile = activeProfile();
+  const hasEditor = state.profileCreating || Boolean(profile);
+  el.profileEditorEmpty.classList.toggle("hidden", hasEditor);
+  el.profileEditor.classList.toggle("hidden", !hasEditor);
+  if (!hasEditor) {
+    renderConfigEditorState(null);
     return;
   }
-  if (createNew) {
-    createProfileConfigSeq += 1;
-    if (!el.createConfig.value) el.createConfig.value = defaultConfig;
-    return;
-  }
-  const selectedProfile = profileById(state, el.createProfile.value);
-  if (!selectedProfile || el.createConfig.dataset.profileId === selectedProfile.id) return;
-  const requestSeq = ++createProfileConfigSeq;
-  el.createConfig.dataset.profileId = selectedProfile.id;
+
+  const isSubscription = state.profileCreating
+    ? state.profileCreateSource === "subscription"
+    : Boolean(profile.subscriptionUrl);
+  const references = profile ? profileReferenceCount(state, profile.id) : 0;
+  el.profileEditorTitle.textContent = state.profileCreating ? "新建配置档" : profile.name;
+  el.profileSourceTabs.classList.toggle("hidden", !state.profileCreating);
+  el.profileManualMode.classList.toggle("active", state.profileCreateSource === "manual");
+  el.profileSubscriptionMode.classList.toggle("active", state.profileCreateSource === "subscription");
+  el.subscriptionSettings.classList.toggle("hidden", !isSubscription);
+  el.profileConfigSection.classList.toggle("hidden", state.profileCreating && isSubscription);
+  el.profileReferenceBadge.textContent = state.profileCreating
+    ? "尚未创建"
+    : references > 0 ? `${references} 个实例引用` : "未使用";
+  el.profileReferenceBadge.classList.toggle("in-use", references > 0);
+  el.profileMeta.textContent = state.profileCreating
+    ? (isSubscription ? "创建后会下载并缓存订阅 YAML。" : "手写配置可以直接编辑 YAML。")
+    : isSubscription ? `订阅缓存：${formatProfileUpdate(profile)}` : "手写配置：修改会作用于所有引用实例。";
+  el.profileDeleteHint.textContent = state.profileCreating
+    ? ""
+    : references > 0 ? `该配置档仍被 ${references} 个实例引用，需先将这些实例改绑到其他配置档。` : "删除后无法恢复。";
+  el.deleteProfile.classList.toggle("hidden", state.profileCreating);
+  const profileBusy = profileOperationRunning();
+  el.deleteProfile.disabled = state.profileCreating || references > 0 || profileBusy;
+  el.refreshSubscription.disabled = state.profileCreating || state.profileFormDirty || profileBusy;
+  el.newProfileBtn.disabled = profileBusy;
+  el.profileName.disabled = profileBusy;
+  el.profileManualMode.disabled = profileBusy;
+  el.profileSubscriptionMode.disabled = profileBusy;
+  el.subscriptionUrl.disabled = profileBusy;
+  el.subscriptionAutoUpdate.disabled = profileBusy;
+  el.subscriptionInterval.disabled = profileBusy;
+  if (isSubscription && profile) renderSubscriptionInfo(profile);
+  renderConfigEditorState(profile);
+}
+
+function markProfileFormDirty() {
+  state.profileFormDirty = true;
+  state.profileFormVersion += 1;
+}
+
+function clearProfileFormDirty() {
+  state.profileFormDirty = false;
+  el.configEditor.dataset.dirty = "";
+}
+
+function populateProfileForm(profile) {
+  el.profileEditor.dataset.profileId = profile?.id || "__new__";
+  el.profileName.value = profile?.name || "";
+  el.profileId.value = profile?.id || "创建后自动生成";
+  el.subscriptionUrl.value = profile?.subscriptionUrl || "";
+  el.subscriptionAutoUpdate.checked = profile ? Boolean(profile.autoUpdate) : true;
+  el.subscriptionInterval.value = profile?.updateIntervalMinutes || "360";
+  if (!profile) el.subscriptionInfo.textContent = "";
+}
+
+async function loadProfileConfig(profileId) {
+  const profile = profileById(state, profileId);
+  if (!profile) return;
+  resetConfigEditor();
+  const requestSeq = ++profileConfigLoadSeq;
+  renderConfigEditorState(profile);
   try {
-    const payload = await api(`/api/profiles/${selectedProfile.id}/config`);
-    if (shouldApplyCreateProfileConfig({
+    const payload = await api(`/api/profiles/${profile.id}/config`);
+    if (!shouldApplyProfileConfigLoad({
       requestSeq,
-      currentSeq: createProfileConfigSeq,
-      requestedProfileId: selectedProfile.id,
-      currentProfileId: el.createProfile.value,
-    })) {
-      el.createConfig.value = payload.config || "";
-    }
+      currentSeq: profileConfigLoadSeq,
+      requestedProfileId: profile.id,
+      activeProfileId: state.activeProfileId,
+      dirty: configEditorDirty(),
+    })) return;
+    configEditor.setValue(payload.config || "");
+    configEditor.setReadOnly(Boolean(profile.subscriptionUrl));
+    el.configEditor.dataset.profileId = profile.id;
+    el.configEditor.dataset.dirty = "";
+    setConfigEditorError("");
+    renderConfigEditorState(profile);
   } catch (err) {
-    if (requestSeq === createProfileConfigSeq && el.createProfile.value === selectedProfile.id) {
-      el.createConfig.dataset.profileId = "";
-      showMessage(err.message, "error");
-    }
+    if (requestSeq !== profileConfigLoadSeq || state.activeProfileId !== profile.id) return;
+    setConfigEditorError(err.message);
+    renderConfigEditorState(profile);
+    showMessage(err.message, "error");
   }
+}
+
+function startNewProfile() {
+  if (profileOperationRunning()) return false;
+  if (!confirmDiscardChanges("新建配置档")) return false;
+  advanceProfileContext();
+  state.editDirty = false;
+  state.view = "profiles";
+  state.profileCreating = true;
+  state.activeProfileId = "";
+  state.profileCreateSource = "manual";
+  state.profileFormVersion = 0;
+  resetConfigEditor();
+  populateProfileForm(null);
+  configEditor.setValue(defaultConfig);
+  configEditor.setReadOnly(false);
+  el.configEditor.dataset.profileId = "__new__";
+  clearProfileFormDirty();
+  render();
+  el.profileName.focus();
+  return true;
+}
+
+function selectProfile(profileId, options = {}) {
+  if (profileOperationRunning() && !options.allowBusy) return false;
+  if (!options.force && !state.profileCreating && state.activeProfileId === profileId) {
+    state.view = "profiles";
+    render();
+    if (el.configEditor.dataset.profileId !== profileId) loadProfileConfig(profileId);
+    return true;
+  }
+  if (!options.force && state.activeProfileId !== profileId && !confirmDiscardChanges("切换配置档")) return false;
+  const profile = profileById(state, profileId);
+  if (!profile) return false;
+  advanceProfileContext();
+  state.view = "profiles";
+  state.profileCreating = false;
+  state.activeProfileId = profile.id;
+  state.profileFormVersion = 0;
+  populateProfileForm(profile);
+  clearProfileFormDirty();
+  render();
+  loadProfileConfig(profile.id);
+  return true;
+}
+
+function openProfileManager(profileId = "") {
+  if (profileOperationRunning()) return false;
+  if (state.view !== "profiles" && !confirmDiscardChanges("打开配置档管理")) return false;
+  state.editDirty = false;
+  state.view = "profiles";
+  state.creating = false;
+  const targetId = profileId || state.activeProfileId || active()?.profileId || state.profiles[0]?.id || "";
+  if (targetId) return selectProfile(targetId, { force: true });
+  return startNewProfile();
+}
+
+function closeProfileManager() {
+  if (profileOperationRunning()) return false;
+  if (!confirmDiscardChanges("返回实例")) return false;
+  advanceProfileContext();
+  state.view = "instances";
+  state.profileCreating = false;
+  state.profileFormDirty = false;
+  resetConfigEditor();
+  render();
+  refreshActiveDetails();
+  return true;
+}
+
+function updateCreateProfileControls() {
+  renderProfileOptions(el.createProfile, el.createProfile.value || state.profiles[0]?.id || "", false);
+  const hasProfiles = state.profiles.length > 0;
+  const chainMode = el.createMode.value === instanceModes.globalChain;
+  el.createProfile.disabled = !hasProfiles;
+  el.createProfileRequired.classList.toggle("hidden", hasProfiles);
+  el.createSubmit.disabled = createGate.isRunning() || !hasProfiles;
+  applyModeFields("create", el.createMode.value);
 }
 
 async function fillSuggestedPorts() {
@@ -735,9 +908,6 @@ function clearActiveDetailCache() {
   state.editInstanceId = "";
   state.editDirty = false;
   state.editVersion = 0;
-  resetConfigEditor();
-  el.subscriptionSettings.dataset.profileId = "";
-  el.subscriptionSettings.dataset.dirty = "";
   el.logs.dataset.instanceId = "";
   state.proxyGroups = [];
   state.proxyApply = false;
@@ -755,15 +925,20 @@ function markEditFormDirty() {
 }
 
 function selectInstance(id) {
-  if (state.activeId !== id) {
+  if (state.activeId !== id || state.view === "profiles") {
     if (!confirmDiscardChanges("切换实例")) {
       el.instanceSelect.value = state.activeId;
       return false;
+    }
+    if (state.view === "profiles") {
+      state.profileFormDirty = false;
+      resetConfigEditor();
     }
     clearLatencyStateForInstance(state, state.activeId);
     clearActiveDetailCache();
   }
   state.activeId = id;
+  state.view = "instances";
   state.creating = false;
   localStorage.setItem("activeInstance", id);
   render();
@@ -772,22 +947,21 @@ function selectInstance(id) {
 }
 
 function showCreate() {
+  if (!state.profiles.length) {
+    openProfileManager();
+    showMessage("请先创建配置档，再创建引用它的实例。", "error");
+    return false;
+  }
   if (!confirmDiscardChanges("新建实例")) return false;
   if (hasUnsavedChanges()) clearActiveDetailCache();
+  state.view = "instances";
   state.creating = true;
-  state.createSource = "manual";
   el.createName.value = "";
   el.createMode.value = instanceModes.rule;
   el.createMixedPort.value = "";
   el.createProxyBind.value = defaultProxyBind;
   el.createControllerPort.value = "";
-  renderProfileOptions(el.createProfile, state.profiles[0]?.id || newProfileValue, true);
-  el.createProfileName.value = "";
-  el.createSubscriptionUrl.value = "";
-  el.createAutoUpdate.checked = true;
-  el.createUpdateInterval.value = "360";
-  el.createConfig.value = defaultConfig;
-  el.createConfig.dataset.profileId = "";
+  renderProfileOptions(el.createProfile, state.profiles[0]?.id || "", false);
   el.createLocalProxies.value = "";
   el.createChain.value = "";
   showMessage("");
@@ -798,45 +972,13 @@ function showCreate() {
 
 async function refreshActiveDetails(options = {}) {
   const selected = active();
-  if (!selected || state.creating) return;
-  if (
-    !configEditorDirty() &&
-    (!configEditor.getValue() ||
-      el.configEditor.dataset.id !== selected.id ||
-      el.configEditor.dataset.profileId !== selected.profileId)
-  ) {
-    const requestSeq = ++configLoadSeq;
-    renderConfigEditorState(selected);
-    try {
-      const cfg = await api(`/api/instances/${selected.id}/config`);
-      const current = active();
-      if (requestSeq !== configLoadSeq || !shouldApplyConfigLoad({
-        requestedInstanceId: selected.id,
-        requestedProfileId: selected.profileId,
-        activeInstanceId: current?.id || "",
-        activeProfileId: current?.profileId || "",
-        dirty: configEditorDirty(),
-      })) return;
-      configEditor.setValue(cfg.config);
-      el.configEditor.dataset.id = selected.id;
-      el.configEditor.dataset.profileId = selected.profileId;
-      el.configEditor.dataset.dirty = "";
-      configEditor.setReadOnly(Boolean(profileById(state, selected.profileId)?.subscriptionUrl));
-      setConfigEditorError("");
-      renderConfigEditorState(selected);
-    } catch (err) {
-      if (requestSeq === configLoadSeq) {
-        setConfigEditorError(err.message);
-        renderConfigEditorState(selected);
-        showMessage(err.message, "error");
-      }
-    }
-  }
+  if (!selected || state.creating || state.view === "profiles") return;
   if (options.skipFast) return;
   await pollActiveTab();
 }
 
 async function pollActiveTab() {
+  if (state.view === "profiles") return;
   if (state.activeTab === "logs") await refreshLogs();
   if (state.activeTab === "proxies") await refreshProxies();
 }
@@ -1132,21 +1274,16 @@ function setActiveTab(button) {
 }
 
 async function createInstanceFromForm() {
+  if (!state.profiles.length || !el.createProfile.value) {
+    showMessage("请先创建并选择配置档。", "error");
+    return;
+  }
   if (!createGate.begin()) return;
   render();
   try {
-    const createNewProfile = el.createProfile.value === newProfileValue || state.profiles.length === 0;
-    const isSubscription = createNewProfile && state.createSource === "subscription";
     const payload = {
       name: el.createName.value.trim(),
-      profileId: createNewProfile ? "" : el.createProfile.value,
-      profileName: createNewProfile
-        ? el.createProfileName.value.trim() || `${el.createName.value.trim() || "默认"}配置档`
-        : "",
-      config: createNewProfile && !isSubscription ? el.createConfig.value : "",
-      subscriptionUrl: isSubscription ? el.createSubscriptionUrl.value.trim() : "",
-      autoUpdate: isSubscription ? el.createAutoUpdate.checked : false,
-      updateIntervalMinutes: isSubscription ? Number(el.createUpdateInterval.value) || 0 : 0,
+      profileId: el.createProfile.value,
       mixedPort: Number(el.createMixedPort.value) || 0,
       proxyBind: el.createProxyBind.value.trim(),
       controllerPort: Number(el.createControllerPort.value) || 0,
@@ -1175,12 +1312,6 @@ async function createInstanceFromForm() {
 async function saveActiveBasics() {
   const selected = active();
   if (!selected || !saveBasicsGate.begin()) return;
-  const profileChanged = selected.profileId !== el.editProfile.value;
-  if (profileChanged && configEditorDirty() && !window.confirm("当前 YAML 尚未保存。改绑配置档后将丢弃这些修改，确定继续吗？")) {
-    saveBasicsGate.end();
-    render();
-    return;
-  }
   const editVersion = state.editVersion;
   render();
   try {
@@ -1200,7 +1331,6 @@ async function saveActiveBasics() {
     if (state.editInstanceId === selected.id && state.editVersion === editVersion) {
       state.editDirty = false;
     }
-    if (profileChanged) resetConfigEditor();
     showMessage("基础信息已保存。");
     await refresh();
   } catch (err) {
@@ -1211,49 +1341,78 @@ async function saveActiveBasics() {
   }
 }
 
-async function saveActiveConfig() {
-  const selected = active();
-  if (!selected || !configEditorDirty() || !saveConfigGate.begin()) return;
-  const savedInstanceId = selected.id;
-  const savedProfileId = el.configEditor.dataset.profileId;
-  if (
-    profileById(state, selected.profileId)?.subscriptionUrl
-    || el.configEditor.dataset.id !== savedInstanceId
-    || savedProfileId !== selected.profileId
-  ) {
-    saveConfigGate.end();
-    setConfigEditorError("配置档已变化，请放弃修改并重新加载。");
-    renderConfigEditorState(selected);
-    return;
+async function saveProfile() {
+  const profile = activeProfile();
+  if ((!profile && !state.profileCreating) || !beginProfileOperation(saveProfileGate)) return;
+  const creating = state.profileCreating;
+  const source = creating ? state.profileCreateSource : (profile.subscriptionUrl ? "subscription" : "manual");
+  const savedProfileId = creating ? "__new__" : profile.id;
+  const operationContext = captureProfileOperationContext(savedProfileId);
+  const savedConfigVersion = configEditor.getVersion();
+  const savedFormVersion = state.profileFormVersion;
+  const configMayChange = source === "manual"
+    ? configEditorDirty()
+    : !creating && el.subscriptionUrl.value.trim() !== profile.subscriptionUrl;
+  const body = {
+    name: el.profileName.value.trim(),
+  };
+  if (source === "subscription") {
+    body.subscriptionUrl = el.subscriptionUrl.value.trim();
+    body.autoUpdate = el.subscriptionAutoUpdate.checked;
+    body.updateIntervalMinutes = Number(el.subscriptionInterval.value) || 0;
+  } else {
+    body.config = configEditor.getValue();
   }
-  const savedVersion = configEditor.getVersion();
-  const config = configEditor.getValue();
-  setConfigEditorError("");
-  renderConfigEditorState(selected);
   try {
-    await api(`/api/instances/${savedInstanceId}`, {
-      method: "PUT",
-      body: JSON.stringify({ config, expectedProfileId: savedProfileId }),
-    });
-    showMessage("配置已保存。");
-    const current = active();
-    if (canClearSavedConfig({
-      savedInstanceId,
-      savedProfileId,
-      savedVersion,
-      activeInstanceId: current?.id || "",
-      activeProfileId: current?.profileId || "",
-      currentVersion: configEditor.getVersion(),
-    })) {
-      el.configEditor.dataset.dirty = "";
-      setConfigEditorError("");
+    if (el.profileEditor.dataset.profileId !== savedProfileId
+      || (source === "manual" && el.configEditor.dataset.profileId !== savedProfileId)) {
+      setConfigEditorError("配置档已变化，请重新选择后再保存。");
+      return;
     }
+    setConfigEditorError("");
+    renderConfigEditorState(profile);
+    const saved = await api(creating ? "/api/profiles" : `/api/profiles/${profile.id}`, {
+      method: creating ? "POST" : "PUT",
+      body: JSON.stringify(body),
+    });
+    if (!profileOperationContextMatches(operationContext)) return;
+    if (creating) advanceProfileContext();
+    state.profileCreating = false;
+    state.activeProfileId = saved.id;
+    el.profileEditor.dataset.profileId = saved.id;
+    el.configEditor.dataset.profileId = saved.id;
+    const sameFormVersion = state.profileFormVersion === savedFormVersion;
+    const sameConfigVersion = creating
+      ? savedConfigVersion === configEditor.getVersion()
+      : canClearSavedProfileConfig({
+        savedProfileId,
+        savedVersion: savedConfigVersion,
+        activeProfileId: state.activeProfileId,
+        currentVersion: configEditor.getVersion(),
+      });
+    if (sameFormVersion && sameConfigVersion) {
+      clearProfileFormDirty();
+      setConfigEditorError("");
+      populateProfileForm(saved);
+    }
+    showMessage(creating
+      ? "配置档已创建。"
+      : configMayChange ? "配置档已保存，引用它的运行中实例需要重启后生效。" : "配置档已保存。");
     await refresh();
+    if (source === "subscription"
+      && sameFormVersion
+      && state.view === "profiles"
+      && !state.profileCreating
+      && state.activeProfileId === saved.id) {
+      await loadProfileConfig(saved.id);
+    }
   } catch (err) {
-    setConfigEditorError(err.message);
-    showMessage(err.message, "error");
+    if (profileOperationContextMatches(operationContext)) {
+      setConfigEditorError(err.message);
+      showMessage(err.message, "error");
+    }
   } finally {
-    saveConfigGate.end();
+    saveProfileGate.end();
     renderConfigEditorState();
     render();
   }
@@ -1280,23 +1439,17 @@ function bindEvents() {
   });
 
   el.instanceSelect.addEventListener("change", (event) => selectInstance(event.target.value));
+  el.manageProfilesBtn.addEventListener("click", () => {
+    if (state.view === "profiles") closeProfileManager();
+    else openProfileManager();
+  });
   el.newBtn.addEventListener("click", showCreate);
   el.startAllBtn.addEventListener("click", () => runBulkAction("start-all"));
   el.stopAllBtn.addEventListener("click", () => runBulkAction("stop-all"));
   el.emptyCreate.addEventListener("click", showCreate);
-  el.createProfile.addEventListener("change", () => {
-    el.createConfig.dataset.profileId = "";
-    updateCreateProfileControls();
-  });
+  el.createManageProfiles.addEventListener("click", () => openProfileManager());
+  el.createProfile.addEventListener("change", updateCreateProfileControls);
   el.createMode.addEventListener("change", updateCreateProfileControls);
-  el.createManualMode.addEventListener("click", () => {
-    state.createSource = "manual";
-    updateCreateProfileControls();
-  });
-  el.createSubscriptionMode.addEventListener("click", () => {
-    state.createSource = "subscription";
-    updateCreateProfileControls();
-  });
   el.createCancel.addEventListener("click", () => {
     state.creating = false;
     render();
@@ -1373,77 +1526,101 @@ function bindEvents() {
   });
 
   el.saveBasics.addEventListener("click", saveActiveBasics);
-  el.saveConfig.addEventListener("click", saveActiveConfig);
+  el.newProfileBtn.addEventListener("click", startNewProfile);
+  el.profileManualMode.addEventListener("click", () => {
+    if (!state.profileCreating || state.profileCreateSource === "manual") return;
+    state.profileCreateSource = "manual";
+    markProfileFormDirty();
+    configEditor.setReadOnly(false);
+    render();
+  });
+  el.profileSubscriptionMode.addEventListener("click", () => {
+    if (!state.profileCreating || state.profileCreateSource === "subscription") return;
+    state.profileCreateSource = "subscription";
+    markProfileFormDirty();
+    configEditor.setReadOnly(true);
+    render();
+  });
+  el.profileName.addEventListener("input", markProfileFormDirty);
+  for (const input of [el.subscriptionUrl, el.subscriptionAutoUpdate, el.subscriptionInterval]) {
+    input.addEventListener("input", markProfileFormDirty);
+    input.addEventListener("change", markProfileFormDirty);
+  }
+  el.saveProfile.addEventListener("click", saveProfile);
   el.findConfig.addEventListener("click", () => configEditor.focusSearch());
   el.discardConfig.addEventListener("click", async () => {
     if (!configEditorDirty() || !window.confirm("确定放弃当前 YAML 修改并重新加载吗？")) return;
-    resetConfigEditor();
-    await refreshActiveDetails();
+    if (state.profileCreating) {
+      configEditor.setValue(defaultConfig);
+      el.configEditor.dataset.dirty = "";
+      renderConfigEditorState();
+      return;
+    }
+    await loadProfileConfig(state.activeProfileId);
   });
 
-  el.deleteOrphanProfileBtn.addEventListener("click", async () => {
-    const profileId = el.orphanProfileSelect.value;
-    const profile = profileId ? profileById(state, profileId) : null;
+  el.deleteProfile.addEventListener("click", async () => {
+    const profile = activeProfile();
     if (!profile) return;
+    const references = profileReferenceCount(state, profile.id);
+    if (references > 0) {
+      showMessage(`该配置档仍被 ${references} 个实例引用，无法删除。`, "error");
+      return;
+    }
     if (!confirm(`确定删除配置档 ${profile.name}？此操作不可撤销。`)) return;
+    if (!beginProfileOperation(deleteProfileGate)) return;
+    const operationContext = captureProfileOperationContext(profile.id);
     try {
       await api(`/api/profiles/${profile.id}`, { method: "DELETE" });
-      if (el.createConfig.dataset.profileId === profile.id) el.createConfig.dataset.profileId = "";
+      if (!profileOperationContextMatches(operationContext)) return;
+      advanceProfileContext();
+      state.profiles = state.profiles.filter((item) => item.id !== profile.id);
+      state.activeProfileId = state.profiles[0]?.id || "";
+      state.profileFormDirty = false;
+      resetConfigEditor();
       showMessage("配置档已删除。");
       await refresh({ forceInstances: true });
+      if (state.view === "profiles" && state.activeProfileId) {
+        selectProfile(state.activeProfileId, { force: true, allowBusy: true });
+      }
     } catch (err) {
-      showMessage(err.message, "error");
-    }
-  });
-
-  el.saveProfileSettings.addEventListener("click", async () => {
-    const selected = active();
-    if (!selected) return;
-    try {
-      const profile = await api(`/api/profiles/${selected.profileId}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          subscriptionUrl: el.subscriptionUrl.value.trim(),
-          autoUpdate: el.subscriptionAutoUpdate.checked,
-          updateIntervalMinutes: Number(el.subscriptionInterval.value) || 0,
-        }),
-      });
-      state.profiles = state.profiles.map((item) => (item.id === profile.id ? profile : item));
-      el.subscriptionSettings.dataset.dirty = "";
-      showMessage("订阅设置已保存。");
+      if (profileOperationContextMatches(operationContext)) {
+        showMessage(err.message, "error");
+        await refresh({ forceInstances: true });
+      }
+    } finally {
+      deleteProfileGate.end();
       render();
-    } catch (err) {
-      showMessage(err.message, "error");
     }
   });
 
   el.refreshSubscription.addEventListener("click", async () => {
-    const selected = active();
-    if (!selected) return;
+    const profile = activeProfile();
+    if (!profile || state.profileFormDirty) {
+      showMessage("请先保存订阅设置，再立即更新。", "error");
+      return;
+    }
+    if (!beginProfileOperation(refreshSubscriptionGate)) return;
+    const operationContext = captureProfileOperationContext(profile.id);
     try {
-      el.refreshSubscription.disabled = true;
-      const profile = await api(`/api/profiles/${selected.profileId}/refresh`, { method: "POST" });
-      state.profiles = state.profiles.map((item) => (item.id === profile.id ? profile : item));
-      el.subscriptionSettings.dataset.dirty = "";
+      const refreshed = await api(`/api/profiles/${profile.id}/refresh`, { method: "POST" });
+      if (!profileOperationContextMatches(operationContext)) return;
+      state.profiles = state.profiles.map((item) => (item.id === refreshed.id ? refreshed : item));
       showMessage("订阅已更新。运行中的实例需要重启后使用新的缓存配置。");
-      resetConfigEditor();
+      populateProfileForm(refreshed);
       render();
-      await refreshActiveDetails();
+      await loadProfileConfig(refreshed.id);
     } catch (err) {
-      showMessage(err.message, "error");
+      if (profileOperationContextMatches(operationContext)) {
+        showMessage(err.message, "error");
+        await refresh();
+        if (profileOperationContextMatches(operationContext)) await loadProfileConfig(profile.id);
+      }
     } finally {
-      el.refreshSubscription.disabled = false;
+      refreshSubscriptionGate.end();
+      render();
     }
   });
-
-  for (const input of [el.subscriptionUrl, el.subscriptionAutoUpdate, el.subscriptionInterval]) {
-    input.addEventListener("input", () => {
-      el.subscriptionSettings.dataset.dirty = "1";
-    });
-    input.addEventListener("change", () => {
-      el.subscriptionSettings.dataset.dirty = "1";
-    });
-  }
 
   el.proxyFilter.addEventListener("input", () => {
     if (state.activeTab === "proxies") renderProxyGroups(state.proxyGroups, state.proxyApply);
@@ -1517,7 +1694,6 @@ document.addEventListener("visibilitychange", () => {
   runFastPoll();
 });
 
-el.createConfig.value = defaultConfig;
 bindEvents();
 refresh();
 scheduleSlowPoll();

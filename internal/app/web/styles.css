@@ -294,6 +294,22 @@ h3 {
   min-width: 280px;
 }
 
+.topbar-tools {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+#manageProfilesBtn.active {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.muted-control {
+  opacity: 0.72;
+}
+
 .selector span,
 label span {
   color: var(--muted);
@@ -348,6 +364,158 @@ label span {
 .content {
   padding: 18px 20px 28px;
   overflow: auto;
+}
+
+.profile-manager {
+  min-height: min(760px, calc(100vh - 106px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+}
+
+.profile-manager-head,
+.profile-editor-head,
+.profile-catalog-head,
+.profile-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-manager-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.profile-catalog {
+  min-width: 0;
+  padding: 14px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  overflow: auto;
+}
+
+.profile-catalog-head span,
+.profile-list-empty,
+.profile-editor-empty p,
+.profile-editor-head p,
+.profile-delete-hint {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.profile-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.profile-row {
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  padding: 9px 10px;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.profile-row.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
+}
+
+.profile-row-main,
+.profile-row-meta,
+.profile-row-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-row-main {
+  font-weight: 700;
+}
+
+.profile-row-meta,
+.profile-row-id {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.profile-row-id {
+  font-family: var(--mono);
+}
+
+.profile-editor-pane {
+  min-width: 0;
+  overflow: auto;
+}
+
+.profile-editor-pane > section {
+  padding: 18px;
+}
+
+.profile-editor-empty {
+  min-height: 100%;
+  padding: 36px;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.reference-badge {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.reference-badge.in-use {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.profile-basics {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.45fr);
+}
+
+.profile-delete-hint {
+  min-height: 20px;
+  margin-top: 12px;
+}
+
+.profile-editor-actions {
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.inline-notice {
+  margin: 4px 0 14px;
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  border-radius: var(--radius-xs);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font-size: 12.5px;
 }
 
 .instance-list {
@@ -1191,9 +1359,29 @@ label,
     min-width: 0;
   }
 
+  .topbar-tools {
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .topbar-tools .selector {
+    flex: 1;
+  }
+
   .workspace,
-  .split {
+  .split,
+  .profile-manager-grid {
     grid-template-columns: 1fr;
+  }
+
+  .profile-manager {
+    min-height: auto;
+  }
+
+  .profile-catalog {
+    max-height: 260px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
 
   .sidebar {
@@ -1265,6 +1453,19 @@ label,
 }
 
 @media (max-width: 520px) {
+  .topbar-tools,
+  .profile-manager-head,
+  .profile-editor-head,
+  .profile-editor-actions,
+  .inline-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .profile-editor-pane > section {
+    padding: 14px;
+  }
+
   .copy-tools {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
