@@ -56,7 +56,7 @@ mihomo-fleet-windows-amd64.exe
 mihomo-fleet-windows-arm64.exe
 ```
 
-构建 artifact 保留 14 天；每周清理 14 天前的 artifact 和 30 天前已完成的 workflow run，
+构建 artifact 保留 1 天；每周清理 14 天前的 artifact 和 30 天前已完成的 workflow run，
 不会删除 Release 及其 assets。
 
 ## 运行
