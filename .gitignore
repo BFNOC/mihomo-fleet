@@ -21,3 +21,6 @@ mihomo
 /internal/app/web/styles.css
 /internal/app/web/index.html
 /internal/app/web/vendor/
+
+# 迁移期工作文档，不进 git
+/docs/

@@ -13,6 +13,13 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
 
+    // package.json pins typescript to 5.x on purpose -- do not bump to 7.
+    // TypeScript 7 is the Go native port and dropped the "./lib/tsc" subpath
+    // export that vue-tsc 3.x loads the compiler through, so `pnpm typecheck`
+    // dies with ERR_PACKAGE_PATH_NOT_EXPORTED. Wait for a vue-tsc release that
+    // supports 7. (This note lives here because package.json cannot hold
+    // comments.)
+    //
     // Vite emits the bundle and Node strips types when running tests, so tsc is
     // only ever a checker. That is what lets imports carry the real ".ts"
     // extension: Node's type stripping resolves the specifier literally and

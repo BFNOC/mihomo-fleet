@@ -134,6 +134,19 @@ export interface FleetState {
   profileCreateSource: ProfileCreateSource;
   profileFormDirty: boolean;
   profileFormVersion: number;
+  // These three replace DOM datasets that used to hold the same values
+  // (el.profileEditor.dataset.profileId, el.configEditor.dataset.profileId,
+  // el.configEditor.dataset.dirty). A dataset is invisible to Vue's reactivity,
+  // so the chrome could not react to it -- the same problem that forced
+  // chrome.profileBusy to exist for the ActionGate objects. They mirror the
+  // editInstanceId/editDirty/editVersion triple below.
+  //
+  // profileConfigDirty is load-bearing beyond the profiles view:
+  // hasUnsavedChanges() reads it, and every navigation action in the app routes
+  // through confirmDiscardChanges().
+  profileFormOwnerId: string;
+  profileConfigOwnerId: string;
+  profileConfigDirty: boolean;
   creating: boolean;
   proxyGroups: FleetProxyGroup[];
   proxyApply: boolean;
@@ -161,6 +174,9 @@ export function createState(): FleetState {
     profileCreateSource: "manual",
     profileFormDirty: false,
     profileFormVersion: 0,
+    profileFormOwnerId: "",
+    profileConfigOwnerId: "",
+    profileConfigDirty: false,
     creating: false,
     proxyGroups: [],
     proxyApply: false,

@@ -1,191 +1,39 @@
-// Every id below corresponds to a static element that always exists in
-// index.html (see that file for the markup). Because the elements are part
-// of the static shell (never conditionally rendered), the non-null assertion
+// Every id below corresponds to a static element that always exists once the
+// Vue shell has mounted (see main.ts's synchronous mountShell() calls, which
+// all run before this module's bindElements() does). The non-null assertion
 // on each querySelector call reflects that runtime guarantee rather than
 // hiding an unchecked failure mode; a missing id would already have crashed
 // the previous untyped code identically.
+//
+// This interface used to list every element app.ts's now-deleted render
+// functions touched directly. Now that those views (dashboard/create/detail/
+// profiles) render themselves through Vue, most of that surface moved with
+// them; what remains is what app.ts itself still reads: the four top-level
+// panel hosts it toggles `.hidden` on, the two chain-field wrappers
+// applyModeFields() still drives, and latencyUrl/latencyTimeout, kept only
+// because latency.ts imports `Pick<DomElements, "latencyUrl" |
+// "latencyTimeout">` -- removing either would break that file, which this
+// migration pass is not allowed to touch.
 export interface DomElements {
   dashboardPanel: HTMLElement;
-  emptyCreate: HTMLButtonElement;
   profilePanel: HTMLElement;
-  newProfileBtn: HTMLButtonElement;
-  profileCount: HTMLSpanElement;
-  profileList: HTMLDivElement;
-  profileEditorEmpty: HTMLDivElement;
-  profileEditor: HTMLElement;
-  profileEditorTitle: HTMLHeadingElement;
-  profileName: HTMLInputElement;
-  profileId: HTMLInputElement;
-  profileMeta: HTMLParagraphElement;
-  profileReferenceBadge: HTMLSpanElement;
-  profileSourceTabs: HTMLDivElement;
-  profileManualMode: HTMLButtonElement;
-  profileSubscriptionMode: HTMLButtonElement;
-  profileConfigSection: HTMLDivElement;
-  profileDeleteHint: HTMLParagraphElement;
-  saveProfile: HTMLButtonElement;
-  deleteProfile: HTMLButtonElement;
   createPanel: HTMLElement;
   emptyPanel: HTMLElement;
-  detailPanel: HTMLElement;
-  createName: HTMLInputElement;
-  createProfile: HTMLSelectElement;
-  createProfileRequired: HTMLDivElement;
-  createManageProfiles: HTMLButtonElement;
-  createMode: HTMLSelectElement;
-  createMixedPort: HTMLInputElement;
-  createProxyBind: HTMLInputElement;
-  createControllerPort: HTMLInputElement;
   createChainFields: HTMLDivElement;
-  createLocalProxies: HTMLTextAreaElement;
-  createChain: HTMLTextAreaElement;
-  createSubmit: HTMLButtonElement;
-  createCancel: HTMLButtonElement;
-  detailName: HTMLHeadingElement;
-  detailMeta: HTMLParagraphElement;
-  metricStatus: HTMLElement;
-  metricPid: HTMLElement;
-  metricMixed: HTMLElement;
-  metricController: HTMLElement;
-  startBtn: HTMLButtonElement;
-  stopBtn: HTMLButtonElement;
-  restartBtn: HTMLButtonElement;
-  cloneBtn: HTMLButtonElement;
-  deleteBtn: HTMLButtonElement;
-  pendingRestartHint: HTMLSpanElement;
-  overviewMixed: HTMLElement;
-  overviewProxyBind: HTMLElement;
-  overviewController: HTMLElement;
-  overviewMode: HTMLElement;
-  overviewChain: HTMLElement;
-  overviewProfile: HTMLElement;
-  overviewUserConfig: HTMLElement;
-  overviewRuntimeConfig: HTMLElement;
-  overviewSelection: HTMLElement;
-  editName: HTMLInputElement;
-  editProfile: HTMLSelectElement;
-  editMode: HTMLSelectElement;
-  editMixedPort: HTMLInputElement;
-  editProxyBind: HTMLInputElement;
-  editControllerPort: HTMLInputElement;
   editChainFields: HTMLDivElement;
-  editLocalProxies: HTMLTextAreaElement;
-  editChain: HTMLTextAreaElement;
-  editForm: HTMLElement;
-  saveBasics: HTMLButtonElement;
-  subscriptionSettings: HTMLDivElement;
-  subscriptionUrl: HTMLInputElement;
-  subscriptionAutoUpdate: HTMLInputElement;
-  subscriptionInterval: HTMLInputElement;
-  subscriptionInfo: HTMLDivElement;
-  refreshSubscription: HTMLButtonElement;
-  configEditor: HTMLDivElement;
-  configEditorStatus: HTMLSpanElement;
-  configEditorError: HTMLDivElement;
-  findConfig: HTMLButtonElement;
-  discardConfig: HTMLButtonElement;
-  proxySource: HTMLParagraphElement;
   latencyUrl: HTMLInputElement;
   latencyTimeout: HTMLInputElement;
-  testAllLatency: HTMLButtonElement;
-  testAllRealLatency: HTMLButtonElement;
-  proxyFilter: HTMLInputElement;
-  proxiesList: HTMLDivElement;
-  logs: HTMLPreElement;
-  tabList: HTMLDivElement;
-  tabButtons: HTMLButtonElement[];
 }
 
 export function bindElements(root: ParentNode = document): DomElements {
   return {
     dashboardPanel: root.querySelector<HTMLElement>("#dashboardPanel")!,
-    emptyCreate: root.querySelector<HTMLButtonElement>("#emptyCreate")!,
     profilePanel: root.querySelector<HTMLElement>("#profilePanel")!,
-    newProfileBtn: root.querySelector<HTMLButtonElement>("#newProfileBtn")!,
-    profileCount: root.querySelector<HTMLSpanElement>("#profileCount")!,
-    profileList: root.querySelector<HTMLDivElement>("#profileList")!,
-    profileEditorEmpty: root.querySelector<HTMLDivElement>("#profileEditorEmpty")!,
-    profileEditor: root.querySelector<HTMLElement>("#profileEditor")!,
-    profileEditorTitle: root.querySelector<HTMLHeadingElement>("#profileEditorTitle")!,
-    profileName: root.querySelector<HTMLInputElement>("#profileName")!,
-    profileId: root.querySelector<HTMLInputElement>("#profileId")!,
-    profileMeta: root.querySelector<HTMLParagraphElement>("#profileMeta")!,
-    profileReferenceBadge: root.querySelector<HTMLSpanElement>("#profileReferenceBadge")!,
-    profileSourceTabs: root.querySelector<HTMLDivElement>("#profileSourceTabs")!,
-    profileManualMode: root.querySelector<HTMLButtonElement>("#profileManualMode")!,
-    profileSubscriptionMode: root.querySelector<HTMLButtonElement>("#profileSubscriptionMode")!,
-    profileConfigSection: root.querySelector<HTMLDivElement>("#profileConfigSection")!,
-    profileDeleteHint: root.querySelector<HTMLParagraphElement>("#profileDeleteHint")!,
-    saveProfile: root.querySelector<HTMLButtonElement>("#saveProfile")!,
-    deleteProfile: root.querySelector<HTMLButtonElement>("#deleteProfile")!,
     createPanel: root.querySelector<HTMLElement>("#createPanel")!,
     emptyPanel: root.querySelector<HTMLElement>("#emptyPanel")!,
-    detailPanel: root.querySelector<HTMLElement>("#detailPanel")!,
-    createName: root.querySelector<HTMLInputElement>("#createName")!,
-    createProfile: root.querySelector<HTMLSelectElement>("#createProfile")!,
-    createProfileRequired: root.querySelector<HTMLDivElement>("#createProfileRequired")!,
-    createManageProfiles: root.querySelector<HTMLButtonElement>("#createManageProfiles")!,
-    createMode: root.querySelector<HTMLSelectElement>("#createMode")!,
-    createMixedPort: root.querySelector<HTMLInputElement>("#createMixedPort")!,
-    createProxyBind: root.querySelector<HTMLInputElement>("#createProxyBind")!,
-    createControllerPort: root.querySelector<HTMLInputElement>("#createControllerPort")!,
     createChainFields: root.querySelector<HTMLDivElement>("#createChainFields")!,
-    createLocalProxies: root.querySelector<HTMLTextAreaElement>("#createLocalProxies")!,
-    createChain: root.querySelector<HTMLTextAreaElement>("#createChain")!,
-    createSubmit: root.querySelector<HTMLButtonElement>("#createSubmit")!,
-    createCancel: root.querySelector<HTMLButtonElement>("#createCancel")!,
-    detailName: root.querySelector<HTMLHeadingElement>("#detailName")!,
-    detailMeta: root.querySelector<HTMLParagraphElement>("#detailMeta")!,
-    metricStatus: root.querySelector<HTMLElement>("#metricStatus")!,
-    metricPid: root.querySelector<HTMLElement>("#metricPid")!,
-    metricMixed: root.querySelector<HTMLElement>("#metricMixed")!,
-    metricController: root.querySelector<HTMLElement>("#metricController")!,
-    startBtn: root.querySelector<HTMLButtonElement>("#startBtn")!,
-    stopBtn: root.querySelector<HTMLButtonElement>("#stopBtn")!,
-    restartBtn: root.querySelector<HTMLButtonElement>("#restartBtn")!,
-    cloneBtn: root.querySelector<HTMLButtonElement>("#cloneBtn")!,
-    deleteBtn: root.querySelector<HTMLButtonElement>("#deleteBtn")!,
-    pendingRestartHint: root.querySelector<HTMLSpanElement>("#pendingRestartHint")!,
-    overviewMixed: root.querySelector<HTMLElement>("#overviewMixed")!,
-    overviewProxyBind: root.querySelector<HTMLElement>("#overviewProxyBind")!,
-    overviewController: root.querySelector<HTMLElement>("#overviewController")!,
-    overviewMode: root.querySelector<HTMLElement>("#overviewMode")!,
-    overviewChain: root.querySelector<HTMLElement>("#overviewChain")!,
-    overviewProfile: root.querySelector<HTMLElement>("#overviewProfile")!,
-    overviewUserConfig: root.querySelector<HTMLElement>("#overviewUserConfig")!,
-    overviewRuntimeConfig: root.querySelector<HTMLElement>("#overviewRuntimeConfig")!,
-    overviewSelection: root.querySelector<HTMLElement>("#overviewSelection")!,
-    editName: root.querySelector<HTMLInputElement>("#editName")!,
-    editProfile: root.querySelector<HTMLSelectElement>("#editProfile")!,
-    editMode: root.querySelector<HTMLSelectElement>("#editMode")!,
-    editMixedPort: root.querySelector<HTMLInputElement>("#editMixedPort")!,
-    editProxyBind: root.querySelector<HTMLInputElement>("#editProxyBind")!,
-    editControllerPort: root.querySelector<HTMLInputElement>("#editControllerPort")!,
     editChainFields: root.querySelector<HTMLDivElement>("#editChainFields")!,
-    editLocalProxies: root.querySelector<HTMLTextAreaElement>("#editLocalProxies")!,
-    editChain: root.querySelector<HTMLTextAreaElement>("#editChain")!,
-    editForm: root.querySelector<HTMLElement>("#editForm")!,
-    saveBasics: root.querySelector<HTMLButtonElement>("#saveBasics")!,
-    subscriptionSettings: root.querySelector<HTMLDivElement>("#subscriptionSettings")!,
-    subscriptionUrl: root.querySelector<HTMLInputElement>("#subscriptionUrl")!,
-    subscriptionAutoUpdate: root.querySelector<HTMLInputElement>("#subscriptionAutoUpdate")!,
-    subscriptionInterval: root.querySelector<HTMLInputElement>("#subscriptionInterval")!,
-    subscriptionInfo: root.querySelector<HTMLDivElement>("#subscriptionInfo")!,
-    refreshSubscription: root.querySelector<HTMLButtonElement>("#refreshSubscription")!,
-    configEditor: root.querySelector<HTMLDivElement>("#configEditor")!,
-    configEditorStatus: root.querySelector<HTMLSpanElement>("#configEditorStatus")!,
-    configEditorError: root.querySelector<HTMLDivElement>("#configEditorError")!,
-    findConfig: root.querySelector<HTMLButtonElement>("#findConfig")!,
-    discardConfig: root.querySelector<HTMLButtonElement>("#discardConfig")!,
-    proxySource: root.querySelector<HTMLParagraphElement>("#proxySource")!,
     latencyUrl: root.querySelector<HTMLInputElement>("#latencyUrl")!,
     latencyTimeout: root.querySelector<HTMLInputElement>("#latencyTimeout")!,
-    testAllLatency: root.querySelector<HTMLButtonElement>("#testAllLatency")!,
-    testAllRealLatency: root.querySelector<HTMLButtonElement>("#testAllRealLatency")!,
-    proxyFilter: root.querySelector<HTMLInputElement>("#proxyFilter")!,
-    proxiesList: root.querySelector<HTMLDivElement>("#proxiesList")!,
-    logs: root.querySelector<HTMLPreElement>("#logs")!,
-    tabList: root.querySelector<HTMLDivElement>("#tabList")!,
-    tabButtons: [...root.querySelectorAll<HTMLButtonElement>(".tab")],
   };
 }
