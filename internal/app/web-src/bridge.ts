@@ -140,6 +140,20 @@ export const banner = reactive<{ text: string; tone: BannerTone }>({
   tone: "info",
 });
 
+/**
+ * Writes the raw text into the banner above. Lives here, next to the state it
+ * owns, because nearly every service module needs it and routing them all
+ * through app.ts was the main thing keeping that file a hub.
+ *
+ * MessageBanner.vue owns the localizedMessage() translation and the 6s
+ * auto-dismiss timer, so neither happens here -- pass the backend's English
+ * string through untouched.
+ */
+export function showMessage(text: string, kind: string = "info"): void {
+  banner.text = text;
+  banner.tone = kind === "error" ? "error" : "info";
+}
+
 // Derived chrome state that the shell renders from but that does NOT live in
 // FleetState, so `store` alone cannot expose it to components.
 //
