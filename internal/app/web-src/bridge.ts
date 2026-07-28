@@ -1,16 +1,40 @@
+import { reactive } from "vue";
+
 // Action registry bridging Vue components to the behaviour still implemented in
-// app.js. Components import `actions` and call `actions.selectInstance(id)`;
-// app.js fills the table during boot via registerActions().
+// app.ts. Components import `actions` and call `actions.selectInstance(id)`;
+// app.ts fills the table during boot via registerActions().
 //
-// This exists to keep the dependency one-way. Components must not import app.js
-// directly: app.js touches the DOM at module scope, so importing it from a
+// This exists to keep the dependency one-way. Components must not import app.ts
+// directly: app.ts touches the DOM at module scope, so importing it from a
 // component would run it before Vue has mounted anything.
 //
-// Every entry is a no-op until app.js registers it, so a component rendered
+// Every entry is a no-op until app.ts registers it, so a component rendered
 // during the boot gap cannot throw.
 const noop = () => {};
 
-export const actions = {
+// Each entry carries its own explicit signature. Inferring them all from `noop`
+// would type every action as `() => void`, so `actions.selectInstance(id)` would
+// fail to compile with "Expected 0 arguments, but got 1" -- pushing every call
+// site into a cast that silently defeats the checking this table exists for.
+//
+// Return types are `void` even though app.ts's implementations return boolean:
+// callers here never use the result, and `() => boolean` is assignable to
+// `() => void`, so registration still typechecks.
+export interface FleetActions {
+  selectInstance: (id: string) => void;
+  showCreate: () => void;
+  openDashboard: () => void;
+  closeDashboard: () => void;
+  openProfileManager: (profileId?: string) => void;
+  closeProfileManager: () => void;
+  startAll: () => void;
+  stopAll: () => void;
+  copyProxyValue: (value: string, success: string | undefined) => void;
+  showMessage: (text: string, tone?: BannerTone) => void;
+  dismissMessage: () => void;
+}
+
+export const actions: FleetActions = {
   selectInstance: noop,
   showCreate: noop,
   openDashboard: noop,
@@ -24,13 +48,34 @@ export const actions = {
   dismissMessage: noop,
 };
 
-export function registerActions(table: Partial<typeof actions>) {
+export function registerActions(table: Partial<FleetActions>): void {
   Object.assign(actions, table);
 }
 
 // Transient UI state that belongs to the chrome rather than to the domain state
-// in store.js: the message banner's current text and severity.
-export const banner = {
+// in store.ts: the message banner's current text and severity.
+//
+// reactive() is load-bearing, not decoration. The banner is written by app.ts's
+// showMessage() and read by the Vue chrome; a plain object would let the write
+// land with no re-render, so the banner would silently never update.
+export type BannerTone = "info" | "error";
+
+export const banner = reactive<{ text: string; tone: BannerTone }>({
   text: "",
   tone: "info",
-};
+});
+
+// Derived chrome state that the shell renders from but that does NOT live in
+// FleetState, so `store` alone cannot expose it to components.
+//
+// `profileBusy` mirrors app.ts's profileOperationRunning(), which reads three
+// ActionGate objects held in app.ts module scope. Those gates are plain
+// closures outside the reactive graph, so a component reading them directly
+// would never re-render. app.ts pushes the derived value in from render() --
+// render() already runs on every state change, so it is the natural sync point.
+//
+// Keep this object minimal. Anything that genuinely belongs to the domain
+// belongs in state.ts/FleetState instead, where it is reactive for free.
+export const chrome = reactive<{ profileBusy: boolean }>({
+  profileBusy: false,
+});
