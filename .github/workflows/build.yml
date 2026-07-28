@@ -59,8 +59,8 @@ jobs:
       - name: 测试前端逻辑
         run: pnpm test:web
 
-      - name: 校验前端构建产物
-        run: pnpm verify:web
+      - name: 构建前端
+        run: pnpm build:web
 
       - name: 读取版本
         id: version
