@@ -5,20 +5,7 @@
 // hiding an unchecked failure mode; a missing id would already have crashed
 // the previous untyped code identically.
 export interface DomElements {
-  systemLine: HTMLParagraphElement;
-  systemWarning: HTMLDivElement;
-  showDashboardBtn: HTMLButtonElement;
   dashboardPanel: HTMLElement;
-  manageProfilesBtn: HTMLButtonElement;
-  instanceSelectorWrap: HTMLLabelElement;
-  instanceSelect: HTMLSelectElement;
-  instanceList: HTMLDivElement;
-  portMatrixCount: HTMLSpanElement;
-  portMatrixList: HTMLUListElement;
-  message: HTMLDivElement;
-  newBtn: HTMLButtonElement;
-  startAllBtn: HTMLButtonElement;
-  stopAllBtn: HTMLButtonElement;
   emptyCreate: HTMLButtonElement;
   profilePanel: HTMLElement;
   newProfileBtn: HTMLButtonElement;
@@ -111,20 +98,7 @@ export interface DomElements {
 
 export function bindElements(root: ParentNode = document): DomElements {
   return {
-    systemLine: root.querySelector<HTMLParagraphElement>("#systemLine")!,
-    systemWarning: root.querySelector<HTMLDivElement>("#systemWarning")!,
-    showDashboardBtn: root.querySelector<HTMLButtonElement>("#showDashboardBtn")!,
     dashboardPanel: root.querySelector<HTMLElement>("#dashboardPanel")!,
-    manageProfilesBtn: root.querySelector<HTMLButtonElement>("#manageProfilesBtn")!,
-    instanceSelectorWrap: root.querySelector<HTMLLabelElement>("#instanceSelectorWrap")!,
-    instanceSelect: root.querySelector<HTMLSelectElement>("#instanceSelect")!,
-    instanceList: root.querySelector<HTMLDivElement>("#instanceList")!,
-    portMatrixCount: root.querySelector<HTMLSpanElement>("#portMatrixCount")!,
-    portMatrixList: root.querySelector<HTMLUListElement>("#portMatrixList")!,
-    message: root.querySelector<HTMLDivElement>("#message")!,
-    newBtn: root.querySelector<HTMLButtonElement>("#newBtn")!,
-    startAllBtn: root.querySelector<HTMLButtonElement>("#startAllBtn")!,
-    stopAllBtn: root.querySelector<HTMLButtonElement>("#stopAllBtn")!,
     emptyCreate: root.querySelector<HTMLButtonElement>("#emptyCreate")!,
     profilePanel: root.querySelector<HTMLElement>("#profilePanel")!,
     newProfileBtn: root.querySelector<HTMLButtonElement>("#newProfileBtn")!,

@@ -6,7 +6,7 @@
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
     "test:web": "node --test internal/app/web-src/*.test.ts",
-    "verify:web": "pnpm build:web && git diff --exit-code -- internal/app/web/app.js internal/app/web/index.html internal/app/web/styles.css internal/app/web/vendor/THIRD_PARTY_NOTICES.txt",
+    "verify:web": "pnpm build:web && git diff --exit-code -- internal/app/web/app.js internal/app/web/chunk-app.js internal/app/web/index.html internal/app/web/styles.css internal/app/web/vendor/THIRD_PARTY_NOTICES.txt",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

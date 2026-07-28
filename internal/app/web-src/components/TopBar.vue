@@ -8,7 +8,7 @@
 //     and #instanceSelectorWrap parts. #showDashboardBtn also lives in that
 //     function but belongs to the sidebar, migrated separately.
 //   - renderSelector() (app.ts:441-461) in full.
-import { computed } from "vue";
+import { computed, nextTick } from "vue";
 import { store } from "../store.ts";
 import { actions, chrome } from "../bridge.ts";
 import { activeInstance } from "../state.ts";
@@ -49,15 +49,19 @@ function toggleProfileManager(): void {
 // which calls selectInstance(id) -- a function that does far more than set a
 // field (resets editors, refetches), so this goes through the bridge instead
 // of a v-model on store.activeId directly.
-//
-// The cast is needed because bridge.ts types every `actions` entry from the
-// shared zero-arg `noop`, so `actions.selectInstance` is statically
-// `() => void` even though the real handler app.ts registers requires the
-// new instance id. bridge.ts should give selectInstance its own
-// `(id: string) => void` signature; see this component's migration report.
-function onInstanceChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value;
-  (actions.selectInstance as (id: string) => void)(value);
+// The re-sync after nextTick() is not redundant. selectInstance() can decline
+// the switch -- it puts up a "discard changes?" confirm and bails if the user
+// cancels -- leaving store.activeId untouched. The browser has already moved
+// the native <select> to the clicked option by then, but from Vue's side
+// :value never changed, so the vdom sees no diff and writes nothing: the
+// control would keep displaying an instance that is not actually selected.
+// Writing the element's value back from the store after the render settles
+// covers the declined case, and is a no-op when the switch went through.
+async function onInstanceChange(event: Event): Promise<void> {
+  const select = event.target as HTMLSelectElement;
+  actions.selectInstance(select.value);
+  await nextTick();
+  select.value = selectedInstance.value?.id ?? "";
 }
 </script>
 

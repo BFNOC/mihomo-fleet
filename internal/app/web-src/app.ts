@@ -33,23 +33,18 @@ import {
   modeLabel,
   normalizeStoredLatencyTimeout,
   normalizeStoredLatencyUrl,
-  proxyCopyActions,
-  proxyCopyPlaceholders,
   proxyEndpointText,
   proxyLabelSources,
-  proxyPort,
   proxyPortLabel,
   selectionSummary,
-  shortMihomoVersion,
   splitProxyLabel,
 } from "./format.ts";
 import type { BatchActionPayload } from "./format.ts";
-import { escapeHTML, localizedMessage, statusClass, statusText } from "./i18n.ts";
+import { escapeHTML, localizedMessage, statusText } from "./i18n.ts";
 import { createLatencyController } from "./latency.ts";
 import {
   activeInstance,
   clearLatencyStateForInstance,
-  createState,
   isLatencyRunning,
   latencyResult,
   profileById,
@@ -57,6 +52,8 @@ import {
   pruneLatencyResultsForGroups,
 } from "./state.ts";
 import type { FleetInstance, FleetProfile, FleetProxyGroup, FleetState, FleetSystemStatus, FleetTab } from "./state.ts";
+import { banner, chrome, registerActions } from "./bridge.ts";
+import { store } from "./store.ts";
 import {
   canClearSavedProfileConfig,
   createActionGate,
@@ -67,7 +64,12 @@ import {
 } from "./yaml-editor.ts";
 import type { ActionGate } from "./yaml-editor.ts";
 
-const state = createState();
+// Aliased (not reassigned -- `state` stays `const`) to the same reactive
+// object store.ts wraps in reactive(createState()). Vue's chrome components
+// read that object directly, so mutating fields on `state` here is what
+// makes their re-render happen with no explicit render() call needed on
+// their side. See store.ts for the contract.
+const state = store;
 const el = bindElements();
 
 const createGate = createActionGate();
@@ -79,10 +81,6 @@ let profileConfigLoadSeq = 0;
 let profileContextSeq = 0;
 let refreshSeq = 0;
 let proxiesRequestSeq = 0;
-let messageClearTimer: ReturnType<typeof setTimeout> | null = null;
-let lastInstanceSelectorSnapshot = "";
-let lastInstanceListSnapshot = "";
-let lastPortMatrixSnapshot = "";
 let lastProfileListSnapshot = "";
 let lastProxyGroupsSnapshot = "";
 let slowPollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -256,23 +254,12 @@ function resetConfigEditor(): void {
   renderConfigEditorState();
 }
 
+// Writes the raw text into the reactive banner; MessageBanner.vue owns both
+// the localizedMessage() translation and the 6s auto-dismiss timer now, so
+// neither happens here (see bridge.ts's `banner` and the component for why).
 function showMessage(text: string, kind: string = "info"): void {
-  if (messageClearTimer) {
-    clearTimeout(messageClearTimer);
-    messageClearTimer = null;
-  }
-  if (!text) {
-    el.message.classList.add("hidden");
-    el.message.textContent = "";
-    return;
-  }
-  const isError = kind === "error";
-  el.message.textContent = localizedMessage(text);
-  el.message.className = `message ${isError ? "error" : ""}`;
-  el.message.setAttribute("role", isError ? "alert" : "status");
-  if (!isError) {
-    messageClearTimer = setTimeout(() => showMessage(""), 6000);
-  }
+  banner.text = text;
+  banner.tone = kind === "error" ? "error" : "info";
 }
 
 function renderSubscriptionInfo(profile: FleetProfile): void {
@@ -393,230 +380,15 @@ async function refresh(options: RefreshOptions = {}): Promise<void> {
 
 function render(): void {
   const selected = active();
-  renderSystem();
-  renderViewNavigation();
-  renderSelector(selected);
-  renderList(selected);
-  renderPortMatrix(selected);
+  // ActionGate objects backing profileOperationRunning() live outside the
+  // reactive graph (plain closures in this module), so a component reading
+  // them directly would never re-render; render() is the sync point since it
+  // already runs on every state change (see bridge.ts's `chrome`).
+  chrome.profileBusy = profileOperationRunning();
   updateBulkControls();
   renderPanels(selected);
   renderProfileManager();
   updateCreateProfileControls();
-}
-
-function renderViewNavigation(): void {
-  const managingProfiles = state.view === "profiles";
-  const onDashboard = state.view === "dashboard";
-  el.manageProfilesBtn.textContent = managingProfiles ? "返回实例" : "配置档管理";
-  el.manageProfilesBtn.classList.toggle("active", managingProfiles);
-  el.manageProfilesBtn.disabled = profileOperationRunning();
-  el.showDashboardBtn.classList.toggle("active", onDashboard);
-  el.showDashboardBtn.setAttribute("aria-current", onDashboard ? "page" : "false");
-  el.showDashboardBtn.disabled = profileOperationRunning();
-  el.instanceSelectorWrap.classList.toggle("muted-control", managingProfiles || onDashboard);
-}
-
-function renderSystem(): void {
-  if (!state.system) return;
-  const found = state.system.mihomoFound;
-  const appVersion = `Mihomo Fleet v${state.system.appVersion || "dev"}`;
-  el.systemLine.textContent = found
-    ? `${appVersion} · 控制器 127.0.0.1:${state.system.port} · mihomo ${shortMihomoVersion(state.system.version) || "已检测到"}`
-    : `${appVersion} · 控制器 127.0.0.1:${state.system.port} · 未找到 mihomo`;
-  if (!found) {
-    el.systemWarning.textContent = "未在 Mihomo Fleet 同目录或 PATH 中找到 mihomo。你仍然可以创建实例，但启动需要同目录二进制文件，或通过 -mihomo 参数指定路径。";
-    el.systemWarning.classList.remove("hidden");
-  } else {
-    el.systemWarning.classList.add("hidden");
-  }
-}
-
-function instanceSelectorSnapshot(selected: FleetInstance | null): string {
-  return JSON.stringify({
-    selectedId: selected?.id || "",
-    items: state.instances.map((item) => [item.id, item.name, item.status]),
-  });
-}
-
-function renderSelector(selected: FleetInstance | null): void {
-  if (document.activeElement === el.instanceSelect) return;
-  const snapshot = instanceSelectorSnapshot(selected);
-  if (snapshot === lastInstanceSelectorSnapshot) return;
-  lastInstanceSelectorSnapshot = snapshot;
-  el.instanceSelect.innerHTML = "";
-  if (!state.instances.length) {
-    const opt = document.createElement("option");
-    opt.textContent = "暂无实例";
-    opt.value = "";
-    el.instanceSelect.append(opt);
-    return;
-  }
-  for (const item of state.instances) {
-    const opt = document.createElement("option");
-    opt.value = item.id;
-    opt.textContent = `${item.name}（${statusText(item.status)}）`;
-    opt.selected = selected?.id === item.id;
-    el.instanceSelect.append(opt);
-  }
-}
-
-function instanceListSnapshot(selected: FleetInstance | null): string {
-  return JSON.stringify({
-    selectedId: selected?.id || "",
-    items: state.instances.map((item) => [
-      item.id,
-      item.name,
-      item.status,
-      item.mixedPort,
-      item.profileName || item.profileId || "",
-      selectionSummary(item),
-      item.pendingRestart === true,
-    ]),
-  });
-}
-
-function capturedInstanceListFocusKey(): string {
-  const activeElement = document.activeElement;
-  return activeElement instanceof HTMLElement && el.instanceList.contains(activeElement)
-    ? activeElement.dataset.instanceFocus || ""
-    : "";
-}
-
-function restoreInstanceListFocus(focusedKey: string): void {
-  if (!focusedKey) return;
-  const controls = [...el.instanceList.querySelectorAll<HTMLElement>("[data-instance-focus]")];
-  if (!controls.length) return;
-  const target = controls.find((node) => node.dataset.instanceFocus === focusedKey) || controls[0];
-  target?.focus({ preventScroll: true });
-}
-
-function renderList(selected: FleetInstance | null): void {
-  const snapshot = instanceListSnapshot(selected);
-  if (snapshot === lastInstanceListSnapshot) return;
-  lastInstanceListSnapshot = snapshot;
-  const focusedKey = capturedInstanceListFocusKey();
-  el.instanceList.innerHTML = "";
-  for (const item of state.instances) {
-    const button = document.createElement("button");
-    button.className = `instance-row ${selected && selected.id === item.id ? "active" : ""}`;
-    button.type = "button";
-    button.dataset.instanceFocus = item.id;
-    const profile = item.profileName || item.profileId || "未选择配置档";
-    const selectedText = selectionSummary(item);
-    const choice = selectedText !== "无" ? ` · ${selectedText}` : "";
-    button.innerHTML = `
-      <div class="row-main">
-        <span class="row-name"></span>
-        <span class="status ${statusClass(item.status)}"></span>
-      </div>
-      <div class="row-meta"></div>
-    `;
-    // These selectors always match: they target the .row-name/.status/.row-main
-    // nodes the innerHTML template just above set on this same button.
-    button.querySelector(".row-name")!.textContent = item.name;
-    button.querySelector(".status")!.textContent = statusText(item.status);
-    button.querySelector(".row-meta")!.textContent = `混合端口 ${proxyPortLabel(item.mixedPort)} · ${profile}${choice}`;
-    if (item.pendingRestart === true && item.status === "running") {
-      const hint = document.createElement("span");
-      hint.className = "pending-restart-chip";
-      hint.textContent = "配置已修改，重启后生效";
-      button.querySelector(".row-main")!.append(hint);
-    }
-    button.addEventListener("click", () => selectInstance(item.id));
-    el.instanceList.append(button);
-  }
-  restoreInstanceListFocus(focusedKey);
-}
-
-function portMatrixSnapshot(selected: FleetInstance | null): string {
-  return JSON.stringify({
-    selectedId: selected?.id || "",
-    items: state.instances.map((item) => [item.id, item.name, item.status, item.mixedPort, item.proxyBind || ""]),
-  });
-}
-
-function renderPortMatrix(selected: FleetInstance | null): void {
-  const countText = `${state.instances.length} 个出口`;
-  if (el.portMatrixCount.textContent !== countText) el.portMatrixCount.textContent = countText;
-  const snapshot = portMatrixSnapshot(selected);
-  if (snapshot === lastPortMatrixSnapshot) return;
-  lastPortMatrixSnapshot = snapshot;
-  const activeElement = document.activeElement;
-  const focusedKey = activeElement instanceof HTMLElement && el.portMatrixList.contains(activeElement)
-    ? activeElement.dataset.portFocus || ""
-    : "";
-  el.portMatrixList.innerHTML = "";
-  if (!state.instances.length) {
-    const empty = document.createElement("li");
-    empty.className = "port-empty";
-    empty.textContent = "暂无端口";
-    el.portMatrixList.append(empty);
-    return;
-  }
-  for (const item of state.instances) {
-    const row = document.createElement("li");
-    row.className = `port-row ${selected && selected.id === item.id ? "active" : ""}`;
-
-    const selectButton = document.createElement("button");
-    selectButton.className = "port-row-select";
-    selectButton.type = "button";
-    selectButton.dataset.portFocus = `select:${item.id}`;
-    selectButton.setAttribute("aria-label", `${item.name}，${statusText(item.status)}，${proxyEndpointText(item)}`);
-    if (selected && selected.id === item.id) selectButton.setAttribute("aria-current", "true");
-    selectButton.addEventListener("click", () => selectInstance(item.id));
-
-    const top = document.createElement("span");
-    top.className = "port-row-top";
-    const name = document.createElement("span");
-    name.className = "port-row-name";
-    name.textContent = item.name;
-    const status = document.createElement("span");
-    status.className = `status ${statusClass(item.status)}`;
-    status.textContent = statusText(item.status);
-    top.append(name, status);
-
-    const address = document.createElement("span");
-    address.className = "port-address";
-    address.textContent = proxyEndpointText(item);
-    selectButton.append(top, address);
-
-    const tools = document.createElement("div");
-    tools.className = "copy-tools";
-    const actions = proxyPort(item.mixedPort) ? proxyCopyActions(item) : proxyCopyPlaceholders();
-    for (const action of actions) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = action.label;
-      button.title = action.title;
-      button.disabled = !action.value;
-      button.dataset.portFocus = `copy:${item.id}:${action.id}`;
-      const unavailable = action.value ? "" : "（端口未分配，无法复制）";
-      button.setAttribute("aria-label", `${action.title}：${item.name}${unavailable}`);
-      if (action.value) {
-        button.addEventListener("click", async () => {
-          await copyProxyValue(action.value, action.message);
-        });
-      }
-      tools.append(button);
-    }
-
-    row.append(selectButton, tools);
-    el.portMatrixList.append(row);
-  }
-  if (focusedKey) restorePortMatrixFocus(focusedKey);
-}
-
-function restorePortMatrixFocus(focusedKey: string): void {
-  const controls = [...el.portMatrixList.querySelectorAll<HTMLButtonElement>("[data-port-focus]")].filter((node) => !node.disabled);
-  const instanceId = portFocusInstanceId(focusedKey);
-  const target = controls.find((node) => node.dataset.portFocus === focusedKey)
-    || controls.find((node) => node.dataset.portFocus === `select:${instanceId}`)
-    || controls.find((node) => node.dataset.portFocus?.startsWith("select:"));
-  target?.focus({ preventScroll: true });
-}
-
-function portFocusInstanceId(focusedKey: string): string {
-  return focusedKey.split(":")[1] || "";
 }
 
 async function copyProxyValue(value: string, success: string | undefined): Promise<void> {
@@ -630,12 +402,7 @@ async function copyProxyValue(value: string, success: string | undefined): Promi
 }
 
 function updateBulkControls(): void {
-  const canStart = state.instances.some((item) => item.status !== "running" && item.status !== "starting");
-  const canStop = state.instances.some((item) => item.status === "running");
-  el.newBtn.disabled = state.bulkRunning;
   el.emptyCreate.disabled = state.bulkRunning;
-  el.startAllBtn.disabled = state.bulkRunning || !canStart;
-  el.stopAllBtn.disabled = state.bulkRunning || !canStop;
 }
 
 function editFormContainsFocus(): boolean {
@@ -651,9 +418,6 @@ function renderPanels(selected: FleetInstance | null): void {
   const away = profilesView || dashboardView;
   el.profilePanel.classList.toggle("hidden", !profilesView);
   el.dashboardPanel.classList.toggle("hidden", !dashboardView);
-  // The dashboard is the one view pinned to the viewport (no page scroll), and
-  // the stylesheet needs a hook above .shell to switch that on.
-  document.body.classList.toggle("view-dashboard", dashboardView);
   el.createPanel.classList.toggle("hidden", away || !state.creating);
   el.emptyPanel.classList.toggle("hidden", away || state.creating || state.instances.length > 0);
   el.detailPanel.classList.toggle("hidden", away || state.creating || !selected);
@@ -1061,7 +825,6 @@ function markEditFormDirty(): void {
 function selectInstance(id: string): boolean {
   if (state.activeId !== id || state.view === "profiles") {
     if (!confirmDiscardChanges("切换实例")) {
-      el.instanceSelect.value = state.activeId;
       return false;
     }
     if (state.view === "profiles") {
@@ -1608,15 +1371,6 @@ function bindEvents(): void {
     refreshActiveDetails();
   });
 
-  el.instanceSelect.addEventListener("change", (event) => selectInstance((event.target as HTMLSelectElement).value));
-  el.manageProfilesBtn.addEventListener("click", () => {
-    if (state.view === "profiles") closeProfileManager();
-    else openProfileManager();
-  });
-  el.showDashboardBtn.addEventListener("click", () => {
-    if (state.view === "dashboard") closeDashboard();
-    else openDashboard();
-  });
   el.dashboardPanel.addEventListener("click", (event) => {
     // Matches the `event.target as Element | null` cast dashboard.ts's own
     // bindComposition() uses for the same reason: DOM lib's generic event
@@ -1656,9 +1410,6 @@ function bindEvents(): void {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) openInstanceWorkbench(row.dataset.instanceId || "");
     else focusDashboardInstance(row.dataset.instanceId || "");
   });
-  el.newBtn.addEventListener("click", showCreate);
-  el.startAllBtn.addEventListener("click", () => runBulkAction("start-all"));
-  el.stopAllBtn.addEventListener("click", () => runBulkAction("stop-all"));
   el.emptyCreate.addEventListener("click", showCreate);
   el.createManageProfiles.addEventListener("click", () => openProfileManager());
   el.createProfile.addEventListener("change", updateCreateProfileControls);
@@ -1940,6 +1691,24 @@ window.addEventListener("resize", () => {
 setGeoResolver((ips) => api<GeoLookupResult>("/api/geoip", { method: "POST", body: JSON.stringify({ ips }) }));
 
 bindEvents();
+
+// Fills in bridge.ts's action table so the Vue chrome (TopBar/SideBar/etc.)
+// can call back into this still-vanilla layer. Registered once, after
+// bindEvents() so every implementation below is fully wired up first.
+registerActions({
+  selectInstance,
+  showCreate,
+  openDashboard,
+  closeDashboard,
+  openProfileManager,
+  closeProfileManager,
+  startAll: () => runBulkAction("start-all"),
+  stopAll: () => runBulkAction("stop-all"),
+  copyProxyValue,
+  showMessage,
+  dismissMessage: () => showMessage(""),
+});
+
 refresh();
 scheduleSlowPoll();
 scheduleFastPoll();

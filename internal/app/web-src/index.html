@@ -7,50 +7,19 @@
   </head>
   <body>
     <div class="shell">
-      <header class="topbar">
-        <div class="brand">
-          <div class="mark" aria-hidden="true">MF</div>
-          <div class="brand-copy">
-            <h1>Mihomo Fleet</h1>
-            <p id="systemLine">正在加载本地控制器</p>
-          </div>
-        </div>
-        <div class="topbar-tools">
-          <button id="manageProfilesBtn" type="button">配置档管理</button>
-          <label id="instanceSelectorWrap" class="selector">
-            <span>当前实例</span>
-            <select id="instanceSelect" aria-label="当前实例"></select>
-          </label>
-        </div>
-      </header>
+      <!-- Vue mount point: TopBar.vue supplies the contents. main.ts replaces
+           the children of this element, so the wrapper and its class stay. -->
+      <header class="topbar"></header>
 
       <main class="workspace">
-        <aside class="sidebar">
-          <button id="showDashboardBtn" class="side-dashboard-btn" type="button" aria-current="false">
-            <span class="side-dashboard-label">总览</span>
-            <span class="side-dashboard-hint">舰队状态与流量</span>
-          </button>
-          <div class="side-head">
-            <h2>实例列表</h2>
-            <button id="newBtn" class="primary" type="button">新建</button>
-          </div>
-          <div class="side-actions">
-            <button id="startAllBtn" class="primary" type="button">全部启动</button>
-            <button id="stopAllBtn" type="button">全部关闭</button>
-          </div>
-          <div id="systemWarning" class="warning hidden"></div>
-          <div id="instanceList" class="instance-list"></div>
-          <section class="port-matrix" aria-labelledby="portMatrixTitle">
-            <div class="port-matrix-head">
-              <h3 id="portMatrixTitle">端口矩阵</h3>
-              <span id="portMatrixCount" aria-live="polite" aria-atomic="true">0 个出口</span>
-            </div>
-            <ul id="portMatrixList" class="port-matrix-list" role="list"></ul>
-          </section>
-        </aside>
+        <!-- Vue mount point: SideBar.vue supplies the contents. -->
+        <aside class="sidebar"></aside>
 
         <section class="content">
-          <div id="message" class="message hidden" role="status" aria-live="polite"></div>
+          <!-- Vue mount point: MessageBanner.vue renders the #message element
+               itself, so it needs a host to be mounted into rather than being
+               mounted onto #message directly. -->
+          <div id="messageMount"></div>
           <section id="dashboardPanel" class="dashboard hidden" aria-label="舰队总览"></section>
           <section id="profilePanel" class="profile-manager hidden" aria-labelledby="profileManagerTitle">
             <div class="profile-manager-head">
@@ -342,6 +311,6 @@
         </section>
       </main>
     </div>
-    <script type="module" src="/app.ts"></script>
+    <script type="module" src="/main.ts"></script>
   </body>
 </html>
