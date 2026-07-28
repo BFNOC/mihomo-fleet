@@ -1,7 +1,7 @@
-import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { build } from "vite";
 
 const root = process.cwd();
 const webDir = path.join(root, "internal/app/web");
@@ -9,16 +9,9 @@ const outputDir = path.join(webDir, "vendor");
 
 await mkdir(outputDir, { recursive: true });
 
-await build({
-  entryPoints: [path.join(root, "internal/app/web-src/app.js")],
-  outfile: path.join(webDir, "app.js"),
-  bundle: true,
-  format: "iife",
-  legalComments: "eof",
-  minify: true,
-  platform: "browser",
-  target: ["es2020"],
-});
+// Emits web/{index.html,app.js,styles.css}; see vite.config.js for the
+// deterministic-filename constraints that go:embed depends on.
+await build();
 
 const dependencyTree = JSON.parse(execFileSync("pnpm", ["list", "--prod", "--json", "--depth", "Infinity"], {
   cwd: root,
