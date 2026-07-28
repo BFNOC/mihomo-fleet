@@ -27,6 +27,10 @@
 
       <main class="workspace">
         <aside class="sidebar">
+          <button id="showDashboardBtn" class="side-dashboard-btn" type="button" aria-current="false">
+            <span class="side-dashboard-label">总览</span>
+            <span class="side-dashboard-hint">舰队状态与流量</span>
+          </button>
           <div class="side-head">
             <h2>实例列表</h2>
             <button id="newBtn" class="primary" type="button">新建</button>
@@ -48,6 +52,7 @@
 
         <section class="content">
           <div id="message" class="message hidden" role="status" aria-live="polite"></div>
+          <section id="dashboardPanel" class="dashboard hidden" aria-label="舰队总览"></section>
           <section id="profilePanel" class="profile-manager hidden" aria-labelledby="profileManagerTitle">
             <div class="profile-manager-head">
               <div class="panel-title">

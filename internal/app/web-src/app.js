@@ -11,6 +11,7 @@ import {
   slowPollIntervalMs,
 } from "./constants.js";
 import { api, writeClipboard } from "./api.js";
+import { renderDashboard, sampleFleet } from "./dashboard.js";
 import { bindElements } from "./dom.js";
 import {
   alignProxyGroupsToProfileOrder,
@@ -368,10 +369,14 @@ function render() {
 
 function renderViewNavigation() {
   const managingProfiles = state.view === "profiles";
+  const onDashboard = state.view === "dashboard";
   el.manageProfilesBtn.textContent = managingProfiles ? "返回实例" : "配置档管理";
   el.manageProfilesBtn.classList.toggle("active", managingProfiles);
   el.manageProfilesBtn.disabled = profileOperationRunning();
-  el.instanceSelectorWrap.classList.toggle("muted-control", managingProfiles);
+  el.showDashboardBtn.classList.toggle("active", onDashboard);
+  el.showDashboardBtn.setAttribute("aria-current", onDashboard ? "page" : "false");
+  el.showDashboardBtn.disabled = profileOperationRunning();
+  el.instanceSelectorWrap.classList.toggle("muted-control", managingProfiles || onDashboard);
 }
 
 function renderSystem() {
@@ -596,14 +601,21 @@ function editFormContainsFocus() {
 
 function renderPanels(selected) {
   const profilesView = state.view === "profiles";
+  const dashboardView = state.view === "dashboard";
+  // Anything that is not the instance workbench hides the workbench panels.
+  // Testing "not instances" rather than "is profiles" keeps this correct as
+  // further views are added.
+  const away = profilesView || dashboardView;
   el.profilePanel.classList.toggle("hidden", !profilesView);
-  el.createPanel.classList.toggle("hidden", profilesView || !state.creating);
-  el.emptyPanel.classList.toggle("hidden", profilesView || state.creating || state.instances.length > 0);
-  el.detailPanel.classList.toggle("hidden", profilesView || state.creating || !selected);
+  el.dashboardPanel.classList.toggle("hidden", !dashboardView);
+  el.createPanel.classList.toggle("hidden", away || !state.creating);
+  el.emptyPanel.classList.toggle("hidden", away || state.creating || state.instances.length > 0);
+  el.detailPanel.classList.toggle("hidden", away || state.creating || !selected);
   el.createSubmit.disabled = createGate.isRunning();
   el.emptyCreate.textContent = state.profiles.length ? "创建第一个实例" : "先创建配置档";
   el.saveBasics.disabled = !selected || saveBasicsGate.isRunning();
-  if (profilesView || !selected) return;
+  if (dashboardView) renderDashboard(el.dashboardPanel, state);
+  if (away || !selected) return;
 
   el.detailName.textContent = selected.name;
   el.detailMeta.textContent = selected.lastError
@@ -870,6 +882,60 @@ function openProfileManager(profileId = "") {
   return startNewProfile();
 }
 
+// The dashboard is read-only, so leaving the workbench for it cannot lose
+// edits and needs no discard prompt. Coming back does, because the profile
+// editor may still be mid-operation.
+function openDashboard() {
+  if (profileOperationRunning()) return false;
+  if (state.view === "profiles" && !confirmDiscardChanges("打开总览")) return false;
+  if (state.view === "profiles") {
+    advanceProfileContext();
+    state.profileCreating = false;
+    state.profileFormDirty = false;
+    resetConfigEditor();
+  }
+  state.view = "dashboard";
+  render();
+  sampleFleetTraffic();
+  return true;
+}
+
+function closeDashboard() {
+  state.view = "instances";
+  render();
+  refreshActiveDetails();
+  return true;
+}
+
+// Keep the user on the dashboard when they pick a row; only "打开工作台"
+// jumps into the dense instance detail pane.
+function focusDashboardInstance(id) {
+  if (!id || !state.instances.some((item) => item.id === id)) return false;
+  state.activeId = id;
+  localStorage.setItem("activeInstance", id);
+  if (state.view === "dashboard") renderDashboard(el.dashboardPanel, state);
+  else render();
+  return true;
+}
+
+function openInstanceWorkbench(id) {
+  if (!id) return false;
+  if (state.view === "profiles" && !confirmDiscardChanges("打开工作台")) return false;
+  if (state.view === "profiles") {
+    state.profileFormDirty = false;
+    resetConfigEditor();
+  }
+  clearLatencyStateForInstance(state, state.activeId);
+  clearActiveDetailCache();
+  state.activeId = id;
+  state.view = "instances";
+  state.creating = false;
+  localStorage.setItem("activeInstance", id);
+  render();
+  refreshActiveDetails();
+  return true;
+}
+
 function closeProfileManager() {
   if (profileOperationRunning()) return false;
   if (!confirmDiscardChanges("返回实例")) return false;
@@ -972,13 +1038,13 @@ function showCreate() {
 
 async function refreshActiveDetails(options = {}) {
   const selected = active();
-  if (!selected || state.creating || state.view === "profiles") return;
+  if (!selected || state.creating || state.view !== "instances") return;
   if (options.skipFast) return;
   await pollActiveTab();
 }
 
 async function pollActiveTab() {
-  if (state.view === "profiles") return;
+  if (state.view !== "instances") return;
   if (state.activeTab === "logs") await refreshLogs();
   if (state.activeTab === "proxies") await refreshProxies();
 }
@@ -1443,6 +1509,31 @@ function bindEvents() {
     if (state.view === "profiles") closeProfileManager();
     else openProfileManager();
   });
+  el.showDashboardBtn.addEventListener("click", () => {
+    if (state.view === "dashboard") closeDashboard();
+    else openDashboard();
+  });
+  el.dashboardPanel.addEventListener("click", (event) => {
+    const openBtn = event.target.closest("[data-open-instance]");
+    if (openBtn) {
+      openInstanceWorkbench(openBtn.dataset.openInstance);
+      return;
+    }
+    const row = event.target.closest("tr[data-instance-id]");
+    if (row) focusDashboardInstance(row.dataset.instanceId);
+  });
+  el.dashboardPanel.addEventListener("dblclick", (event) => {
+    const row = event.target.closest("tr[data-instance-id]");
+    if (row) openInstanceWorkbench(row.dataset.instanceId);
+  });
+  el.dashboardPanel.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const row = event.target.closest("tr[data-instance-id]");
+    if (!row) return;
+    event.preventDefault();
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) openInstanceWorkbench(row.dataset.instanceId);
+    else focusDashboardInstance(row.dataset.instanceId);
+  });
   el.newBtn.addEventListener("click", showCreate);
   el.startAllBtn.addEventListener("click", () => runBulkAction("start-all"));
   el.stopAllBtn.addEventListener("click", () => runBulkAction("stop-all"));
@@ -1683,8 +1774,23 @@ function scheduleFastPoll(delay = fastPollIntervalMs) {
   fastPollTimer = setTimeout(runFastPoll, delay);
 }
 
+// Keep sampling while any view is open so opening the dashboard already has a
+// filled window. Cost is one /connections call per running instance per tick.
+async function sampleFleetTraffic() {
+  if (!state.instances?.length) return;
+  await sampleFleet(
+    state.instances,
+    (id) => api(`/api/mihomo/${encodeURIComponent(id)}/connections`),
+    Date.now(),
+  );
+  if (state.view === "dashboard") renderDashboard(el.dashboardPanel, state);
+}
+
 async function runFastPoll() {
-  if (!document.hidden) await pollActiveTab();
+  if (!document.hidden) {
+    await sampleFleetTraffic();
+    await pollActiveTab();
+  }
   scheduleFastPoll();
 }
 

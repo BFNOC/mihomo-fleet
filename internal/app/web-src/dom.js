@@ -1,6 +1,8 @@
 const ids = [
   "systemLine",
   "systemWarning",
+  "showDashboardBtn",
+  "dashboardPanel",
   "manageProfilesBtn",
   "instanceSelectorWrap",
   "instanceSelect",
