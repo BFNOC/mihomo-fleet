@@ -27,15 +27,24 @@
 // ~2307), so this template's four top-level nodes below (.dashboard-head,
 // .dashboard-grid-strip, .dashboard-grid-mid, .dashboard-grid-conns) must
 // stay direct roots of the fragment -- no wrapping element of our own.
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watchEffect } from "vue";
 import type { Ref } from "vue";
 import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
 import { activeInstance } from "../../state.ts";
 import type { FleetInstance, FleetSystemStatus } from "../../state.ts";
-import { fleetConnections, fleetConnectionRows, fleetSeries, instanceConnections, instanceSeries } from "../../dashboard.ts";
+import {
+  fleetConnections,
+  fleetConnectionRows,
+  fleetSeries,
+  instanceConnections,
+  instanceSeries,
+  requestGeo,
+  resolveGeo,
+} from "../../dashboard.ts";
 import type { FleetConnectionRow } from "../../dashboard.ts";
 import {
+  countryFlag,
   createSeries,
   filterConnections,
   formatDuration,
@@ -72,6 +81,16 @@ import DashboardSparkline from "./DashboardSparkline.vue";
 const heartbeat = ref(0);
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 const heartbeatIntervalMs = 1800;
+
+// How many rows each table may show. Real values are measured against the
+// viewport after mount (see measureRows() far below); these are the pre-measure
+// defaults. Declared up here, rather than next to that measurement code, because
+// computeds AND the eager watchEffect that drives the GEO lookups read them --
+// `const` is in its temporal dead zone until its own line runs, so a setup-time
+// read of a ref declared later throws ReferenceError rather than seeing the
+// default.
+const rowBudgetConnections = ref(6);
+const rowBudgetInstances = ref(4);
 
 // ---------------------------------------------------------------------------
 // Fleet/instance identity
@@ -327,6 +346,25 @@ const allConnectionRows = computed<FleetConnectionRow[]>(() => {
 });
 const matchedConnectionRows = computed(() => sortConnections(filterConnections(allConnectionRows.value, searchQuery.value)));
 const shownConnectionRows = computed(() => matchedConnectionRows.value.slice(0, rowBudgetConnections.value));
+
+// Restores the GEO column, which connectionsCard()/geoCell() used to drive.
+// Kicking the lookups off is a side effect, so it lives in a watchEffect rather
+// than inside a computed; only what is actually on screen gets looked up, same
+// as the original's requestGeo(shown).
+watchEffect(() => {
+  requestGeo(shownConnectionRows.value);
+});
+
+// dashboard.ts's geoCache is a plain Map outside Vue's reactive graph, so a
+// resolved code cannot invalidate anything by itself. Reading `heartbeat` here
+// republishes the cache once per tick -- the same cadence at which the old
+// innerHTML repaint picked resolutions up.
+const connectionGeo = computed<Record<string, string>>(() => {
+  void heartbeat.value;
+  const codes: Record<string, string> = {};
+  for (const row of shownConnectionRows.value) codes[row.ip] = resolveGeo(row.ip);
+  return codes;
+});
 const connectionsNote = computed(() => {
   const all = allConnectionRows.value;
   const matched = matchedConnectionRows.value;
@@ -365,19 +403,6 @@ function connectionChainTitle(row: FleetConnectionRow): string {
   return row.chains.length ? [...row.chains].reverse().join(" → ") : "";
 }
 
-// NOTE (gap): the GEO column used dashboard.ts's private requestGeo()/
-// geoCache to resolve a country code for non-local addresses. Neither is
-// exported (only setGeoResolver() and the GeoLookupResult type are), so this
-// view can label local/private addresses (via traffic.ts's exported
-// localAddressLabel(), which has no gap) but shows "—" for everything else
-// rather than a resolved flag. The task's own instructions classify the geo
-// cache as pure logic to import and call, not reimplement -- so this is
-// reported as a dashboard.ts export gap rather than given a second, parallel
-// cache here. Restoring it needs `requestGeo` exported (already written,
-// dashboard.ts:531) plus a read accessor, e.g.
-// `export function resolveGeo(ip: string): string { return geoCache.get(ip) || ""; }`.
-// See this agent's report.
-
 // ---------------------------------------------------------------------------
 // Row-fit measurement (viewport-fit mode)
 // ---------------------------------------------------------------------------
@@ -387,9 +412,6 @@ function connectionChainTitle(row: FleetConnectionRow): string {
 // -- they are DOM measurement glue that existed purely to serve the old
 // innerHTML render loop, so they fall under "DOM rendering becomes your
 // templates" like the rest of dashboard.ts's render functions.
-const rowBudgetConnections = ref(6);
-const rowBudgetInstances = ref(4);
-
 // #dashboardPanel is the host element main.ts mounts this view into (see the
 // file header); this view's own template has no single wrapping element to
 // take a template ref on (it must not add one -- see the CSS note above), so
@@ -657,6 +679,9 @@ onUnmounted(() => {
               </td>
               <td class="dash-conn-geo">
                 <span v-if="localAddressLabel(row.ip)" class="dash-geo-local">{{ localAddressLabel(row.ip) }}</span>
+                <span v-else-if="connectionGeo[row.ip]" class="dash-geo">
+                  <span class="dash-geo-flag" aria-hidden="true">{{ countryFlag(connectionGeo[row.ip]) }}</span>{{ connectionGeo[row.ip] }}
+                </span>
                 <span v-else class="dash-geo-unknown">—</span>
               </td>
               <td class="num">{{ formatRate(row.up).value }} {{ formatRate(row.up).unit }}<small>{{ formatBytes(row.upload) }}</small></td>
