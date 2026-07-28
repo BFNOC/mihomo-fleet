@@ -1,0 +1,88 @@
+/*
+ * Sidebar: fleet membership list and its rows.
+ */
+.sidebar {
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, var(--surface));
+  padding: 16px;
+  overflow: auto;
+}
+
+.side-dashboard-btn {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.side-dashboard-btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+.side-dashboard-btn.active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.side-dashboard-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.side-dashboard-label {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.side-dashboard-hint {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.side-head,
+.detail-head,
+.panel-title,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.side-head h2 {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.side-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.side-actions button {
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 12.5px;
+}
+
+.content {
+  padding: 18px 20px 28px;
+  overflow: auto;
+}

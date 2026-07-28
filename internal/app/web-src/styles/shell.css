@@ -1,0 +1,298 @@
+/*
+ * Application shell: the oklch progressive-enhancement block, base
+ * elements, topbar/brand, workspace frame, panel titles, empty states.
+ */
+@supports (color: oklch(0% 0 0)) {
+  :root {
+    --accent-border: oklch(0.68 0.08 175);
+    --line-hover: oklch(0.78 0.02 95);
+    --warn-text: oklch(0.42 0.08 75);
+    --bg: oklch(0.96 0.008 95);
+    --surface: oklch(0.99 0.004 95);
+    --panel: oklch(0.975 0.007 95);
+    --line: oklch(0.9 0.012 95);
+    --text: oklch(0.24 0.02 160);
+    --muted: oklch(0.5 0.02 160);
+    --soft: oklch(0.94 0.01 95);
+    --accent: oklch(0.56 0.11 175);
+    --accent-strong: oklch(0.45 0.1 175);
+    --accent-soft: oklch(0.94 0.035 175);
+    --warn: oklch(0.72 0.13 75);
+    --warn-soft: oklch(0.96 0.035 85);
+    --danger: oklch(0.55 0.15 30);
+    --danger-soft: oklch(0.95 0.03 30);
+    --on-accent: oklch(0.99 0.004 175);
+    --shadow-sm: 0 1px 2px oklch(0.3 0.02 160 / 0.05);
+    --shadow: 0 8px 28px oklch(0.3 0.02 160 / 0.07);
+    --shadow-card: 0 1px 2px oklch(0.3 0.02 160 / 0.05), 0 12px 32px oklch(0.3 0.02 160 / 0.06);
+    --spark-up: oklch(0.72 0.13 75);
+    --spark-down: oklch(0.56 0.11 175);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 480px at 0% -10%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 55%),
+    radial-gradient(900px 420px at 100% 0%, color-mix(in srgb, var(--warn) 7%, transparent), transparent 50%),
+    var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text);
+  transition:
+    border-color 160ms var(--ease),
+    background-color 160ms var(--ease),
+    color 160ms var(--ease),
+    box-shadow 160ms var(--ease);
+}
+
+button {
+  min-height: var(--control-h);
+  padding: 0 12px;
+  cursor: pointer;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+button:hover,
+select:hover,
+input:hover,
+textarea:hover {
+  border-color: var(--line-hover);
+}
+
+button:hover {
+  background: var(--surface);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--accent-strong) 35%, transparent);
+}
+
+button.primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+button.danger {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+  background: var(--danger-soft);
+  color: var(--danger);
+  box-shadow: none;
+}
+
+button.danger:hover {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  background: color-mix(in srgb, var(--danger-soft) 70%, var(--surface));
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  box-shadow: none;
+  transform: none;
+}
+
+input,
+select {
+  height: var(--control-h);
+  padding: 0 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  accent-color: var(--accent);
+  box-shadow: none;
+}
+
+textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 220px;
+  padding: 10px 12px;
+  display: block;
+  overflow: auto;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+textarea.compact-code {
+  min-height: 92px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+h3 {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.topbar {
+  height: 60px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  gap: 18px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.brand p,
+.panel-title p,
+.empty p,
+.detail-head p {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.empty-mark {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  color: var(--on-accent);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent-strong));
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  color: var(--on-accent);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent-strong));
+  border: 1px solid color-mix(in srgb, var(--accent-strong) 55%, transparent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--accent) 22%, transparent);
+  flex-shrink: 0;
+}
+
+.selector {
+  display: grid;
+  gap: 3px;
+  min-width: 280px;
+}
+
+.topbar-tools {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+#manageProfilesBtn.active {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.muted-control {
+  opacity: 0.72;
+}
+
+.selector span,
+label span {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  min-height: 0;
+}

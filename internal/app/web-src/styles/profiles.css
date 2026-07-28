@@ -1,0 +1,184 @@
+/*
+ * Profile manager: the two-column catalog + editor pane layout.
+ */
+.profile-manager {
+  min-height: min(760px, calc(100vh - 106px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+}
+
+.profile-manager-head,
+.profile-editor-head,
+.profile-catalog-head,
+.profile-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-manager-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.profile-catalog {
+  min-width: 0;
+  padding: 14px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  overflow: auto;
+}
+
+.profile-catalog-head span,
+.profile-list-empty,
+.profile-editor-empty p,
+.profile-editor-head p,
+.profile-delete-hint {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.profile-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.profile-row {
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  padding: 9px 10px;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.profile-row.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
+}
+
+.profile-row-main,
+.profile-row-meta,
+.profile-row-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-row-main {
+  font-weight: 700;
+}
+
+.profile-row-meta,
+.profile-row-id {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.profile-row-id {
+  font-family: var(--mono);
+}
+
+.profile-editor-pane {
+  min-width: 0;
+  overflow: auto;
+}
+
+.profile-editor-pane > section {
+  padding: 18px;
+}
+
+.profile-editor-empty {
+  min-height: 100%;
+  padding: 36px;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.reference-badge {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.reference-badge.in-use {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.profile-basics {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.45fr);
+}
+
+.profile-delete-hint {
+  min-height: 20px;
+  margin-top: 12px;
+}
+
+.profile-editor-actions {
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.inline-notice {
+  margin: 4px 0 14px;
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  border-radius: var(--radius-xs);
+  background: var(--warn-soft);
+  color: var(--warn-text);
+  font-size: 12.5px;
+}
+
+.instance-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.instance-row {
+  width: 100%;
+  text-align: left;
+  padding: 10px 11px;
+  min-height: 64px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 4px;
+  box-shadow: none;
+}
+
+.instance-row:hover {
+  border-color: var(--line-hover);
+  background: var(--surface);
+}
+
+.instance-row.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}

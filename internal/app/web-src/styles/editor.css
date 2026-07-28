@@ -1,0 +1,98 @@
+/*
+ * YAML config editor surface: toolbar, status line, CodeMirror host.
+ */
+.config-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0 8px;
+}
+
+.config-editor-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-weight: 650;
+}
+
+.config-editor-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.config-editor-status[data-state="dirty"],
+.config-editor-status[data-state="saving"] {
+  color: var(--warn-text);
+}
+
+.config-editor-status[data-state="error"] {
+  color: var(--danger);
+}
+
+.code {
+  height: min(56vh, 560px);
+  min-height: 430px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #f8f7f3;
+  font: 12px/1.5 var(--mono);
+  tab-size: 2;
+}
+
+.code:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+.code .cm-editor,
+.code .cm-scroller {
+  height: 100%;
+}
+
+.code .cm-editor.cm-focused {
+  outline: 0;
+}
+
+.code .cm-gutters {
+  border-right-color: var(--line);
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.code .cm-activeLine,
+.code .cm-activeLineGutter {
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+}
+
+.config-editor-error {
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 10px 14px;
+  margin: 14px 0 0;
+}
+
+.kv dt {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}

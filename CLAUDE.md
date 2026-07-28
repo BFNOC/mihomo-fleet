@@ -41,6 +41,11 @@ Frontend source is `internal/app/web-src`. The layout that satisfies rule 2:
 - Root-level modules (`api.ts`, `format.ts`, `state.ts`, `traffic.ts`,
   `constants.ts`, `messages.ts`) are framework-free and unit-tested. Pure logic
   belongs there, not in a component.
+- `styles/` — `styles.css` is only an ordered `@import` list. Import order **is**
+  the cascade order, since Vite inlines them at build time, so put a new concern
+  next to the ones it relates to rather than appending it. `styles/responsive.css`
+  sits mid-list on purpose. After any change here, prove the cascade is intact by
+  diffing the built `internal/app/web/styles.css` against its previous bytes.
 
 ### Rule 8 in practice here
 

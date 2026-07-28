@@ -1,0 +1,159 @@
+/*
+ * Responsive overrides for everything above.
+ * 
+ * Position is load-bearing: these rules must come after the component files
+ * that precede them and before the dashboard files that follow, because the
+ * cascade resolves them by source order. Do not move this import.
+ */
+@media (max-width: 1100px) {
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metrics div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .metrics div:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    height: auto;
+    align-items: stretch;
+    flex-direction: column;
+    padding: 12px 14px;
+    position: static;
+  }
+
+  .selector {
+    min-width: 0;
+  }
+
+  .topbar-tools {
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .topbar-tools .selector {
+    flex: 1;
+  }
+
+  .workspace,
+  .split,
+  .profile-manager-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-manager {
+    min-height: auto;
+  }
+
+  .profile-catalog {
+    max-height: 260px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .metrics,
+  .form-grid,
+  .proxy-tools,
+  .subscription-fields,
+  .chain-fields,
+  .form-grid.two {
+    grid-template-columns: 1fr;
+  }
+
+  .metrics {
+    margin: 14px 14px 0;
+  }
+
+  .metrics div {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .metrics div:last-child {
+    border-bottom: 0;
+  }
+
+  .tabs {
+    margin: 14px 14px 0;
+    overflow-x: auto;
+  }
+
+  .tab-panel {
+    padding: 14px;
+  }
+
+  .detail-head {
+    padding: 14px 14px 0;
+  }
+
+  .detail-head,
+  .side-head,
+  .panel-title,
+  .config-editor-toolbar,
+  .actions {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .code {
+    height: min(58vh, 480px);
+    min-height: 340px;
+  }
+
+  .proxy-group-head {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .proxy-group-actions {
+    flex-wrap: wrap;
+  }
+
+  .proxy-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar-tools,
+  .profile-manager-head,
+  .profile-editor-head,
+  .profile-editor-actions,
+  .inline-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .profile-editor-pane > section {
+    padding: 14px;
+  }
+
+  .copy-tools {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .copy-tools button {
+    min-height: 36px;
+  }
+
+  .content {
+    padding: 12px;
+  }
+}
+
+/* Dashboard ---------------------------------------------------------------
+   The instance workbench stays dense on purpose (see DESIGN.md). The
+   dashboard is the one relaxed surface, so it gets its own larger radius and
+   softer shadow rather than loosening the shared --radius everything else
+   depends on. */

@@ -1,0 +1,209 @@
+/*
+ * Proxy groups, node grid, latency chips and the proxy tooltip.
+ */
+.proxy-tools {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 110px auto auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.latency-timeout input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.proxy-filter {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.proxy-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.proxy-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: var(--panel);
+}
+
+.proxy-group-head {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.8fr) minmax(0, 2fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.proxy-group-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-group-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.proxy-group-meta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-group-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.proxy-group-actions button {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.proxy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.proxy-choice {
+  width: 100%;
+  min-height: 48px;
+  text-align: left;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.proxy-name {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-source {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.proxy-tooltip {
+  position: fixed;
+  z-index: 200;
+  max-width: min(520px, calc(100vw - 16px));
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.latency-chips {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.latency-chips.current {
+  align-items: center;
+}
+
+.latency-chip {
+  min-width: 52px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--muted);
+  font: 11px/1.35 var(--mono);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.latency-chip.good {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.latency-chip.warn {
+  background: var(--warn-soft);
+  color: var(--warn-text);
+}
+
+.latency-chip.bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.latency-chip.running {
+  background: var(--surface);
+  color: var(--accent-strong);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
+}
+
+.proxy-choice.selected {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  color: var(--accent-strong);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.proxy-choice:disabled {
+  background: var(--panel);
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.logs {
+  height: min(360px, max(220px, calc(100vh - 260px)));
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: #f7f5f0;
+  color: var(--text);
+  font: 12px/1.55 var(--mono);
+  white-space: pre-wrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.hidden {
+  display: none !important;
+}
