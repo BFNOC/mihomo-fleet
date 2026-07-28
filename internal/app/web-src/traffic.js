@@ -104,6 +104,134 @@ export function deriveRate(previous, current) {
   return { up: delta("uploadTotal"), down: delta("downloadTotal") };
 }
 
+// The same /connections payload the fleet chart derives its totals from also
+// carries one entry per live connection. Normalizing here keeps mihomo's exact
+// field names (and the defensive `?.` chains they need) out of the renderer.
+export function connectionSnapshot(payload) {
+  const list = Array.isArray(payload?.connections) ? payload.connections : [];
+  return list.map(normalizeConnection);
+}
+
+function normalizeConnection(raw) {
+  const meta = raw?.metadata || {};
+  const chains = Array.isArray(raw?.chains) ? raw.chains.map((value) => String(value)) : [];
+  const text = (value) => String(value ?? "").trim();
+  return {
+    id: text(raw?.id),
+    host: text(meta.host) || text(meta.sniffHost),
+    ip: text(meta.destinationIP),
+    port: text(meta.destinationPort),
+    sourceIP: text(meta.sourceIP),
+    network: text(meta.network).toUpperCase(),
+    kind: text(meta.type),
+    process: text(meta.process),
+    // chains[0] is the node that actually carried the request; the rest are
+    // the groups it was picked through, outermost last.
+    chains,
+    node: chains[0] || "",
+    rule: text(raw?.rule),
+    rulePayload: text(raw?.rulePayload),
+    upload: Math.max(0, Number(raw?.upload) || 0),
+    download: Math.max(0, Number(raw?.download) || 0),
+    start: Date.parse(text(raw?.start)) || 0,
+    up: 0,
+    down: 0,
+  };
+}
+
+// Per-connection speed is the same cumulative-counter differencing deriveRate
+// does for the fleet, keyed by connection id. A closed connection just stops
+// appearing, so a counter that went backwards can only mean an id was reused --
+// clamp to zero instead of emitting a negative rate. Rates are written onto the
+// rows in place; the returned map is the next tick's baseline.
+export function diffConnections(previous, rows, elapsedMs) {
+  const elapsed = Number(elapsedMs) || 0;
+  const seconds = elapsed > 0 ? elapsed / 1000 : 0;
+  const totals = new Map();
+  for (const row of rows || []) {
+    if (row.id) totals.set(row.id, { upload: row.upload, download: row.download });
+    const before = row.id && seconds ? previous?.get(row.id) : null;
+    if (!before) {
+      row.up = 0;
+      row.down = 0;
+      continue;
+    }
+    row.up = row.upload > before.upload ? (row.upload - before.upload) / seconds : 0;
+    row.down = row.download > before.download ? (row.download - before.download) / seconds : 0;
+  }
+  return { rows: rows || [], totals };
+}
+
+// Busiest first: a fleet can hold thousands of connections and only the top of
+// this list ever gets rendered, so idle keepalives must not crowd out the
+// transfer someone is actually watching.
+export function sortConnections(rows) {
+  return [...(rows || [])].sort((a, b) => {
+    const rate = (b.down + b.up) - (a.down + a.up);
+    if (rate) return rate;
+    const bytes = (b.download + b.upload) - (a.download + a.upload);
+    if (bytes) return bytes;
+    return (b.start || 0) - (a.start || 0);
+  });
+}
+
+export function filterConnections(rows, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return rows || [];
+  return (rows || []).filter((row) => connectionHaystack(row).includes(needle));
+}
+
+function connectionHaystack(row) {
+  return [
+    row.host,
+    row.ip,
+    row.port,
+    row.sourceIP,
+    row.process,
+    row.rule,
+    row.rulePayload,
+    row.network,
+    row.kind,
+    row.instanceName,
+    ...(row.chains || []),
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+// Private, loopback, link-local and CGNAT space is never in a country database,
+// so the table labels it locally instead of spending a lookup on it.
+export function localAddressLabel(ip) {
+  const value = String(ip || "").trim();
+  if (!value) return "";
+  if (value === "::1" || value.startsWith("127.")) return "本机";
+  if (value.startsWith("169.254.") || /^fe80:/i.test(value)) return "链路本地";
+  if (/^f[cd][0-9a-f]{2}:/i.test(value)) return "内网";
+  const [a, b] = value.split(".");
+  const first = Number(a);
+  const second = Number(b);
+  if (first === 10) return "内网";
+  if (first === 192 && second === 168) return "内网";
+  if (first === 172 && second >= 16 && second <= 31) return "内网";
+  if (first === 100 && second >= 64 && second <= 127) return "运营商 NAT";
+  return "";
+}
+
+// A regional indicator pair renders as a flag where the platform has one and as
+// the two letters everywhere else, which is exactly the fallback we want.
+export function countryFlag(code) {
+  const value = String(code || "").toUpperCase();
+  if (!/^[A-Z]{2}$/.test(value)) return "";
+  return String.fromCodePoint(...[...value].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65));
+}
+
+export function formatDuration(ms) {
+  const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${minutes % 60}m`;
+}
+
 export function formatRate(bytesPerSecond) {
   const units = ["B/s", "kB/s", "MB/s", "GB/s"];
   let size = Math.max(0, Number(bytesPerSecond) || 0);

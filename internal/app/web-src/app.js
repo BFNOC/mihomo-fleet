@@ -11,7 +11,7 @@ import {
   slowPollIntervalMs,
 } from "./constants.js";
 import { api, writeClipboard } from "./api.js";
-import { renderDashboard, sampleFleet } from "./dashboard.js";
+import { renderDashboard, sampleFleet, setConnectionQuery, setGeoResolver } from "./dashboard.js";
 import { bindElements } from "./dom.js";
 import {
   alignProxyGroupsToProfileOrder,
@@ -36,6 +36,7 @@ import {
   proxyPort,
   proxyPortLabel,
   selectionSummary,
+  shortMihomoVersion,
   splitProxyLabel,
 } from "./format.js";
 import { escapeHTML, localizedMessage, statusClass, statusText } from "./i18n.js";
@@ -384,7 +385,7 @@ function renderSystem() {
   const found = state.system.mihomoFound;
   const appVersion = `Mihomo Fleet v${state.system.appVersion || "dev"}`;
   el.systemLine.textContent = found
-    ? `${appVersion} · 控制器 127.0.0.1:${state.system.port} · mihomo ${state.system.version || "已检测到"}`
+    ? `${appVersion} · 控制器 127.0.0.1:${state.system.port} · mihomo ${shortMihomoVersion(state.system.version) || "已检测到"}`
     : `${appVersion} · 控制器 127.0.0.1:${state.system.port} · 未找到 mihomo`;
   if (!found) {
     el.systemWarning.textContent = "未在 Mihomo Fleet 同目录或 PATH 中找到 mihomo。你仍然可以创建实例，但启动需要同目录二进制文件，或通过 -mihomo 参数指定路径。";
@@ -608,6 +609,9 @@ function renderPanels(selected) {
   const away = profilesView || dashboardView;
   el.profilePanel.classList.toggle("hidden", !profilesView);
   el.dashboardPanel.classList.toggle("hidden", !dashboardView);
+  // The dashboard is the one view pinned to the viewport (no page scroll), and
+  // the stylesheet needs a hook above .shell to switch that on.
+  document.body.classList.toggle("view-dashboard", dashboardView);
   el.createPanel.classList.toggle("hidden", away || !state.creating);
   el.emptyPanel.classList.toggle("hidden", away || state.creating || state.instances.length > 0);
   el.detailPanel.classList.toggle("hidden", away || state.creating || !selected);
@@ -1522,6 +1526,15 @@ function bindEvents() {
     const row = event.target.closest("tr[data-instance-id]");
     if (row) focusDashboardInstance(row.dataset.instanceId);
   });
+  // Re-rendering on every keystroke is affordable (the poll already redraws
+  // the panel every 1.8s) and renderDashboard restores the caret afterwards.
+  el.dashboardPanel.addEventListener("input", (event) => {
+    if (event.isComposing) return;
+    const search = event.target.closest(".dash-conn-search");
+    if (!search) return;
+    setConnectionQuery(search.value);
+    renderDashboard(el.dashboardPanel, state);
+  });
   el.dashboardPanel.addEventListener("dblclick", (event) => {
     const row = event.target.closest("tr[data-instance-id]");
     if (row) openInstanceWorkbench(row.dataset.instanceId);
@@ -1799,6 +1812,19 @@ document.addEventListener("visibilitychange", () => {
   runSlowPoll();
   runFastPoll();
 });
+
+// Row budgets come from measured box heights, so a resized window has to
+// re-measure. Debounced because a window drag fires this continuously.
+let dashboardResizeTimer = null;
+window.addEventListener("resize", () => {
+  if (state.view !== "dashboard") return;
+  clearTimeout(dashboardResizeTimer);
+  dashboardResizeTimer = setTimeout(() => renderDashboard(el.dashboardPanel, state), 150);
+});
+
+// Country lookups run against the local database the controller already stages
+// for mihomo, so no destination address ever leaves the machine.
+setGeoResolver((ips) => api("/api/geoip", { method: "POST", body: JSON.stringify({ ips }) }));
 
 bindEvents();
 refresh();

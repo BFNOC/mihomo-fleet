@@ -9,6 +9,7 @@ import {
   proxyEndpointText,
   proxyPort,
   selectionSummary,
+  shortMihomoVersion,
   splitProxyLabel,
 } from "./format.js";
 import { localizedMessage } from "./i18n.js";
@@ -59,4 +60,18 @@ test("localized batch and error messages stay stable", () => {
     formatBatchMessage("start-all", { total: 2, success: 1, failed: 1, errors: [{ name: "a", error: "method not allowed" }] }),
     "批量启动完成：成功 1/2，失败 1。 a: 请求方法不允许。",
   );
+});
+
+test("mihomo version keeps only the build number from the banner", () => {
+  assert.equal(
+    shortMihomoVersion("Mihomo Meta v1.19.29 darwin arm64 with go1.26.5 Sat Jul 18 12:19:57 UTC 2026 Use tags: with_gvisor"),
+    "1.19.29",
+  );
+  // The go toolchain version has the same shape and must not win.
+  assert.equal(shortMihomoVersion("Clash Meta go1.24.1 v1.18.0 linux amd64"), "1.18.0");
+  assert.equal(shortMihomoVersion("v1.19.29"), "1.19.29");
+  assert.equal(shortMihomoVersion("Mihomo Meta v1.20.0-alpha.3 darwin"), "1.20.0-alpha.3");
+  assert.equal(shortMihomoVersion("Alpha-g1234abc"), "Alpha-g1234abc");
+  assert.equal(shortMihomoVersion(""), "");
+  assert.equal(shortMihomoVersion(null), "");
 });

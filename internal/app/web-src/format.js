@@ -17,6 +17,21 @@ export function modeLabel(mode) {
   return mode === instanceModes.globalChain ? "全局链式" : "规则分流";
 }
 
+// `mihomo -v` prints a whole banner ("Mihomo Meta v1.19.29 darwin arm64 with
+// go1.26.5 <build date> Use tags: with_gvisor"). The controller keeps that raw
+// -- it is what a user would paste into a bug report -- but every place the UI
+// shows it has a line to spare, and only the version number identifies the
+// build to a human. The go version is skipped explicitly: it also matches the
+// semver shape and would otherwise win on a banner without a leading "v".
+export function shortMihomoVersion(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const match = text.replace(/\bgo\d+(\.\d+)*/gi, " ").match(/v?(\d+\.\d+(?:\.\d+)?(?:[-+][0-9a-z.]+)?)/i);
+  if (match) return match[1];
+  // Not a shape we know: show something bounded rather than the whole banner.
+  return text.length > 32 ? `${text.slice(0, 32)}…` : text;
+}
+
 export function formatBytes(value) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let size = Number(value) || 0;
