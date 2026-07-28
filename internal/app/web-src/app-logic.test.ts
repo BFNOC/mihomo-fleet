@@ -7,7 +7,7 @@ import {
   profileOptionLabel,
   shouldApplyProfileOperation,
   shouldApplyProfileConfigLoad,
-} from "./app-logic.js";
+} from "./app-logic.ts";
 
 test("action gate rejects duplicate submissions until released", () => {
   const gate = createActionGate();

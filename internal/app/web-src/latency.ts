@@ -3,40 +3,119 @@ import {
   defaultLatencyUrl,
   latencyBatchConcurrency,
   latencyKinds,
-} from "./constants.js";
-import { api } from "./api.js";
+} from "./constants.ts";
+import type { LatencyKind } from "./constants.ts";
+import { api } from "./api.ts";
 import {
   currentLatencyTarget,
   formatLatencyValue,
   latencyLabel,
   latencyTitle,
   latencyTone,
-} from "./format.js";
-import { localizedMessage } from "./i18n.js";
+} from "./format.ts";
+import { localizedMessage } from "./i18n.ts";
 import {
   isLatencyRunning,
   latencyResult,
   setLatencyResult,
   setLatencyRunning,
-} from "./state.js";
+} from "./state.ts";
+import type { FleetInstance, FleetProxyGroup, FleetState } from "./state.ts";
+import type { DomElements } from "./dom.ts";
 
 export { currentLatencyTarget };
 
-export function createLatencyController({ state, el, getActive, showMessage, onControlsChange, onChipChange }) {
-  function latencySettings() {
+/** Return value of latencySettings()/the first half of persistLatencySettings(). */
+export interface LatencySettings {
+  url: string;
+  timeoutMs: number;
+}
+
+/**
+ * Shared `options` bag threaded through runGroupLatency() down into
+ * testGroupURLLatency()/testGroupRealLatency(). `batchToken` identifies the
+ * in-flight testAllLatency() run (absent for a single-chip test triggered
+ * directly by the user); `notifyErrors` is false for batch runs (individual
+ * failures are reflected in the chip, not popped up as a message) and true
+ * for the single-target path.
+ */
+interface LatencyRunOptions {
+  batchToken?: number;
+  notifyErrors?: boolean;
+}
+
+// Shape of the JSON body POST /api/instances/{id}/latency returns (see
+// internal/app/controller.go's latency handler:
+// writeJSON(w, map[string]any{"delay": delay, "url": testURL, "timeoutMs": timeoutMS})).
+// Only `delay` is read here; `url`/`timeoutMs` just echo the request.
+interface LatencyTestResponse {
+  delay: number;
+  url: string;
+  timeoutMs: number;
+}
+
+/** Options accepted by createLatencyController(); see app.ts for the call site. */
+export interface LatencyControllerOptions {
+  state: FleetState;
+  el: Pick<DomElements, "latencyUrl" | "latencyTimeout">;
+  getActive: () => FleetInstance | null;
+  showMessage: (text: string, kind?: string) => void;
+  onControlsChange?: () => void;
+  onChipChange?: (instanceId: string, groupName: string, proxyName: string, kind: LatencyKind) => void;
+}
+
+/** Public surface returned by createLatencyController(). */
+export interface LatencyController {
+  latencySettings: () => LatencySettings;
+  persistLatencySettings: () => void;
+  applyLatencyChipState: (
+    chip: HTMLElement,
+    selected: FleetInstance | null,
+    groupName: string,
+    proxyName: string,
+    kind: LatencyKind,
+  ) => void;
+  updateLatencyChip: (instanceId: string, groupName: string, proxyName: string, kind: LatencyKind) => void;
+  beginLatencyBatch: () => number;
+  endLatencyBatch: (batchToken: number) => void;
+  testGroupLatency: (group: FleetProxyGroup, kind: LatencyKind) => Promise<void>;
+  testAllLatency: (kind: LatencyKind) => Promise<void>;
+  renderLatencyChip: (
+    selected: FleetInstance | null,
+    groupName: string,
+    proxyName: string,
+    kind: LatencyKind,
+  ) => HTMLSpanElement;
+}
+
+export function createLatencyController({
+  state,
+  el,
+  getActive,
+  showMessage,
+  onControlsChange,
+  onChipChange,
+}: LatencyControllerOptions): LatencyController {
+  function latencySettings(): LatencySettings {
     const url = (el.latencyUrl.value || defaultLatencyUrl).trim();
     const timeoutMs = Math.min(15000, Math.max(500, Number(el.latencyTimeout.value) || defaultLatencyTimeout));
     return { url, timeoutMs };
   }
 
-  function persistLatencySettings() {
+  function persistLatencySettings(): void {
     const { url, timeoutMs } = latencySettings();
     el.latencyTimeout.value = String(timeoutMs);
     localStorage.setItem("fleetLatencyUrl", url);
     localStorage.setItem("fleetLatencyTimeout", String(timeoutMs));
   }
 
-  function applyLatencyChipState(chip, selected, groupName, proxyName, kind) {
+  function applyLatencyChipState(
+    chip: HTMLElement,
+    selected: FleetInstance | null,
+    groupName: string,
+    proxyName: string,
+    kind: LatencyKind,
+  ): void {
     const running = selected ? isLatencyRunning(state, selected.id, groupName, proxyName, kind) : false;
     const result = selected ? latencyResult(state, selected.id, groupName, proxyName, kind) : null;
     const value = formatLatencyValue(result, running);
@@ -47,42 +126,50 @@ export function createLatencyController({ state, el, getActive, showMessage, onC
     chip.setAttribute("aria-label", title);
   }
 
-  function updateLatencyChip(instanceId, groupName, proxyName, kind) {
+  function updateLatencyChip(instanceId: string, groupName: string, proxyName: string, kind: LatencyKind): void {
     onChipChange?.(instanceId, groupName, proxyName, kind);
   }
 
-  function updateLatencyControls() {
+  function updateLatencyControls(): void {
     onControlsChange?.();
   }
 
-  function setRunning(instanceId, group, proxy, kind, running) {
+  function setRunning(instanceId: string, group: string, proxy: string, kind: LatencyKind, running: boolean): void {
     setLatencyRunning(state, instanceId, group, proxy, kind, running);
     updateLatencyControls();
   }
 
-  function beginLatencyBatch() {
+  function beginLatencyBatch(): number {
     state.latencyBatchToken += 1;
     state.latencyBatchRunning = true;
     updateLatencyControls();
     return state.latencyBatchToken;
   }
 
-  function endLatencyBatch(batchToken) {
+  function endLatencyBatch(batchToken: number): void {
     if (state.latencyBatchToken === batchToken) {
       state.latencyBatchRunning = false;
       updateLatencyControls();
     }
   }
 
-  function shouldApplyLatencyResult(instanceId, batchToken) {
+  function shouldApplyLatencyResult(instanceId: string, batchToken: number | undefined): boolean {
     return state.activeId === instanceId && (batchToken === undefined || state.latencyBatchToken === batchToken);
   }
 
-  async function testGroupURLLatency(selected, groupName, proxyName, url, timeoutMs, batchToken, options = {}) {
+  async function testGroupURLLatency(
+    selected: FleetInstance,
+    groupName: string,
+    proxyName: string,
+    url: string,
+    timeoutMs: number,
+    batchToken: number | undefined,
+    options: LatencyRunOptions = {},
+  ): Promise<void> {
     setRunning(selected.id, groupName, proxyName, latencyKinds.url, true);
     updateLatencyChip(selected.id, groupName, proxyName, latencyKinds.url);
     try {
-      const payload = await api(`/api/instances/${selected.id}/latency`, {
+      const payload = await api<LatencyTestResponse>(`/api/instances/${selected.id}/latency`, {
         method: "POST",
         body: JSON.stringify({ group: groupName, proxy: proxyName, kind: latencyKinds.url, url, timeoutMs }),
       });
@@ -93,24 +180,37 @@ export function createLatencyController({ state, el, getActive, showMessage, onC
         });
       }
     } catch (err) {
+      // api() only ever rejects with an Error instance (buildApiError always
+      // constructs one; a native fetch failure surfaces as TypeError, also an
+      // Error subtype), so this narrowing covers every real call site here;
+      // the fallback keeps `message` a plain string without resorting to `any`.
+      const message = err instanceof Error ? err.message : String(err);
       if (shouldApplyLatencyResult(selected.id, batchToken)) {
         setLatencyResult(state, selected.id, groupName, proxyName, latencyKinds.url, {
           delay: 0,
-          error: localizedMessage(err.message),
+          error: localizedMessage(message),
         });
       }
-      if (options.notifyErrors) showMessage(err.message, "error");
+      if (options.notifyErrors) showMessage(message, "error");
     } finally {
       setRunning(selected.id, groupName, proxyName, latencyKinds.url, false);
       updateLatencyChip(selected.id, groupName, proxyName, latencyKinds.url);
     }
   }
 
-  async function testGroupRealLatency(selected, groupName, proxyName, url, timeoutMs, batchToken, options = {}) {
+  async function testGroupRealLatency(
+    selected: FleetInstance,
+    groupName: string,
+    proxyName: string,
+    url: string,
+    timeoutMs: number,
+    batchToken: number | undefined,
+    options: LatencyRunOptions = {},
+  ): Promise<void> {
     setRunning(selected.id, groupName, proxyName, latencyKinds.real, true);
     updateLatencyChip(selected.id, groupName, proxyName, latencyKinds.real);
     try {
-      const payload = await api(`/api/instances/${selected.id}/latency`, {
+      const payload = await api<LatencyTestResponse>(`/api/instances/${selected.id}/latency`, {
         method: "POST",
         body: JSON.stringify({ group: groupName, proxy: proxyName, kind: latencyKinds.real, url, timeoutMs }),
       });
@@ -121,20 +221,23 @@ export function createLatencyController({ state, el, getActive, showMessage, onC
         });
       }
     } catch (err) {
+      // See testGroupURLLatency() above for why this narrowing is exhaustive
+      // in practice.
+      const message = err instanceof Error ? err.message : String(err);
       if (shouldApplyLatencyResult(selected.id, batchToken)) {
         setLatencyResult(state, selected.id, groupName, proxyName, latencyKinds.real, {
           delay: 0,
-          error: localizedMessage(err.message),
+          error: localizedMessage(message),
         });
       }
-      if (options.notifyErrors) showMessage(err.message, "error");
+      if (options.notifyErrors) showMessage(message, "error");
     } finally {
       setRunning(selected.id, groupName, proxyName, latencyKinds.real, false);
       updateLatencyChip(selected.id, groupName, proxyName, latencyKinds.real);
     }
   }
 
-  async function runGroupLatency(group, kind, options = {}) {
+  async function runGroupLatency(group: FleetProxyGroup, kind: LatencyKind, options: LatencyRunOptions = {}): Promise<void> {
     const selected = getActive();
     if (!selected) return;
     if (selected.status !== "running") {
@@ -153,18 +256,28 @@ export function createLatencyController({ state, el, getActive, showMessage, onC
     }
   }
 
-  async function testGroupLatency(group, kind) {
+  async function testGroupLatency(group: FleetProxyGroup, kind: LatencyKind): Promise<void> {
     await runGroupLatency(group, kind, { notifyErrors: true });
   }
 
-  async function runLatencyBatch(groups, kind, batchToken, instanceId) {
+  async function runLatencyBatch(
+    groups: FleetProxyGroup[],
+    kind: LatencyKind,
+    batchToken: number,
+    instanceId: string,
+  ): Promise<void> {
     let index = 0;
     const workerCount = Math.min(latencyBatchConcurrency, groups.length);
     const workers = Array.from({ length: workerCount }, async () => {
       while (index < groups.length) {
         if (state.activeId !== instanceId || state.latencyBatchToken !== batchToken) return;
-        const group = groups[index];
+        const groupIndex = index;
         index += 1;
+        // `groupIndex` was just bounds-checked by the `while` condition above
+        // with no `await` in between, so no other worker's concurrent
+        // `index += 1` can have invalidated it yet (JS has no preemption
+        // between synchronous statements).
+        const group = groups[groupIndex]!;
         const name = currentLatencyTarget(group, state.proxyGroups);
         if (name && isLatencyRunning(state, instanceId, group.name, name, kind)) continue;
         await runGroupLatency(group, kind, { batchToken, notifyErrors: false });
@@ -173,7 +286,7 @@ export function createLatencyController({ state, el, getActive, showMessage, onC
     await Promise.allSettled(workers);
   }
 
-  async function testAllLatency(kind) {
+  async function testAllLatency(kind: LatencyKind): Promise<void> {
     const selected = getActive();
     if (!selected) return;
     if (selected.status !== "running") {
@@ -190,7 +303,12 @@ export function createLatencyController({ state, el, getActive, showMessage, onC
     }
   }
 
-  function renderLatencyChip(selected, groupName, proxyName, kind) {
+  function renderLatencyChip(
+    selected: FleetInstance | null,
+    groupName: string,
+    proxyName: string,
+    kind: LatencyKind,
+  ): HTMLSpanElement {
     const chip = document.createElement("span");
     chip.dataset.instanceId = selected?.id || "";
     chip.dataset.groupName = groupName;

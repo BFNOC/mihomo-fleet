@@ -5,8 +5,9 @@
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
-    "test:web": "node --test internal/app/web-src/app-logic.test.js internal/app/web-src/format.test.js internal/app/web-src/traffic.test.js",
-    "verify:web": "pnpm build:web && git diff --exit-code -- internal/app/web/app.js internal/app/web/index.html internal/app/web/styles.css internal/app/web/vendor/THIRD_PARTY_NOTICES.txt"
+    "test:web": "node --test internal/app/web-src/*.test.ts",
+    "verify:web": "pnpm build:web && git diff --exit-code -- internal/app/web/app.js internal/app/web/index.html internal/app/web/styles.css internal/app/web/vendor/THIRD_PARTY_NOTICES.txt",
+    "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
     "@codemirror/lang-yaml": "6.1.3",
@@ -19,7 +20,10 @@
     "yaml": "2.9.0"
   },
   "devDependencies": {
+    "@types/node": "26.1.1",
     "@vitejs/plugin-vue": "6.0.8",
-    "vite": "6.4.3"
+    "typescript": "5.9.3",
+    "vite": "6.4.3",
+    "vue-tsc": "3.3.8"
   }
 }

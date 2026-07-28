@@ -11,8 +11,8 @@ import {
   selectionSummary,
   shortMihomoVersion,
   splitProxyLabel,
-} from "./format.js";
-import { localizedMessage } from "./i18n.js";
+} from "./format.ts";
+import { localizedMessage } from "./i18n.ts";
 
 test("proxyPort accepts only valid tcp ports", () => {
   assert.equal(proxyPort(7890), 7890);

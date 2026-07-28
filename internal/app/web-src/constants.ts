@@ -1,4 +1,4 @@
-export const defaultConfig = `mixed-port: 7890
+export const defaultConfig: string = `mixed-port: 7890
 allow-lan: false
 mode: rule
 log-level: info
@@ -12,43 +12,63 @@ rules:
   - MATCH,DIRECT
 `;
 
-export const legacyDefaultLatencyUrl = "https://www.gstatic.com/generate_204";
-export const legacyDefaultLatencyTimeout = "5000";
-export const defaultLatencyUrl = "http://cp.cloudflare.com/generate_204";
-export const defaultLatencyTimeout = 10000;
-export const latencyBatchConcurrency = 4;
-export const latencyKeySeparator = "\u001f";
-export const logStickThreshold = 24;
-export const defaultProxyBind = "127.0.0.1";
-export const API_SECRET_STORAGE_KEY = "fleetApiSecret";
-export const slowPollIntervalMs = 4000;
-export const fastPollIntervalMs = 1800;
+export const legacyDefaultLatencyUrl: string = "https://www.gstatic.com/generate_204";
+export const legacyDefaultLatencyTimeout: string = "5000";
+export const defaultLatencyUrl: string = "http://cp.cloudflare.com/generate_204";
+export const defaultLatencyTimeout: number = 10000;
+export const latencyBatchConcurrency: number = 4;
+export const latencyKeySeparator: string = "";
+export const logStickThreshold: number = 24;
+export const defaultProxyBind: string = "127.0.0.1";
+export const API_SECRET_STORAGE_KEY: string = "fleetApiSecret";
+export const slowPollIntervalMs: number = 4000;
+export const fastPollIntervalMs: number = 1800;
 
+// `as const` gives each property its literal string type, so
+// `(typeof latencyKinds)[keyof typeof latencyKinds]` below is the exact
+// "url" | "real" union instead of a widened `string`.
 export const latencyKinds = {
   url: "url",
   real: "real",
-};
+} as const;
+export type LatencyKind = (typeof latencyKinds)[keyof typeof latencyKinds];
 
 export const instanceModes = {
   rule: "rule",
   globalChain: "global-chain",
-};
+} as const;
+export type InstanceMode = (typeof instanceModes)[keyof typeof instanceModes];
 
+// Mirrors the Status values the Go controller ever assigns to an
+// InstanceView (internal/app/manager.go: decorateStatus/viewFor emit only
+// "stopped" | "starting" | "running" | "error").
 export const statusLabels = {
   stopped: "已停止",
   starting: "启动中",
   running: "运行中",
   error: "异常",
-};
+} as const;
+export type InstanceStatus = keyof typeof statusLabels;
 
-export const proxyCopyDefs = [
+export type ProxyCopyActionId = "addr" | "http" | "socks" | "env";
+
+export interface ProxyCopyActionDef {
+  readonly id: ProxyCopyActionId;
+  readonly label: string;
+  readonly title: string;
+}
+
+export const proxyCopyDefs: readonly ProxyCopyActionDef[] = [
   { id: "addr", label: "地址", title: "复制主机和端口" },
   { id: "http", label: "HTTP", title: "复制 HTTP 代理地址" },
   { id: "socks", label: "SOCKS", title: "复制 SOCKS5 代理地址" },
   { id: "env", label: "ENV", title: "复制 bash/zsh export 环境变量" },
 ];
 
-export const errorLabels = {
+// Keyed by the raw (English) backend error text, which is not a fixed
+// literal union (new backend error strings can appear at any time) -- an
+// index signature is the correct shape, not `as const`.
+export const errorLabels: Record<string, string> = {
   "mihomo binary not found. Install mihomo or start with -mihomo /path/to/mihomo": "未找到 mihomo 可执行文件。请安装 mihomo，或使用 -mihomo /path/to/mihomo 指定路径。",
   "stop the instance before changing ports": "修改端口前请先停止该实例。",
   "mixed and controller ports must differ": "混合端口与控制器端口不能相同。",
@@ -78,7 +98,10 @@ export const errorLabels = {
   "home URL must start with http:// or https://": "主页链接必须以 http:// 或 https:// 开头。",
 };
 
-export const errorPatterns = [
+export type ErrorPatternRenderer = (match: RegExpMatchArray) => string;
+export type ErrorPatternEntry = readonly [pattern: RegExp, render: ErrorPatternRenderer];
+
+export const errorPatterns: readonly ErrorPatternEntry[] = [
   [/^profile "(.+)" not found$/, (match) => `配置档 ${match[1]} 不存在。`],
   [/^profile "(.+)" is not a subscription profile$/, (match) => `配置档 ${match[1]} 不是订阅配置档。`],
   [/^profile "(.+)" subscription update is already running$/, (match) => `配置档 ${match[1]} 正在更新订阅。`],

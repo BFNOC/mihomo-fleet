@@ -10,10 +10,13 @@ import {
   latencyKinds,
   logStickThreshold,
   slowPollIntervalMs,
-} from "./constants.js";
-import { api, writeClipboard } from "./api.js";
-import { renderDashboard, sampleFleet, setConnectionQuery, setGeoResolver } from "./dashboard.js";
-import { bindElements } from "./dom.js";
+} from "./constants.ts";
+import type { LatencyKind } from "./constants.ts";
+import { api, writeClipboard } from "./api.ts";
+import { renderDashboard, sampleFleet, setConnectionQuery, setGeoResolver } from "./dashboard.ts";
+import type { ConnectionsFetchPayload, GeoLookupResult } from "./dashboard.ts";
+import { bindElements } from "./dom.ts";
+import type { DomElements } from "./dom.ts";
 import {
   alignProxyGroupsToProfileOrder,
   chainFromText,
@@ -39,9 +42,10 @@ import {
   selectionSummary,
   shortMihomoVersion,
   splitProxyLabel,
-} from "./format.js";
-import { escapeHTML, localizedMessage, statusClass, statusText } from "./i18n.js";
-import { createLatencyController } from "./latency.js";
+} from "./format.ts";
+import type { BatchActionPayload } from "./format.ts";
+import { escapeHTML, localizedMessage, statusClass, statusText } from "./i18n.ts";
+import { createLatencyController } from "./latency.ts";
 import {
   activeInstance,
   clearLatencyStateForInstance,
@@ -51,7 +55,8 @@ import {
   profileById,
   profileReferenceCount,
   pruneLatencyResultsForGroups,
-} from "./state.js";
+} from "./state.ts";
+import type { FleetInstance, FleetProfile, FleetProxyGroup, FleetState, FleetSystemStatus, FleetTab } from "./state.ts";
 import {
   canClearSavedProfileConfig,
   createActionGate,
@@ -59,7 +64,8 @@ import {
   profileOptionLabel,
   shouldApplyProfileConfigLoad,
   shouldApplyProfileOperation,
-} from "./yaml-editor.js";
+} from "./yaml-editor.ts";
+import type { ActionGate } from "./yaml-editor.ts";
 
 const state = createState();
 const el = bindElements();
@@ -73,14 +79,14 @@ let profileConfigLoadSeq = 0;
 let profileContextSeq = 0;
 let refreshSeq = 0;
 let proxiesRequestSeq = 0;
-let messageClearTimer = null;
+let messageClearTimer: ReturnType<typeof setTimeout> | null = null;
 let lastInstanceSelectorSnapshot = "";
 let lastInstanceListSnapshot = "";
 let lastPortMatrixSnapshot = "";
 let lastProfileListSnapshot = "";
 let lastProxyGroupsSnapshot = "";
-let slowPollTimer = null;
-let fastPollTimer = null;
+let slowPollTimer: ReturnType<typeof setTimeout> | null = null;
+let fastPollTimer: ReturnType<typeof setTimeout> | null = null;
 
 const configEditor = createYamlEditor(el.configEditor, {
   ariaLabel: "配置档 YAML 编辑器",
@@ -111,7 +117,7 @@ const latency = createLatencyController({
   onChipChange(instanceId, groupName, proxyName, kind) {
     if (state.activeId !== instanceId || state.activeTab !== "proxies") return;
     const selected = active();
-    for (const chip of el.proxiesList.querySelectorAll(".latency-chip")) {
+    for (const chip of el.proxiesList.querySelectorAll<HTMLElement>(".latency-chip")) {
       if (
         chip.dataset.instanceId === instanceId &&
         chip.dataset.groupName === groupName &&
@@ -124,39 +130,45 @@ const latency = createLatencyController({
   },
 });
 
-function active() {
+/** Argument/return shape of captureProfileOperationContext()/profileOperationContextMatches(). */
+interface ProfileOperationContext {
+  contextSeq: number;
+  profileId: string;
+}
+
+function active(): FleetInstance | null {
   return activeInstance(state);
 }
 
-function activeProfile() {
+function activeProfile(): FleetProfile | null {
   return profileById(state, state.activeProfileId);
 }
 
-function configEditorDirty() {
+function configEditorDirty(): boolean {
   return el.configEditor.dataset.dirty === "1";
 }
 
-function profileOperationRunning() {
+function profileOperationRunning(): boolean {
   return saveProfileGate.isRunning()
     || deleteProfileGate.isRunning()
     || refreshSubscriptionGate.isRunning();
 }
 
-function beginProfileOperation(gate) {
+function beginProfileOperation(gate: ActionGate): boolean {
   if (profileOperationRunning() || !gate.begin()) return false;
   render();
   return true;
 }
 
-function activeProfileContextId() {
+function activeProfileContextId(): string {
   return state.profileCreating ? "__new__" : state.activeProfileId;
 }
 
-function captureProfileOperationContext(profileId = activeProfileContextId()) {
+function captureProfileOperationContext(profileId: string = activeProfileContextId()): ProfileOperationContext {
   return { contextSeq: profileContextSeq, profileId };
 }
 
-function profileOperationContextMatches(context) {
+function profileOperationContextMatches(context: ProfileOperationContext): boolean {
   const activeProfileId = activeProfileContextId();
   return el.profileEditor.dataset.profileId === activeProfileId
     && shouldApplyProfileOperation({
@@ -168,26 +180,26 @@ function profileOperationContextMatches(context) {
     });
 }
 
-function advanceProfileContext() {
+function advanceProfileContext(): void {
   profileContextSeq += 1;
 }
 
-function hasUnsavedChanges() {
+function hasUnsavedChanges(): boolean {
   return state.editDirty || state.profileFormDirty || configEditorDirty();
 }
 
-function confirmDiscardChanges(action) {
+function confirmDiscardChanges(action: string): boolean {
   if (!hasUnsavedChanges()) return true;
   return window.confirm(`有未保存的修改。确定放弃并${action}吗？`);
 }
 
-function setConfigEditorError(message) {
+function setConfigEditorError(message: string): void {
   const text = message ? localizedMessage(message) : "";
   el.configEditorError.textContent = text;
   el.configEditorError.classList.toggle("hidden", !text);
 }
 
-function renderConfigEditorState(profile = activeProfile()) {
+function renderConfigEditorState(profile: FleetProfile | null = activeProfile()): void {
   const isSubscription = state.profileCreating
     ? state.profileCreateSource === "subscription"
     : Boolean(profile?.subscriptionUrl);
@@ -234,7 +246,7 @@ function renderConfigEditorState(profile = activeProfile()) {
   el.findConfig.disabled = (!profile && !state.profileCreating) || isSubscription || profileBusy;
 }
 
-function resetConfigEditor() {
+function resetConfigEditor(): void {
   profileConfigLoadSeq += 1;
   configEditor.setValue("");
   configEditor.setReadOnly(true);
@@ -244,7 +256,7 @@ function resetConfigEditor() {
   renderConfigEditorState();
 }
 
-function showMessage(text, kind = "info") {
+function showMessage(text: string, kind: string = "info"): void {
   if (messageClearTimer) {
     clearTimeout(messageClearTimer);
     messageClearTimer = null;
@@ -263,45 +275,59 @@ function showMessage(text, kind = "info") {
   }
 }
 
-function renderSubscriptionInfo(profile) {
+function renderSubscriptionInfo(profile: FleetProfile): void {
   el.subscriptionInfo.textContent = "";
   const summary = document.createElement("span");
   summary.textContent = formatSubscriptionInfo(profile);
   el.subscriptionInfo.append(summary);
-  if (isHttpUrl(profile.homeUrl)) {
+  // isHttpUrl() itself treats a missing homeUrl as "" internally, so reading it
+  // through this local (rather than `profile.homeUrl!` after the check) matches
+  // that behavior exactly while keeping the value a plain `string` below.
+  const homeUrl = profile.homeUrl || "";
+  if (isHttpUrl(homeUrl)) {
     el.subscriptionInfo.append(document.createTextNode(" · 主页 "));
     const link = document.createElement("a");
-    link.href = profile.homeUrl.trim();
+    link.href = homeUrl.trim();
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.textContent = profile.homeUrl.trim();
+    link.textContent = homeUrl.trim();
     el.subscriptionInfo.append(link);
   }
 }
 
-function updateLatencyControls() {
+function updateLatencyControls(): void {
   const selected = active();
   const disabled = !selected || selected.status !== "running" || !state.proxyApply;
   const hasLatencyTarget = state.proxyGroups.some((group) => currentLatencyTarget(group, state.proxyGroups));
   el.testAllLatency.disabled = disabled || !hasLatencyTarget || state.latencyBatchRunning;
   el.testAllRealLatency.disabled = disabled || !hasLatencyTarget || state.latencyBatchRunning;
-  for (const button of el.proxiesList.querySelectorAll(".proxy-group-actions button")) {
-    const running =
+  for (const button of el.proxiesList.querySelectorAll<HTMLButtonElement>(".proxy-group-actions button")) {
+    // These datasets are only ever populated by renderProxyGroups() below with
+    // group/proxy names and a genuine LatencyKind, so the fallbacks/cast here
+    // just satisfy the compiler about values this same module guarantees.
+    const running = Boolean(
       selected &&
       button.dataset.testable !== "false" &&
-      isLatencyRunning(state, selected.id, button.dataset.groupName, button.dataset.proxyName, button.dataset.kind);
+      isLatencyRunning(
+        state,
+        selected.id,
+        button.dataset.groupName || "",
+        button.dataset.proxyName || "",
+        button.dataset.kind as LatencyKind,
+      ),
+    );
     button.disabled = disabled || button.dataset.testable === "false" || running;
     if (running) button.title = "测速中";
     else if (button.dataset.disabledReason !== undefined) button.title = button.dataset.disabledReason;
   }
 }
 
-function proxyTooltipButton(target) {
+function proxyTooltipButton(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof Element)) return null;
-  return target.closest(".proxy-choice");
+  return target.closest<HTMLElement>(".proxy-choice");
 }
 
-function showProxyTooltip(button) {
+function showProxyTooltip(button: HTMLElement): void {
   const text = button.dataset.tooltip || "";
   if (!text) return;
   proxyTooltip.textContent = text;
@@ -322,17 +348,23 @@ function showProxyTooltip(button) {
   proxyTooltip.style.top = `${top}px`;
 }
 
-function hideProxyTooltip() {
+function hideProxyTooltip(): void {
   proxyTooltip.classList.add("hidden");
 }
 
-async function refresh(options = {}) {
+/** Options accepted by refresh(); see call sites below and in bindEvents(). */
+interface RefreshOptions {
+  forceInstances?: boolean;
+  periodic?: boolean;
+}
+
+async function refresh(options: RefreshOptions = {}): Promise<void> {
   const seq = ++refreshSeq;
   try {
     const [system, profiles, list] = await Promise.all([
-      api("/api/system"),
-      api("/api/profiles"),
-      api("/api/instances"),
+      api<FleetSystemStatus>("/api/system"),
+      api<{ profiles?: FleetProfile[] }>("/api/profiles"),
+      api<{ instances?: FleetInstance[] }>("/api/instances"),
     ]);
     if (seq !== refreshSeq) return;
     state.system = system;
@@ -342,7 +374,9 @@ async function refresh(options = {}) {
     }
     if (!state.bulkRunning || options.forceInstances) {
       state.instances = list.instances || [];
-      if (!state.activeId && state.instances.length) state.activeId = state.instances[0].id;
+      // `state.instances.length` just guarded a non-empty array, so index 0 is
+      // always present; the assertion only documents that to noUncheckedIndexedAccess.
+      if (!state.activeId && state.instances.length) state.activeId = state.instances[0]!.id;
       if (state.activeId && !state.instances.some((item) => item.id === state.activeId)) {
         state.activeId = state.instances[0]?.id || "";
       }
@@ -352,11 +386,12 @@ async function refresh(options = {}) {
     await refreshActiveDetails({ skipFast: options.periodic });
   } catch (err) {
     if (seq !== refreshSeq) return;
-    showMessage(err.message, "error");
+    const message = err instanceof Error ? err.message : String(err);
+    showMessage(message, "error");
   }
 }
 
-function render() {
+function render(): void {
   const selected = active();
   renderSystem();
   renderViewNavigation();
@@ -369,7 +404,7 @@ function render() {
   updateCreateProfileControls();
 }
 
-function renderViewNavigation() {
+function renderViewNavigation(): void {
   const managingProfiles = state.view === "profiles";
   const onDashboard = state.view === "dashboard";
   el.manageProfilesBtn.textContent = managingProfiles ? "返回实例" : "配置档管理";
@@ -381,7 +416,7 @@ function renderViewNavigation() {
   el.instanceSelectorWrap.classList.toggle("muted-control", managingProfiles || onDashboard);
 }
 
-function renderSystem() {
+function renderSystem(): void {
   if (!state.system) return;
   const found = state.system.mihomoFound;
   const appVersion = `Mihomo Fleet v${state.system.appVersion || "dev"}`;
@@ -396,14 +431,14 @@ function renderSystem() {
   }
 }
 
-function instanceSelectorSnapshot(selected) {
+function instanceSelectorSnapshot(selected: FleetInstance | null): string {
   return JSON.stringify({
     selectedId: selected?.id || "",
     items: state.instances.map((item) => [item.id, item.name, item.status]),
   });
 }
 
-function renderSelector(selected) {
+function renderSelector(selected: FleetInstance | null): void {
   if (document.activeElement === el.instanceSelect) return;
   const snapshot = instanceSelectorSnapshot(selected);
   if (snapshot === lastInstanceSelectorSnapshot) return;
@@ -420,12 +455,12 @@ function renderSelector(selected) {
     const opt = document.createElement("option");
     opt.value = item.id;
     opt.textContent = `${item.name}（${statusText(item.status)}）`;
-    opt.selected = selected && selected.id === item.id;
+    opt.selected = selected?.id === item.id;
     el.instanceSelect.append(opt);
   }
 }
 
-function instanceListSnapshot(selected) {
+function instanceListSnapshot(selected: FleetInstance | null): string {
   return JSON.stringify({
     selectedId: selected?.id || "",
     items: state.instances.map((item) => [
@@ -440,19 +475,22 @@ function instanceListSnapshot(selected) {
   });
 }
 
-function capturedInstanceListFocusKey() {
-  return el.instanceList.contains(document.activeElement) ? document.activeElement.dataset.instanceFocus || "" : "";
+function capturedInstanceListFocusKey(): string {
+  const activeElement = document.activeElement;
+  return activeElement instanceof HTMLElement && el.instanceList.contains(activeElement)
+    ? activeElement.dataset.instanceFocus || ""
+    : "";
 }
 
-function restoreInstanceListFocus(focusedKey) {
+function restoreInstanceListFocus(focusedKey: string): void {
   if (!focusedKey) return;
-  const controls = [...el.instanceList.querySelectorAll("[data-instance-focus]")];
+  const controls = [...el.instanceList.querySelectorAll<HTMLElement>("[data-instance-focus]")];
   if (!controls.length) return;
   const target = controls.find((node) => node.dataset.instanceFocus === focusedKey) || controls[0];
   target?.focus({ preventScroll: true });
 }
 
-function renderList(selected) {
+function renderList(selected: FleetInstance | null): void {
   const snapshot = instanceListSnapshot(selected);
   if (snapshot === lastInstanceListSnapshot) return;
   lastInstanceListSnapshot = snapshot;
@@ -473,14 +511,16 @@ function renderList(selected) {
       </div>
       <div class="row-meta"></div>
     `;
-    button.querySelector(".row-name").textContent = item.name;
-    button.querySelector(".status").textContent = statusText(item.status);
-    button.querySelector(".row-meta").textContent = `混合端口 ${proxyPortLabel(item.mixedPort)} · ${profile}${choice}`;
+    // These selectors always match: they target the .row-name/.status/.row-main
+    // nodes the innerHTML template just above set on this same button.
+    button.querySelector(".row-name")!.textContent = item.name;
+    button.querySelector(".status")!.textContent = statusText(item.status);
+    button.querySelector(".row-meta")!.textContent = `混合端口 ${proxyPortLabel(item.mixedPort)} · ${profile}${choice}`;
     if (item.pendingRestart === true && item.status === "running") {
       const hint = document.createElement("span");
       hint.className = "pending-restart-chip";
       hint.textContent = "配置已修改，重启后生效";
-      button.querySelector(".row-main").append(hint);
+      button.querySelector(".row-main")!.append(hint);
     }
     button.addEventListener("click", () => selectInstance(item.id));
     el.instanceList.append(button);
@@ -488,21 +528,22 @@ function renderList(selected) {
   restoreInstanceListFocus(focusedKey);
 }
 
-function portMatrixSnapshot(selected) {
+function portMatrixSnapshot(selected: FleetInstance | null): string {
   return JSON.stringify({
     selectedId: selected?.id || "",
     items: state.instances.map((item) => [item.id, item.name, item.status, item.mixedPort, item.proxyBind || ""]),
   });
 }
 
-function renderPortMatrix(selected) {
+function renderPortMatrix(selected: FleetInstance | null): void {
   const countText = `${state.instances.length} 个出口`;
   if (el.portMatrixCount.textContent !== countText) el.portMatrixCount.textContent = countText;
   const snapshot = portMatrixSnapshot(selected);
   if (snapshot === lastPortMatrixSnapshot) return;
   lastPortMatrixSnapshot = snapshot;
-  const focusedKey = el.portMatrixList.contains(document.activeElement)
-    ? document.activeElement.dataset.portFocus
+  const activeElement = document.activeElement;
+  const focusedKey = activeElement instanceof HTMLElement && el.portMatrixList.contains(activeElement)
+    ? activeElement.dataset.portFocus || ""
     : "";
   el.portMatrixList.innerHTML = "";
   if (!state.instances.length) {
@@ -565,8 +606,8 @@ function renderPortMatrix(selected) {
   if (focusedKey) restorePortMatrixFocus(focusedKey);
 }
 
-function restorePortMatrixFocus(focusedKey) {
-  const controls = [...el.portMatrixList.querySelectorAll("[data-port-focus]")].filter((node) => !node.disabled);
+function restorePortMatrixFocus(focusedKey: string): void {
+  const controls = [...el.portMatrixList.querySelectorAll<HTMLButtonElement>("[data-port-focus]")].filter((node) => !node.disabled);
   const instanceId = portFocusInstanceId(focusedKey);
   const target = controls.find((node) => node.dataset.portFocus === focusedKey)
     || controls.find((node) => node.dataset.portFocus === `select:${instanceId}`)
@@ -574,21 +615,21 @@ function restorePortMatrixFocus(focusedKey) {
   target?.focus({ preventScroll: true });
 }
 
-function portFocusInstanceId(focusedKey) {
+function portFocusInstanceId(focusedKey: string): string {
   return focusedKey.split(":")[1] || "";
 }
 
-async function copyProxyValue(value, success) {
+async function copyProxyValue(value: string, success: string | undefined): Promise<void> {
   try {
     await writeClipboard(value);
-    showMessage(success);
+    showMessage(success || "");
   } catch (err) {
     console.warn("Unable to copy proxy value.", err);
     showMessage("复制失败，请检查浏览器剪贴板权限。", "error");
   }
 }
 
-function updateBulkControls() {
+function updateBulkControls(): void {
   const canStart = state.instances.some((item) => item.status !== "running" && item.status !== "starting");
   const canStop = state.instances.some((item) => item.status === "running");
   el.newBtn.disabled = state.bulkRunning;
@@ -597,11 +638,11 @@ function updateBulkControls() {
   el.stopAllBtn.disabled = state.bulkRunning || !canStop;
 }
 
-function editFormContainsFocus() {
+function editFormContainsFocus(): boolean {
   return Boolean(el.editForm && el.editForm.contains(document.activeElement));
 }
 
-function renderPanels(selected) {
+function renderPanels(selected: FleetInstance | null): void {
   const profilesView = state.view === "profiles";
   const dashboardView = state.view === "dashboard";
   // Anything that is not the instance workbench hides the workbench panels.
@@ -627,9 +668,9 @@ function renderPanels(selected) {
     ? localizedMessage(selected.lastError)
     : `${statusText(selected.status)} · ${selected.id}`;
   el.metricStatus.textContent = statusText(selected.status);
-  el.metricPid.textContent = selected.pid || "无";
-  el.metricMixed.textContent = proxyPortLabel(selected.mixedPort);
-  el.metricController.textContent = selected.controllerPort;
+  el.metricPid.textContent = String(selected.pid || "无");
+  el.metricMixed.textContent = String(proxyPortLabel(selected.mixedPort));
+  el.metricController.textContent = String(selected.controllerPort);
   el.overviewMixed.textContent = proxyEndpointText(selected);
   el.overviewProxyBind.textContent = selected.proxyBind || defaultProxyBind;
   el.overviewController.textContent = `127.0.0.1:${selected.controllerPort}`;
@@ -650,9 +691,9 @@ function renderPanels(selected) {
     el.editName.value = selected.name;
     renderProfileOptions(el.editProfile, selected.profileId, false);
     el.editMode.value = instanceMode(selected);
-    el.editMixedPort.value = selected.mixedPort;
+    el.editMixedPort.value = String(selected.mixedPort);
     el.editProxyBind.value = selected.proxyBind || defaultProxyBind;
-    el.editControllerPort.value = selected.controllerPort;
+    el.editControllerPort.value = String(selected.controllerPort);
     el.editLocalProxies.value = selected.localProxies || "";
     el.editChain.value = chainToText(selected.chain);
     applyModeFields("edit", el.editMode.value);
@@ -665,12 +706,14 @@ function renderPanels(selected) {
   updateLatencyControls();
 }
 
-function applyModeFields(prefix, mode) {
+function applyModeFields(prefix: "edit" | "create", mode: string): void {
   const chainMode = mode === instanceModes.globalChain;
   el[`${prefix}ChainFields`].classList.toggle("hidden", !chainMode);
 }
 
-function renderProfileOptions(select, selectedId, allowNew) {
+// `allowNew` is accepted (matching every call site) but unused in the body,
+// same as before this file was typed -- not this pass's job to clean up.
+function renderProfileOptions(select: HTMLSelectElement, selectedId: string, allowNew: boolean): void {
   const current = selectedId || select.value;
   select.innerHTML = "";
   for (const profile of state.profiles) {
@@ -682,11 +725,12 @@ function renderProfileOptions(select, selectedId, allowNew) {
   if (current && [...select.options].some((opt) => opt.value === current)) {
     select.value = current;
   } else if (select.options.length > 0) {
-    select.value = select.options[0].value;
+    // Just guarded by the length check above, so index 0 is always present.
+    select.value = select.options[0]!.value;
   }
 }
 
-function profileListSnapshot() {
+function profileListSnapshot(): string {
   return JSON.stringify({
     activeProfileId: state.activeProfileId,
     creating: state.profileCreating,
@@ -700,12 +744,13 @@ function profileListSnapshot() {
   });
 }
 
-function renderProfileList() {
+function renderProfileList(): void {
   const snapshot = profileListSnapshot();
   if (snapshot === lastProfileListSnapshot) return;
   lastProfileListSnapshot = snapshot;
-  const focusedId = el.profileList.contains(document.activeElement)
-    ? document.activeElement.dataset.profileId || ""
+  const activeElement = document.activeElement;
+  const focusedId = activeElement instanceof HTMLElement && el.profileList.contains(activeElement)
+    ? activeElement.dataset.profileId || ""
     : "";
   el.profileList.innerHTML = "";
   for (const profile of state.profiles) {
@@ -721,9 +766,10 @@ function renderProfileList() {
       <span class="profile-row-meta"></span>
       <code class="profile-row-id"></code>
     `;
-    button.querySelector(".profile-row-main").textContent = profile.name || "未命名配置档";
-    button.querySelector(".profile-row-meta").textContent = `${profile.subscriptionUrl ? "订阅配置" : "手写配置"} · ${references > 0 ? `${references} 个实例` : "未使用"}`;
-    button.querySelector(".profile-row-id").textContent = profile.id;
+    // These selectors always match the innerHTML template set just above.
+    button.querySelector(".profile-row-main")!.textContent = profile.name || "未命名配置档";
+    button.querySelector(".profile-row-meta")!.textContent = `${profile.subscriptionUrl ? "订阅配置" : "手写配置"} · ${references > 0 ? `${references} 个实例` : "未使用"}`;
+    button.querySelector(".profile-row-id")!.textContent = profile.id;
     button.addEventListener("click", () => selectProfile(profile.id));
     el.profileList.append(button);
   }
@@ -733,10 +779,10 @@ function renderProfileList() {
     empty.textContent = "还没有配置档。";
     el.profileList.append(empty);
   }
-  if (focusedId) el.profileList.querySelector(`[data-profile-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
+  if (focusedId) el.profileList.querySelector<HTMLElement>(`[data-profile-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
 }
 
-function renderProfileManager() {
+function renderProfileManager(): void {
   el.profileCount.textContent = `${state.profiles.length} 个`;
   renderProfileList();
   const profile = activeProfile();
@@ -748,11 +794,15 @@ function renderProfileManager() {
     return;
   }
 
+  // hasEditor (just checked above) is `state.profileCreating || Boolean(profile)`;
+  // every `profile.foo` access below only runs on the `!state.profileCreating`
+  // branch, which -- given hasEditor is true -- proves `profile` was the
+  // `Boolean(profile)` disjunct, i.e. non-null.
   const isSubscription = state.profileCreating
     ? state.profileCreateSource === "subscription"
-    : Boolean(profile.subscriptionUrl);
+    : Boolean(profile!.subscriptionUrl);
   const references = profile ? profileReferenceCount(state, profile.id) : 0;
-  el.profileEditorTitle.textContent = state.profileCreating ? "新建配置档" : profile.name;
+  el.profileEditorTitle.textContent = state.profileCreating ? "新建配置档" : profile!.name;
   el.profileSourceTabs.classList.toggle("hidden", !state.profileCreating);
   el.profileManualMode.classList.toggle("active", state.profileCreateSource === "manual");
   el.profileSubscriptionMode.classList.toggle("active", state.profileCreateSource === "subscription");
@@ -764,7 +814,7 @@ function renderProfileManager() {
   el.profileReferenceBadge.classList.toggle("in-use", references > 0);
   el.profileMeta.textContent = state.profileCreating
     ? (isSubscription ? "创建后会下载并缓存订阅 YAML。" : "手写配置可以直接编辑 YAML。")
-    : isSubscription ? `订阅缓存：${formatProfileUpdate(profile)}` : "手写配置：修改会作用于所有引用实例。";
+    : isSubscription ? `订阅缓存：${formatProfileUpdate(profile!)}` : "手写配置：修改会作用于所有引用实例。";
   el.profileDeleteHint.textContent = state.profileCreating
     ? ""
     : references > 0 ? `该配置档仍被 ${references} 个实例引用，需先将这些实例改绑到其他配置档。` : "删除后无法恢复。";
@@ -783,34 +833,34 @@ function renderProfileManager() {
   renderConfigEditorState(profile);
 }
 
-function markProfileFormDirty() {
+function markProfileFormDirty(): void {
   state.profileFormDirty = true;
   state.profileFormVersion += 1;
 }
 
-function clearProfileFormDirty() {
+function clearProfileFormDirty(): void {
   state.profileFormDirty = false;
   el.configEditor.dataset.dirty = "";
 }
 
-function populateProfileForm(profile) {
+function populateProfileForm(profile: FleetProfile | null): void {
   el.profileEditor.dataset.profileId = profile?.id || "__new__";
   el.profileName.value = profile?.name || "";
   el.profileId.value = profile?.id || "创建后自动生成";
   el.subscriptionUrl.value = profile?.subscriptionUrl || "";
   el.subscriptionAutoUpdate.checked = profile ? Boolean(profile.autoUpdate) : true;
-  el.subscriptionInterval.value = profile?.updateIntervalMinutes || "360";
+  el.subscriptionInterval.value = String(profile?.updateIntervalMinutes || "360");
   if (!profile) el.subscriptionInfo.textContent = "";
 }
 
-async function loadProfileConfig(profileId) {
+async function loadProfileConfig(profileId: string): Promise<void> {
   const profile = profileById(state, profileId);
   if (!profile) return;
   resetConfigEditor();
   const requestSeq = ++profileConfigLoadSeq;
   renderConfigEditorState(profile);
   try {
-    const payload = await api(`/api/profiles/${profile.id}/config`);
+    const payload = await api<{ config?: string }>(`/api/profiles/${profile.id}/config`);
     if (!shouldApplyProfileConfigLoad({
       requestSeq,
       currentSeq: profileConfigLoadSeq,
@@ -826,13 +876,14 @@ async function loadProfileConfig(profileId) {
     renderConfigEditorState(profile);
   } catch (err) {
     if (requestSeq !== profileConfigLoadSeq || state.activeProfileId !== profile.id) return;
-    setConfigEditorError(err.message);
+    const message = err instanceof Error ? err.message : String(err);
+    setConfigEditorError(message);
     renderConfigEditorState(profile);
-    showMessage(err.message, "error");
+    showMessage(message, "error");
   }
 }
 
-function startNewProfile() {
+function startNewProfile(): boolean {
   if (profileOperationRunning()) return false;
   if (!confirmDiscardChanges("新建配置档")) return false;
   advanceProfileContext();
@@ -853,7 +904,13 @@ function startNewProfile() {
   return true;
 }
 
-function selectProfile(profileId, options = {}) {
+/** Options accepted by selectProfile(); see call sites in app.ts. */
+interface SelectProfileOptions {
+  force?: boolean;
+  allowBusy?: boolean;
+}
+
+function selectProfile(profileId: string, options: SelectProfileOptions = {}): boolean {
   if (profileOperationRunning() && !options.allowBusy) return false;
   if (!options.force && !state.profileCreating && state.activeProfileId === profileId) {
     state.view = "profiles";
@@ -876,7 +933,7 @@ function selectProfile(profileId, options = {}) {
   return true;
 }
 
-function openProfileManager(profileId = "") {
+function openProfileManager(profileId: string = ""): boolean {
   if (profileOperationRunning()) return false;
   if (state.view !== "profiles" && !confirmDiscardChanges("打开配置档管理")) return false;
   state.editDirty = false;
@@ -890,7 +947,7 @@ function openProfileManager(profileId = "") {
 // The dashboard is read-only, so leaving the workbench for it cannot lose
 // edits and needs no discard prompt. Coming back does, because the profile
 // editor may still be mid-operation.
-function openDashboard() {
+function openDashboard(): boolean {
   if (profileOperationRunning()) return false;
   if (state.view === "profiles" && !confirmDiscardChanges("打开总览")) return false;
   if (state.view === "profiles") {
@@ -905,7 +962,7 @@ function openDashboard() {
   return true;
 }
 
-function closeDashboard() {
+function closeDashboard(): boolean {
   state.view = "instances";
   render();
   refreshActiveDetails();
@@ -914,7 +971,7 @@ function closeDashboard() {
 
 // Keep the user on the dashboard when they pick a row; only "打开工作台"
 // jumps into the dense instance detail pane.
-function focusDashboardInstance(id) {
+function focusDashboardInstance(id: string): boolean {
   if (!id || !state.instances.some((item) => item.id === id)) return false;
   state.activeId = id;
   localStorage.setItem("activeInstance", id);
@@ -923,7 +980,7 @@ function focusDashboardInstance(id) {
   return true;
 }
 
-function openInstanceWorkbench(id) {
+function openInstanceWorkbench(id: string): boolean {
   if (!id) return false;
   if (state.view === "profiles" && !confirmDiscardChanges("打开工作台")) return false;
   if (state.view === "profiles") {
@@ -941,7 +998,7 @@ function openInstanceWorkbench(id) {
   return true;
 }
 
-function closeProfileManager() {
+function closeProfileManager(): boolean {
   if (profileOperationRunning()) return false;
   if (!confirmDiscardChanges("返回实例")) return false;
   advanceProfileContext();
@@ -954,7 +1011,7 @@ function closeProfileManager() {
   return true;
 }
 
-function updateCreateProfileControls() {
+function updateCreateProfileControls(): void {
   renderProfileOptions(el.createProfile, el.createProfile.value || state.profiles[0]?.id || "", false);
   const hasProfiles = state.profiles.length > 0;
   const chainMode = el.createMode.value === instanceModes.globalChain;
@@ -964,10 +1021,16 @@ function updateCreateProfileControls() {
   applyModeFields("create", el.createMode.value);
 }
 
-async function fillSuggestedPorts() {
+/** Shape of the JSON body GET /api/ports/suggest returns. */
+interface SuggestedPorts {
+  mixedPort?: number;
+  controllerPort?: number;
+}
+
+async function fillSuggestedPorts(): Promise<void> {
   if (el.createMixedPort.value && el.createControllerPort.value) return;
   try {
-    const ports = await api("/api/ports/suggest");
+    const ports = await api<SuggestedPorts>("/api/ports/suggest");
     el.createMixedPort.placeholder = ports.mixedPort ? `建议 ${ports.mixedPort}` : "自动";
     el.createControllerPort.placeholder = ports.controllerPort ? `建议 ${ports.controllerPort}` : "自动";
   } catch (err) {
@@ -975,7 +1038,7 @@ async function fillSuggestedPorts() {
   }
 }
 
-function clearActiveDetailCache() {
+function clearActiveDetailCache(): void {
   state.editInstanceId = "";
   state.editDirty = false;
   state.editVersion = 0;
@@ -988,14 +1051,14 @@ function clearActiveDetailCache() {
   el.proxiesList.innerHTML = "";
 }
 
-function markEditFormDirty() {
+function markEditFormDirty(): void {
   const selected = active();
   state.editInstanceId = selected?.id || state.editInstanceId;
   state.editDirty = true;
   state.editVersion += 1;
 }
 
-function selectInstance(id) {
+function selectInstance(id: string): boolean {
   if (state.activeId !== id || state.view === "profiles") {
     if (!confirmDiscardChanges("切换实例")) {
       el.instanceSelect.value = state.activeId;
@@ -1017,7 +1080,7 @@ function selectInstance(id) {
   return true;
 }
 
-function showCreate() {
+function showCreate(): boolean {
   if (!state.profiles.length) {
     openProfileManager();
     showMessage("请先创建配置档，再创建引用它的实例。", "error");
@@ -1041,24 +1104,29 @@ function showCreate() {
   return true;
 }
 
-async function refreshActiveDetails(options = {}) {
+/** Options accepted by refreshActiveDetails(); see call sites in app.ts. */
+interface RefreshActiveDetailsOptions {
+  skipFast?: boolean;
+}
+
+async function refreshActiveDetails(options: RefreshActiveDetailsOptions = {}): Promise<void> {
   const selected = active();
   if (!selected || state.creating || state.view !== "instances") return;
   if (options.skipFast) return;
   await pollActiveTab();
 }
 
-async function pollActiveTab() {
+async function pollActiveTab(): Promise<void> {
   if (state.view !== "instances") return;
   if (state.activeTab === "logs") await refreshLogs();
   if (state.activeTab === "proxies") await refreshProxies();
 }
 
-async function refreshLogs() {
+async function refreshLogs(): Promise<void> {
   const selected = active();
   if (!selected) return;
   try {
-    const payload = await api(`/api/instances/${selected.id}/logs`);
+    const payload = await api<{ lines?: string[] }>(`/api/instances/${selected.id}/logs`);
     const shouldStick = el.logs.dataset.instanceId !== selected.id || isLogScrolledToBottom();
     const text = (payload.lines || []).join("\n") || "还没有进程日志。";
     if (el.logs.textContent !== text) el.logs.textContent = text;
@@ -1066,23 +1134,24 @@ async function refreshLogs() {
     if (shouldStick) el.logs.scrollTop = el.logs.scrollHeight;
   } catch (err) {
     el.logs.dataset.instanceId = "";
-    el.logs.textContent = localizedMessage(err.message);
+    const message = err instanceof Error ? err.message : String(err);
+    el.logs.textContent = localizedMessage(message);
   }
 }
 
-function isLogScrolledToBottom() {
+function isLogScrolledToBottom(): boolean {
   return el.logs.scrollHeight - el.logs.scrollTop - el.logs.clientHeight <= logStickThreshold;
 }
 
-async function loadProfileProxyGroups(selected) {
+async function loadProfileProxyGroups(selected: FleetInstance | null | undefined): Promise<FleetProxyGroup[]> {
   if (!selected?.profileId) return [];
   const profileId = encodeURIComponent(selected.profileId);
   const instanceId = encodeURIComponent(selected.id);
-  const payload = await api(`/api/profiles/${profileId}/proxies?instanceId=${instanceId}`);
+  const payload = await api<{ groups?: FleetProxyGroup[] }>(`/api/profiles/${profileId}/proxies?instanceId=${instanceId}`);
   return payload.groups || [];
 }
 
-async function loadProfileProxyGroupsForRuntime(selected) {
+async function loadProfileProxyGroupsForRuntime(selected: FleetInstance | null | undefined): Promise<FleetProxyGroup[]> {
   try {
     return await loadProfileProxyGroups(selected);
   } catch (err) {
@@ -1091,16 +1160,16 @@ async function loadProfileProxyGroupsForRuntime(selected) {
   }
 }
 
-async function refreshProxies() {
+async function refreshProxies(): Promise<void> {
   const selected = active();
   if (!selected) return;
   const seq = ++proxiesRequestSeq;
   try {
-    let groups = [];
+    let groups: FleetProxyGroup[] = [];
     let apply = false;
     if (selected.status === "running") {
       const [payload, profileGroups] = await Promise.all([
-        api(`/api/mihomo/${selected.id}/proxies`),
+        api<{ proxies?: Record<string, FleetProxyGroup> }>(`/api/mihomo/${selected.id}/proxies`),
         loadProfileProxyGroupsForRuntime(selected),
       ]);
       if (seq !== proxiesRequestSeq || state.activeId !== selected.id) return;
@@ -1129,12 +1198,13 @@ async function refreshProxies() {
     renderProxyGroups(groups, apply);
   } catch (err) {
     if (seq !== proxiesRequestSeq || state.activeId !== selected.id) return;
-    el.proxiesList.innerHTML = `<div class="message error">${escapeHTML(localizedMessage(err.message))}</div>`;
+    const message = err instanceof Error ? err.message : String(err);
+    el.proxiesList.innerHTML = `<div class="message error">${escapeHTML(localizedMessage(message))}</div>`;
     lastProxyGroupsSnapshot = "";
   }
 }
 
-function proxyGroupsRenderSnapshot(groups, apply, filter) {
+function proxyGroupsRenderSnapshot(groups: FleetProxyGroup[], apply: boolean, filter: string) {
   const selected = active();
   const labelSources = proxyLabelSources(state.profiles, state.instances);
   const latencyBits = groups.map((group) => {
@@ -1152,26 +1222,27 @@ function proxyGroupsRenderSnapshot(groups, apply, filter) {
   return JSON.stringify({ instanceId: selected?.id || "", groups, apply, filter, labelSources, latencyBits });
 }
 
-function proxyFocusKey(groupName, proxyName) {
+function proxyFocusKey(groupName: string, proxyName: string): string {
   return `${groupName}${latencyKeySeparator}${proxyName}`;
 }
 
-function latencyButtonFocusKey(groupName, kind) {
+function latencyButtonFocusKey(groupName: string, kind: LatencyKind): string {
   return `${groupName}${latencyKeySeparator}latency-btn${latencyKeySeparator}${kind}`;
 }
 
-function capturedProxyFocusKey() {
-  if (!el.proxiesList.contains(document.activeElement)) return "";
-  return document.activeElement.dataset.proxyFocus || "";
+function capturedProxyFocusKey(): string {
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof HTMLElement) || !el.proxiesList.contains(activeElement)) return "";
+  return activeElement.dataset.proxyFocus || "";
 }
 
-function isLatencyFocusKey(key) {
+function isLatencyFocusKey(key: string | undefined): boolean {
   return String(key || "").includes(`${latencyKeySeparator}latency-btn${latencyKeySeparator}`);
 }
 
-function restoreProxyListFocus(focusedKey) {
+function restoreProxyListFocus(focusedKey: string): void {
   if (!focusedKey) return;
-  const controls = [...el.proxiesList.querySelectorAll("[data-proxy-focus]")].filter((node) => !node.disabled);
+  const controls = [...el.proxiesList.querySelectorAll<HTMLButtonElement>("[data-proxy-focus]")].filter((node) => !node.disabled);
   if (!controls.length) return;
   const groupPrefix = `${focusedKey.split(latencyKeySeparator)[0] || ""}${latencyKeySeparator}`;
   const sameKindControls = controls.filter((node) => isLatencyFocusKey(node.dataset.proxyFocus) === isLatencyFocusKey(focusedKey));
@@ -1182,7 +1253,7 @@ function restoreProxyListFocus(focusedKey) {
   target?.focus({ preventScroll: true });
 }
 
-function renderProxyGroups(groups, apply) {
+function renderProxyGroups(groups: FleetProxyGroup[], apply: boolean): void {
   const selected = active();
   const filter = el.proxyFilter.value.trim().toLowerCase();
   const snapshot = proxyGroupsRenderSnapshot(groups, apply, filter);
@@ -1233,7 +1304,7 @@ function renderProxyGroups(groups, apply) {
     latencyButton.dataset.kind = latencyKinds.url;
     latencyButton.dataset.testable = currentName ? "true" : "false";
     latencyButton.dataset.proxyFocus = latencyButtonFocusKey(group.name, latencyKinds.url);
-    latencyButton.disabled = !apply || !currentName || (selected && isLatencyRunning(state, selected.id, group.name, currentName, latencyKinds.url));
+    latencyButton.disabled = Boolean(!apply || !currentName || (selected && isLatencyRunning(state, selected.id, group.name, currentName, latencyKinds.url)));
     latencyButton.addEventListener("click", () => latency.testGroupLatency(group, latencyKinds.url));
     const realLatencyButton = document.createElement("button");
     realLatencyButton.type = "button";
@@ -1245,7 +1316,7 @@ function renderProxyGroups(groups, apply) {
     realLatencyButton.dataset.kind = latencyKinds.real;
     realLatencyButton.dataset.testable = currentName ? "true" : "false";
     realLatencyButton.dataset.proxyFocus = latencyButtonFocusKey(group.name, latencyKinds.real);
-    realLatencyButton.disabled = !apply || !currentName || (selected && isLatencyRunning(state, selected.id, group.name, currentName, latencyKinds.real));
+    realLatencyButton.disabled = Boolean(!apply || !currentName || (selected && isLatencyRunning(state, selected.id, group.name, currentName, latencyKinds.real)));
     realLatencyButton.addEventListener("click", () => latency.testGroupLatency(group, latencyKinds.real));
     actions.append(latencyButton, realLatencyButton);
     head.append(title, metaWrap, actions);
@@ -1286,11 +1357,11 @@ function renderProxyGroups(groups, apply) {
   restoreProxyListFocus(focusedKey);
 }
 
-async function selectProxy(group, proxy, apply) {
+async function selectProxy(group: string, proxy: string, apply: boolean): Promise<void> {
   const selected = active();
   if (!selected) return;
   try {
-    const updated = await api(`/api/instances/${selected.id}/selection`, {
+    const updated = await api<FleetInstance>(`/api/instances/${selected.id}/selection`, {
       method: "POST",
       body: JSON.stringify({ group, proxy, apply }),
     });
@@ -1299,32 +1370,35 @@ async function selectProxy(group, proxy, apply) {
     render();
     await refreshProxies();
   } catch (err) {
-    showMessage(err.message, "error");
+    const message = err instanceof Error ? err.message : String(err);
+    showMessage(message, "error");
   }
 }
 
-async function runAction(path, success) {
+async function runAction(path: string, success: string): Promise<void> {
   try {
     await api(path, { method: "POST" });
     showMessage(success);
     await refresh();
   } catch (err) {
-    showMessage(err.message, "error");
+    const message = err instanceof Error ? err.message : String(err);
+    showMessage(message, "error");
     await refresh();
   }
 }
 
-async function runBulkAction(action) {
+async function runBulkAction(action: string): Promise<void> {
   try {
     state.bulkRunning = true;
     updateBulkControls();
-    const payload = await api(`/api/instances?action=${encodeURIComponent(action)}`, { method: "POST" });
+    const payload = await api<BatchActionPayload>(`/api/instances?action=${encodeURIComponent(action)}`, { method: "POST" });
     state.instances = payload.instances || state.instances;
     showMessage(formatBatchMessage(action, payload), payload.failed ? "error" : "info");
     render();
     await refreshActiveDetails();
   } catch (err) {
-    showMessage(err.message, "error");
+    const message = err instanceof Error ? err.message : String(err);
+    showMessage(message, "error");
     await refresh({ forceInstances: true });
   } finally {
     state.bulkRunning = false;
@@ -1332,8 +1406,11 @@ async function runBulkAction(action) {
   }
 }
 
-function setActiveTab(button) {
-  state.activeTab = button.dataset.tab;
+function setActiveTab(button: HTMLButtonElement): void {
+  // Every `.tab` button in index.html carries a `data-tab` matching one of
+  // FleetTab's literal values (that's the markup's whole purpose), so this
+  // cast documents a guarantee the DOM shell -- not this function -- owns.
+  state.activeTab = button.dataset.tab as FleetTab;
   for (const tab of el.tabButtons) {
     const isActive = tab === button;
     tab.classList.toggle("active", isActive);
@@ -1341,10 +1418,11 @@ function setActiveTab(button) {
     tab.tabIndex = isActive ? 0 : -1;
   }
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.add("hidden"));
-  document.querySelector(`#tab-${state.activeTab}`).classList.remove("hidden");
+  // The active tab always has a matching #tab-<name> panel in index.html.
+  document.querySelector(`#tab-${state.activeTab}`)!.classList.remove("hidden");
 }
 
-async function createInstanceFromForm() {
+async function createInstanceFromForm(): Promise<void> {
   if (!state.profiles.length || !el.createProfile.value) {
     showMessage("请先创建并选择配置档。", "error");
     return;
@@ -1362,7 +1440,7 @@ async function createInstanceFromForm() {
       localProxies: el.createMode.value === instanceModes.globalChain ? el.createLocalProxies.value : "",
       chain: el.createMode.value === instanceModes.globalChain ? chainFromText(el.createChain.value) : [],
     };
-    const created = await api("/api/instances", {
+    const created = await api<FleetInstance>("/api/instances", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -1373,14 +1451,15 @@ async function createInstanceFromForm() {
     showMessage("实例已创建。");
     await refresh();
   } catch (err) {
-    showMessage(err.message, "error");
+    const message = err instanceof Error ? err.message : String(err);
+    showMessage(message, "error");
   } finally {
     createGate.end();
     render();
   }
 }
 
-async function saveActiveBasics() {
+async function saveActiveBasics(): Promise<void> {
   const selected = active();
   if (!selected || !saveBasicsGate.begin()) return;
   const editVersion = state.editVersion;
@@ -1405,26 +1484,40 @@ async function saveActiveBasics() {
     showMessage("基础信息已保存。");
     await refresh();
   } catch (err) {
-    showMessage(err.message, "error");
+    const message = err instanceof Error ? err.message : String(err);
+    showMessage(message, "error");
   } finally {
     saveBasicsGate.end();
     render();
   }
 }
 
-async function saveProfile() {
+/** Request body POST/PUT /api/profiles(/:id) accepts; see saveProfile(). */
+interface SaveProfileBody {
+  name: string;
+  subscriptionUrl?: string;
+  autoUpdate?: boolean;
+  updateIntervalMinutes?: number;
+  config?: string;
+}
+
+async function saveProfile(): Promise<void> {
   const profile = activeProfile();
   if ((!profile && !state.profileCreating) || !beginProfileOperation(saveProfileGate)) return;
   const creating = state.profileCreating;
-  const source = creating ? state.profileCreateSource : (profile.subscriptionUrl ? "subscription" : "manual");
-  const savedProfileId = creating ? "__new__" : profile.id;
+  // The guard above only lets execution continue when `profile ||
+  // state.profileCreating`; every `profile!` below is only read on the
+  // `!creating` branch, which -- given that guard -- proves `profile` is
+  // non-null there.
+  const source = creating ? state.profileCreateSource : (profile!.subscriptionUrl ? "subscription" : "manual");
+  const savedProfileId = creating ? "__new__" : profile!.id;
   const operationContext = captureProfileOperationContext(savedProfileId);
   const savedConfigVersion = configEditor.getVersion();
   const savedFormVersion = state.profileFormVersion;
   const configMayChange = source === "manual"
     ? configEditorDirty()
-    : !creating && el.subscriptionUrl.value.trim() !== profile.subscriptionUrl;
-  const body = {
+    : !creating && el.subscriptionUrl.value.trim() !== profile!.subscriptionUrl;
+  const body: SaveProfileBody = {
     name: el.profileName.value.trim(),
   };
   if (source === "subscription") {
@@ -1442,7 +1535,7 @@ async function saveProfile() {
     }
     setConfigEditorError("");
     renderConfigEditorState(profile);
-    const saved = await api(creating ? "/api/profiles" : `/api/profiles/${profile.id}`, {
+    const saved = await api<FleetProfile>(creating ? "/api/profiles" : `/api/profiles/${profile!.id}`, {
       method: creating ? "POST" : "PUT",
       body: JSON.stringify(body),
     });
@@ -1479,8 +1572,9 @@ async function saveProfile() {
     }
   } catch (err) {
     if (profileOperationContextMatches(operationContext)) {
-      setConfigEditorError(err.message);
-      showMessage(err.message, "error");
+      const message = err instanceof Error ? err.message : String(err);
+      setConfigEditorError(message);
+      showMessage(message, "error");
     }
   } finally {
     saveProfileGate.end();
@@ -1489,7 +1583,7 @@ async function saveProfile() {
   }
 }
 
-function bindEvents() {
+function bindEvents(): void {
   el.tabButtons.forEach((button) => {
     button.addEventListener("click", async () => {
       setActiveTab(button);
@@ -1499,17 +1593,22 @@ function bindEvents() {
 
   el.tabList.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    const currentIndex = el.tabButtons.indexOf(document.activeElement);
+    // `document.activeElement` is only ever one of el.tabButtons' own buttons
+    // while focus is inside the tab list; indexOf just returns -1 otherwise,
+    // matching the runtime semantics of the original untyped comparison.
+    const currentIndex = el.tabButtons.indexOf(document.activeElement as HTMLButtonElement);
     if (currentIndex === -1) return;
     event.preventDefault();
     const delta = event.key === "ArrowRight" ? 1 : -1;
-    const nextButton = el.tabButtons[(currentIndex + delta + el.tabButtons.length) % el.tabButtons.length];
+    // Modulo-wrapped into [0, el.tabButtons.length), and el.tabButtons is the
+    // static (non-empty) .tab button list, so this index always exists.
+    const nextButton = el.tabButtons[(currentIndex + delta + el.tabButtons.length) % el.tabButtons.length]!;
     nextButton.focus();
     setActiveTab(nextButton);
     refreshActiveDetails();
   });
 
-  el.instanceSelect.addEventListener("change", (event) => selectInstance(event.target.value));
+  el.instanceSelect.addEventListener("change", (event) => selectInstance((event.target as HTMLSelectElement).value));
   el.manageProfilesBtn.addEventListener("click", () => {
     if (state.view === "profiles") closeProfileManager();
     else openProfileManager();
@@ -1519,34 +1618,43 @@ function bindEvents() {
     else openDashboard();
   });
   el.dashboardPanel.addEventListener("click", (event) => {
-    const openBtn = event.target.closest("[data-open-instance]");
+    // Matches the `event.target as Element | null` cast dashboard.ts's own
+    // bindComposition() uses for the same reason: DOM lib's generic event
+    // maps type every target as bare EventTarget.
+    const target = event.target as Element | null;
+    const openBtn = target?.closest<HTMLElement>("[data-open-instance]");
     if (openBtn) {
-      openInstanceWorkbench(openBtn.dataset.openInstance);
+      openInstanceWorkbench(openBtn.dataset.openInstance || "");
       return;
     }
-    const row = event.target.closest("tr[data-instance-id]");
-    if (row) focusDashboardInstance(row.dataset.instanceId);
+    const row = target?.closest<HTMLElement>("tr[data-instance-id]");
+    if (row) focusDashboardInstance(row.dataset.instanceId || "");
   });
   // Re-rendering on every keystroke is affordable (the poll already redraws
   // the panel every 1.8s) and renderDashboard restores the caret afterwards.
   el.dashboardPanel.addEventListener("input", (event) => {
-    if (event.isComposing) return;
-    const search = event.target.closest(".dash-conn-search");
+    // The DOM lib's generic "input" event map types this as the base Event,
+    // but the browser always dispatches a real InputEvent for text input.
+    if ((event as InputEvent).isComposing) return;
+    const target = event.target as Element | null;
+    const search = target?.closest<HTMLInputElement>(".dash-conn-search");
     if (!search) return;
     setConnectionQuery(search.value);
     renderDashboard(el.dashboardPanel, state);
   });
   el.dashboardPanel.addEventListener("dblclick", (event) => {
-    const row = event.target.closest("tr[data-instance-id]");
-    if (row) openInstanceWorkbench(row.dataset.instanceId);
+    const target = event.target as Element | null;
+    const row = target?.closest<HTMLElement>("tr[data-instance-id]");
+    if (row) openInstanceWorkbench(row.dataset.instanceId || "");
   });
   el.dashboardPanel.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
-    const row = event.target.closest("tr[data-instance-id]");
+    const target = event.target as Element | null;
+    const row = target?.closest<HTMLElement>("tr[data-instance-id]");
     if (!row) return;
     event.preventDefault();
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) openInstanceWorkbench(row.dataset.instanceId);
-    else focusDashboardInstance(row.dataset.instanceId);
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) openInstanceWorkbench(row.dataset.instanceId || "");
+    else focusDashboardInstance(row.dataset.instanceId || "");
   });
   el.newBtn.addEventListener("click", showCreate);
   el.startAllBtn.addEventListener("click", () => runBulkAction("start-all"));
@@ -1581,7 +1689,7 @@ function bindEvents() {
     try {
       state.cloneRunning = true;
       el.cloneBtn.disabled = true;
-      const created = await api(`/api/instances/${selected.id}/clone`, {
+      const created = await api<FleetInstance>(`/api/instances/${selected.id}/clone`, {
         method: "POST",
         body: JSON.stringify({}),
       });
@@ -1593,7 +1701,8 @@ function bindEvents() {
       showMessage(`已克隆 ${selected.name}。`);
       await refresh();
     } catch (err) {
-      showMessage(err.message, "error");
+      const message = err instanceof Error ? err.message : String(err);
+      showMessage(message, "error");
     } finally {
       state.cloneRunning = false;
       render();
@@ -1612,7 +1721,8 @@ function bindEvents() {
       showMessage("实例已删除。");
       await refresh();
     } catch (err) {
-      showMessage(err.message, "error");
+      const message = err instanceof Error ? err.message : String(err);
+      showMessage(message, "error");
     }
   });
 
@@ -1690,7 +1800,8 @@ function bindEvents() {
       }
     } catch (err) {
       if (profileOperationContextMatches(operationContext)) {
-        showMessage(err.message, "error");
+        const message = err instanceof Error ? err.message : String(err);
+        showMessage(message, "error");
         await refresh({ forceInstances: true });
       }
     } finally {
@@ -1708,7 +1819,7 @@ function bindEvents() {
     if (!beginProfileOperation(refreshSubscriptionGate)) return;
     const operationContext = captureProfileOperationContext(profile.id);
     try {
-      const refreshed = await api(`/api/profiles/${profile.id}/refresh`, { method: "POST" });
+      const refreshed = await api<FleetProfile>(`/api/profiles/${profile.id}/refresh`, { method: "POST" });
       if (!profileOperationContextMatches(operationContext)) return;
       state.profiles = state.profiles.map((item) => (item.id === refreshed.id ? refreshed : item));
       showMessage("订阅已更新。运行中的实例需要重启后使用新的缓存配置。");
@@ -1717,7 +1828,8 @@ function bindEvents() {
       await loadProfileConfig(refreshed.id);
     } catch (err) {
       if (profileOperationContextMatches(operationContext)) {
-        showMessage(err.message, "error");
+        const message = err instanceof Error ? err.message : String(err);
+        showMessage(message, "error");
         await refresh();
         if (profileOperationContextMatches(operationContext)) await loadProfileConfig(profile.id);
       }
@@ -1769,20 +1881,20 @@ function bindEvents() {
   el.testAllRealLatency.addEventListener("click", () => latency.testAllLatency(latencyKinds.real));
 }
 
-function scheduleSlowPoll(delay = slowPollIntervalMs) {
-  clearTimeout(slowPollTimer);
+function scheduleSlowPoll(delay: number = slowPollIntervalMs): void {
+  clearTimeout(slowPollTimer || undefined);
   slowPollTimer = null;
   if (document.hidden) return;
   slowPollTimer = setTimeout(runSlowPoll, delay);
 }
 
-async function runSlowPoll() {
+async function runSlowPoll(): Promise<void> {
   if (!document.hidden) await refresh({ periodic: true });
   scheduleSlowPoll();
 }
 
-function scheduleFastPoll(delay = fastPollIntervalMs) {
-  clearTimeout(fastPollTimer);
+function scheduleFastPoll(delay: number = fastPollIntervalMs): void {
+  clearTimeout(fastPollTimer || undefined);
   fastPollTimer = null;
   if (document.hidden) return;
   fastPollTimer = setTimeout(runFastPoll, delay);
@@ -1790,17 +1902,17 @@ function scheduleFastPoll(delay = fastPollIntervalMs) {
 
 // Keep sampling while any view is open so opening the dashboard already has a
 // filled window. Cost is one /connections call per running instance per tick.
-async function sampleFleetTraffic() {
+async function sampleFleetTraffic(): Promise<void> {
   if (!state.instances?.length) return;
   await sampleFleet(
     state.instances,
-    (id) => api(`/api/mihomo/${encodeURIComponent(id)}/connections`),
+    (id) => api<ConnectionsFetchPayload>(`/api/mihomo/${encodeURIComponent(id)}/connections`),
     Date.now(),
   );
   if (state.view === "dashboard") renderDashboard(el.dashboardPanel, state);
 }
 
-async function runFastPoll() {
+async function runFastPoll(): Promise<void> {
   if (!document.hidden) {
     await sampleFleetTraffic();
     await pollActiveTab();
@@ -1816,16 +1928,16 @@ document.addEventListener("visibilitychange", () => {
 
 // Row budgets come from measured box heights, so a resized window has to
 // re-measure. Debounced because a window drag fires this continuously.
-let dashboardResizeTimer = null;
+let dashboardResizeTimer: ReturnType<typeof setTimeout> | null = null;
 window.addEventListener("resize", () => {
   if (state.view !== "dashboard") return;
-  clearTimeout(dashboardResizeTimer);
+  clearTimeout(dashboardResizeTimer || undefined);
   dashboardResizeTimer = setTimeout(() => renderDashboard(el.dashboardPanel, state), 150);
 });
 
 // Country lookups run against the local database the controller already stages
 // for mihomo, so no destination address ever leaves the machine.
-setGeoResolver((ips) => api("/api/geoip", { method: "POST", body: JSON.stringify({ ips }) }));
+setGeoResolver((ips) => api<GeoLookupResult>("/api/geoip", { method: "POST", body: JSON.stringify({ ips }) }));
 
 bindEvents();
 refresh();

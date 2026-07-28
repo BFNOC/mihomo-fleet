@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { ConnectionRateFields } from "./traffic.ts";
 import {
   aggregateSeries,
   connectionSnapshot,
@@ -18,7 +19,7 @@ import {
   seriesPeak,
   sortConnections,
   sparklineGeometry,
-} from "./traffic.js";
+} from "./traffic.ts";
 
 test("series drops the oldest sample once capacity is reached", () => {
   const series = createSeries(3);
@@ -70,6 +71,7 @@ test("fleet aggregate of no running instances yields an empty series", () => {
 
 test("sparkline maps values onto the box and pins the peak to the top edge", () => {
   const geometry = sparklineGeometry([0, 50, 100], { width: 100, height: 20 });
+  assert.ok(geometry);
   assert.equal(geometry.ceiling, 100);
   assert.equal(geometry.line, "M0 20 L50 10 L100 0");
   assert.equal(geometry.area, "M0 20 L0 20 L50 10 L100 0 L100 20 Z");
@@ -77,17 +79,20 @@ test("sparkline maps values onto the box and pins the peak to the top edge", () 
 
 test("sparkline honours an explicit ceiling so paired charts share a scale", () => {
   const geometry = sparklineGeometry([25, 50], { width: 100, height: 20, max: 100 });
+  assert.ok(geometry);
   assert.equal(geometry.ceiling, 100);
   assert.equal(geometry.line, "M0 15 L100 10");
 });
 
 test("sparkline ceiling still grows when a value exceeds the requested max", () => {
   const geometry = sparklineGeometry([0, 400], { width: 100, height: 20, max: 100 });
+  assert.ok(geometry);
   assert.equal(geometry.ceiling, 400);
 });
 
 test("sparkline renders an all-zero window as a flat baseline instead of dividing by zero", () => {
   const geometry = sparklineGeometry([0, 0, 0], { width: 100, height: 20 });
+  assert.ok(geometry);
   assert.equal(geometry.ceiling, 0);
   assert.equal(geometry.line, "M0 20 L50 20 L100 20");
   assert.ok(geometry.points.every((point) => Number.isFinite(point.y)));
@@ -95,6 +100,7 @@ test("sparkline renders an all-zero window as a flat baseline instead of dividin
 
 test("sparkline spans a single sample across the whole box so the stroke is visible", () => {
   const geometry = sparklineGeometry([80], { width: 100, height: 20 });
+  assert.ok(geometry);
   assert.equal(geometry.line, "M0 0 L100 0");
   assert.equal(geometry.area, "M0 20 L0 0 L100 0 L100 20 Z");
 });
@@ -156,6 +162,7 @@ test("connection snapshot flattens mihomo metadata and tolerates a missing paylo
       },
     ],
   });
+  assert.ok(row);
   assert.equal(row.host, "example.com");
   assert.equal(row.ip, "1.2.3.4");
   assert.equal(row.port, "443");
@@ -169,6 +176,7 @@ test("connection snapshot flattens mihomo metadata and tolerates a missing paylo
 
 test("connection snapshot falls back to the sniffed host and blanks missing fields", () => {
   const [row] = connectionSnapshot({ connections: [{ metadata: { sniffHost: "sniffed.example" } }] });
+  assert.ok(row);
   assert.equal(row.host, "sniffed.example");
   assert.equal(row.ip, "");
   assert.equal(row.node, "");
@@ -178,7 +186,9 @@ test("connection snapshot falls back to the sniffed host and blanks missing fiel
 
 test("per-connection rate differences cumulative counters by id", () => {
   const previous = new Map([["c1", { upload: 100, download: 1000 }]]);
-  const rows = [
+  // Typed as an exact-length tuple (rather than a plain array) so rows[0] and
+  // rows[1] below stay `ConnectionRateFields`, not `... | undefined`.
+  const rows: [ConnectionRateFields, ConnectionRateFields] = [
     { id: "c1", upload: 1100, download: 3000, up: 0, down: 0 },
     { id: "c2", upload: 50, download: 60, up: 0, down: 0 },
   ];
@@ -192,10 +202,10 @@ test("per-connection rate differences cumulative counters by id", () => {
 
 test("per-connection rate clamps reused ids and refuses a zero time delta", () => {
   const previous = new Map([["c1", { upload: 900, download: 900 }]]);
-  const reused = [{ id: "c1", upload: 10, download: 0, up: 9, down: 9 }];
+  const reused: [ConnectionRateFields] = [{ id: "c1", upload: 10, download: 0, up: 9, down: 9 }];
   diffConnections(previous, reused, 1800);
   assert.deepEqual({ up: reused[0].up, down: reused[0].down }, { up: 0, down: 0 });
-  const stalled = [{ id: "c1", upload: 5000, download: 5000, up: 9, down: 9 }];
+  const stalled: [ConnectionRateFields] = [{ id: "c1", upload: 5000, download: 5000, up: 9, down: 9 }];
   diffConnections(previous, stalled, 0);
   assert.deepEqual({ up: stalled[0].up, down: stalled[0].down }, { up: 0, down: 0 });
 });

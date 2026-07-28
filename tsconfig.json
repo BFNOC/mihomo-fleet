@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+
+    // Vite emits the bundle and Node strips types when running tests, so tsc is
+    // only ever a checker. That is what lets imports carry the real ".ts"
+    // extension: Node's type stripping resolves the specifier literally and
+    // would fail on the ".js" extension TypeScript normally expects.
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "internal/app/web-src/**/*.ts",
+    "internal/app/web-src/**/*.vue",
+    "vite.config.ts",
+    "scripts/**/*.mjs"
+  ]
+}

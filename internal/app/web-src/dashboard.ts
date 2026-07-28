@@ -1,5 +1,5 @@
-import { formatBytes, shortMihomoVersion } from "./format.js";
-import { escapeHTML, statusClass, statusText } from "./i18n.js";
+import { formatBytes, shortMihomoVersion } from "./format.ts";
+import { escapeHTML, statusClass, statusText } from "./i18n.ts";
 import {
   aggregateSeries,
   connectionSnapshot,
@@ -19,7 +19,16 @@ import {
   sortConnections,
   sparklineGeometry,
   trafficWindowSeconds,
-} from "./traffic.js";
+} from "./traffic.ts";
+import type {
+  ConnectionRow,
+  ConnectionsPayload,
+  ConnectionTotals,
+  SparklineGeometry,
+  TrafficCounterSample,
+  TrafficSeries,
+} from "./traffic.ts";
+import type { FleetInstance, FleetState, FleetSystemStatus } from "./state.ts";
 
 // The fast poll runs at 1800ms, so a 60s window is ~33 samples.
 const sampleCapacity = Math.ceil((trafficWindowSeconds * 1000) / 1800) + 2;
@@ -28,35 +37,71 @@ const sparkHeight = 56;
 const trendHeight = 112;
 const rowSparkWidth = 96;
 const rowSparkHeight = 20;
+
+interface RowBudgets {
+  connections: number;
+  instances: number;
+}
+
 // The dashboard is sized to the viewport and never scrolls, so both tables show
 // exactly the number of rows their box can hold -- measured after each render
 // (fitTables) rather than guessed. These are the starting guesses for the very
 // first paint and the floor when a measurement is impossible (panel hidden,
 // zero-height box). Connection rows are sorted busiest-first, so a tight budget
 // still keeps the interesting ones.
-const rowBudgets = { connections: 6, instances: 4 };
+const rowBudgets: RowBudgets = { connections: 6, instances: 4 };
 // A row that renders taller than this is a layout bug, not data -- clamping the
 // divisor keeps a bad measurement from collapsing the table to a single row.
 const maxRowHeight = 120;
 
+// Per-instance rolling sampler state: the traffic-rate series plus enough of
+// the last /connections snapshot to derive the next rate and render the
+// connection table. This in-memory sampling history has no counterpart in
+// FleetState/FleetInstance (the controller doesn't track it), so it is kept
+// here, one entry per instance, for as long as pruneSamplers/
+// forgetInstanceSamples lets it live. Exported so the Vue migration can reuse
+// the exact shape instead of redeclaring it.
+export interface DashboardSampler {
+  series: TrafficSeries;
+  previous: TrafficCounterSample | null;
+  connections: number;
+  reachable: boolean;
+  connectionRows: ConnectionRow[];
+  connectionTotals: Map<string, ConnectionTotals>;
+  sampledAt: number;
+}
+
+// Raw JSON body of GET /api/mihomo/{id}/connections -- the controller's direct
+// pass-through of mihomo's own /connections endpoint. Untrusted network input
+// (same reasoning as traffic.ts's ConnectionsPayload, which this extends):
+// `uploadTotal`/`downloadTotal` are only ever read through Number() below, so
+// they stay `unknown` rather than claiming a shape the caller cannot actually
+// guarantee.
+export interface ConnectionsFetchPayload extends ConnectionsPayload {
+  uploadTotal?: unknown;
+  downloadTotal?: unknown;
+}
+
+export type FetchConnections = (instanceId: string) => Promise<ConnectionsFetchPayload | null | undefined>;
+
 // One sampler per instance: the rolling rate series plus the previous
 // cumulative counter reading the next rate is derived from.
-const samplers = new Map();
+const samplers = new Map<string, DashboardSampler>();
 let connectionQuery = "";
 
-function emptySampler() {
+function emptySampler(): DashboardSampler {
   return {
     series: createSeries(sampleCapacity),
     previous: null,
     connections: 0,
     reachable: false,
     connectionRows: [],
-    connectionTotals: new Map(),
+    connectionTotals: new Map<string, ConnectionTotals>(),
     sampledAt: 0,
   };
 }
 
-function sampler(instanceId) {
+function sampler(instanceId: string): DashboardSampler {
   let entry = samplers.get(instanceId);
   if (!entry) {
     entry = emptySampler();
@@ -67,55 +112,66 @@ function sampler(instanceId) {
 
 // A stopped or unreachable instance keeps no connection state: its rows are
 // gone from the table and its counters must not seed the next rate it reports.
-function resetConnectionState(entry) {
+function resetConnectionState(entry: DashboardSampler): void {
   entry.previous = null;
   entry.connections = 0;
   entry.reachable = false;
   entry.connectionRows = [];
-  entry.connectionTotals = new Map();
+  entry.connectionTotals = new Map<string, ConnectionTotals>();
   entry.sampledAt = 0;
 }
 
-export function setConnectionQuery(value) {
+export function setConnectionQuery(value: unknown): void {
   connectionQuery = String(value ?? "");
 }
 
-export function forgetInstanceSamples(instanceId) {
+export function forgetInstanceSamples(instanceId: string): void {
   samplers.delete(instanceId);
 }
 
 // Deleted instances would otherwise keep contributing to the fleet total
 // forever, since nothing else ever clears their sampler.
-export function pruneSamplers(instances) {
+export function pruneSamplers(instances: Pick<FleetInstance, "id">[] | null | undefined): void {
   const live = new Set((instances || []).map((item) => item.id));
   for (const id of [...samplers.keys()]) {
     if (!live.has(id)) samplers.delete(id);
   }
 }
 
-export function instanceSeries(instanceId) {
+export function instanceSeries(instanceId: string): TrafficSeries | null {
   return samplers.get(instanceId)?.series || null;
 }
 
-export function instanceConnections(instanceId) {
+export function instanceConnections(instanceId: string): number {
   const entry = samplers.get(instanceId);
   return entry?.reachable ? entry.connections : 0;
 }
 
-export function fleetSeries(instances) {
-  const running = (instances || []).map((item) => samplers.get(item.id)?.series).filter(Boolean);
+export function fleetSeries(instances: Pick<FleetInstance, "id">[] | null | undefined): TrafficSeries {
+  const running = (instances || [])
+    .map((item) => samplers.get(item.id)?.series)
+    .filter((series): series is TrafficSeries => Boolean(series));
   return aggregateSeries(running, sampleCapacity);
 }
 
-export function fleetConnections(instances) {
+export function fleetConnections(instances: Pick<FleetInstance, "id">[] | null | undefined): number {
   return (instances || []).reduce((total, item) => total + instanceConnections(item.id), 0);
+}
+
+// fleetConnectionRows's output row: a per-instance ConnectionRow stamped with
+// the owning instance's id/name so the fleet-wide table can both display and
+// search on it. `instanceName` is always populated here (falls back to the
+// id), unlike ConnectionRow's own optional field of the same name.
+export interface FleetConnectionRow extends ConnectionRow {
+  instanceId: string;
+  instanceName: string;
 }
 
 // Connections are stored per instance but read fleet-wide, so the owning
 // instance's name has to travel with each row -- it is both a table column and
 // a search term.
-export function fleetConnectionRows(instances) {
-  const rows = [];
+export function fleetConnectionRows(instances: Pick<FleetInstance, "id" | "name">[] | null | undefined): FleetConnectionRow[] {
+  const rows: FleetConnectionRow[] = [];
   for (const item of instances || []) {
     const entry = samplers.get(item.id);
     if (!entry?.reachable) continue;
@@ -130,16 +186,16 @@ export function fleetConnectionRows(instances) {
 // empty data, so a rejection here is an expected state, not an error worth
 // surfacing. Reset its counter baseline so the restart does not read as one
 // giant delta.
-export async function sampleInstance(instanceId, fetchConnections, now) {
+export async function sampleInstance(instanceId: string, fetchConnections: FetchConnections, now: number): Promise<void> {
   const entry = sampler(instanceId);
-  let payload = null;
+  let payload: ConnectionsFetchPayload | null | undefined = null;
   try {
     payload = await fetchConnections(instanceId);
   } catch {
     resetConnectionState(entry);
     return;
   }
-  const current = {
+  const current: TrafficCounterSample = {
     at: now,
     uploadTotal: Number(payload?.uploadTotal) || 0,
     downloadTotal: Number(payload?.downloadTotal) || 0,
@@ -156,7 +212,11 @@ export async function sampleInstance(instanceId, fetchConnections, now) {
   pushSample(entry.series, { at: now, up: rate.up, down: rate.down });
 }
 
-export async function sampleFleet(instances, fetchConnections, now) {
+export async function sampleFleet(
+  instances: Pick<FleetInstance, "id" | "status">[] | null | undefined,
+  fetchConnections: FetchConnections,
+  now: number,
+): Promise<void> {
   pruneSamplers(instances);
   const running = (instances || []).filter((item) => item.status === "running");
   for (const item of instances || []) {
@@ -168,11 +228,11 @@ export async function sampleFleet(instances, fetchConnections, now) {
   await Promise.all(running.map((item) => sampleInstance(item.id, fetchConnections, now)));
 }
 
-function formatClock(ms) {
+function formatClock(ms: number): string {
   const value = Number(ms) || 0;
   if (!value) return "--:--:--";
   const date = new Date(value);
-  const pad = (n) => String(n).padStart(2, "0");
+  const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
@@ -180,12 +240,15 @@ function formatClock(ms) {
 // so it gets a dot. Drawn as a zero-length round-capped stroke rather than a
 // <circle>: the SVG scales non-uniformly (preserveAspectRatio="none"), which
 // would squash a circle into an ellipse but leaves a round cap round.
-function sparkHead(geometry, variant) {
-  const point = geometry.points[geometry.points.length - 1];
+function sparkHead(geometry: SparklineGeometry, variant: "up" | "down"): string {
+  // sparklineGeometry always returns at least one point (a lone sample is
+  // spanned across the whole box), so the last index always exists; the
+  // assertion only satisfies noUncheckedIndexedAccess.
+  const point = geometry.points[geometry.points.length - 1]!;
   return `<path class="spark-head spark-${variant}-head" d="M${point.x} ${point.y}L${point.x} ${point.y}" vector-effect="non-scaling-stroke"/>`;
 }
 
-function dualSparkline(series, { width, height }) {
+function dualSparkline(series: TrafficSeries | null | undefined, { width, height }: { width: number; height: number }): string {
   const up = seriesField(series, "up");
   const down = seriesField(series, "down");
   const ceiling = Math.max(seriesPeak(series, "up"), seriesPeak(series, "down"));
@@ -193,7 +256,7 @@ function dualSparkline(series, { width, height }) {
   if (!up.length && !down.length) return `${open}</svg>`;
   const downGeo = sparklineGeometry(down.length ? down : [0], { width, height, max: ceiling });
   const upGeo = sparklineGeometry(up.length ? up : [0], { width, height, max: ceiling });
-  const parts = [open];
+  const parts: string[] = [open];
   if (downGeo) {
     parts.push(`<path class="spark-area spark-down-fill" d="${downGeo.area}"/>`);
     parts.push(`<path class="spark-line spark-down-stroke" d="${downGeo.line}"/>`);
@@ -208,17 +271,28 @@ function dualSparkline(series, { width, height }) {
   return parts.join("");
 }
 
+// A single metrics-strip chip: a labelled fact (mihomo version, profile
+// count, ...) with a tone class driving its dot/border colour.
+interface DashboardChip {
+  label: string;
+  value: string;
+  tone: string;
+}
+
 // One strip replaces what used to be four stacked cards (fleet, activity, and a
 // card each for upload and download). Everything above the tables is fixed
 // height, and every pixel spent here is a connection row the viewport-fit
 // layout cannot show.
-function metricsStrip(state, series, connections) {
+function metricsStrip(state: Pick<FleetState, "instances" | "system" | "profiles">, series: TrafficSeries, connections: number): string {
   const instances = state.instances || [];
   const running = instances.filter((item) => item.status === "running");
   const reachable = running.filter((item) => samplers.get(item.id)?.reachable).length;
   const pending = instances.filter((item) => item.pendingRestart);
   const failed = instances.filter((item) => item.lastError || item.status === "error");
-  const system = state.system || {};
+  // Untrusted-at-this-point-in-loading system status: `state.system` is `null`
+  // until the first /api/system fetch resolves, so every field is read
+  // through a Partial view rather than assuming the full shape is present.
+  const system: Partial<FleetSystemStatus> = state.system || {};
   const tone = failed.length ? "is-danger" : pending.length ? "is-warn" : running.length ? "is-running" : "is-idle";
   const headline = !instances.length
     ? "尚无实例"
@@ -229,9 +303,9 @@ function metricsStrip(state, series, connections) {
         : running.length
           ? `${running.length} / ${instances.length} 运行中`
           : "全部已停止";
-  const names = (list) => list.slice(0, 2).map((item) => escapeHTML(item.name)).join("、") + (list.length > 2 ? ` 等 ${list.length} 个` : "");
+  const names = (list: FleetInstance[]) => list.slice(0, 2).map((item) => escapeHTML(item.name)).join("、") + (list.length > 2 ? ` 等 ${list.length} 个` : "");
   const alert = failed.length ? `异常：${names(failed)}` : pending.length ? `待重启：${names(pending)}` : "";
-  const chips = [
+  const chips: DashboardChip[] = [
     { label: "mihomo", value: system.mihomoFound ? shortMihomoVersion(system.version) || "已就绪" : "未找到", tone: system.mihomoFound ? "is-ok" : "is-warn" },
     { label: "配置档", value: `${(state.profiles || []).length}`, tone: (state.profiles || []).length ? "is-ok" : "is-warn" },
     { label: "待重启", value: pending.length ? `${pending.length}` : "无", tone: pending.length ? "is-warn" : "is-ok" },
@@ -281,7 +355,7 @@ function metricsStrip(state, series, connections) {
     </article>`;
 }
 
-function trendBody(series, { width = sparkWidth, height = trendHeight } = {}) {
+function trendBody(series: TrafficSeries, { width = sparkWidth, height = trendHeight }: { width?: number; height?: number } = {}): string {
   const latest = seriesLatest(series);
   const span = seriesSpan(series);
   const currentUp = formatRate(latest ? latest.up : 0);
@@ -303,7 +377,7 @@ function trendBody(series, { width = sparkWidth, height = trendHeight } = {}) {
     </div>`;
 }
 
-function trendCard(series, title, note) {
+function trendCard(series: TrafficSeries, title: string, note: string): string {
   const sampleCount = series?.samples?.length || 0;
   return `
     <article class="dash-card dash-trend">
@@ -319,7 +393,7 @@ function trendCard(series, title, note) {
     </article>`;
 }
 
-function selectedDetail(state) {
+function selectedDetail(state: Pick<FleetState, "instances" | "activeId">): string {
   const instances = state.instances || [];
   const selected = instances.find((item) => item.id === state.activeId) || instances[0] || null;
   if (!selected) {
@@ -372,7 +446,7 @@ function selectedDetail(state) {
 
 // Trimming the list must never hide the row the user is looking at, so the
 // selected instance takes the last visible slot when it falls past the cut.
-function visibleInstances(instances, activeId) {
+function visibleInstances(instances: FleetInstance[], activeId: string): FleetInstance[] {
   if (instances.length <= rowBudgets.instances) return instances;
   const shown = instances.slice(0, rowBudgets.instances);
   if (shown.some((item) => item.id === activeId)) return shown;
@@ -381,7 +455,7 @@ function visibleInstances(instances, activeId) {
   return [...shown.slice(0, -1), active];
 }
 
-function instanceRows(state) {
+function instanceRows(state: Pick<FleetState, "instances" | "activeId">): string {
   const all = state.instances || [];
   if (!all.length) {
     return `<p class="dash-empty">还没有实例。先创建配置档，再新建实例。</p>`;
@@ -435,18 +509,28 @@ function instanceRows(state) {
 // connection's destination does not move between countries, and the table
 // re-renders every 1.8s. A miss is cached as "" so a database that simply does
 // not carry that address is not re-asked forever.
-const geoCache = new Map();
-const geoPending = new Set();
+const geoCache = new Map<string, string>();
+const geoPending = new Set<string>();
 let geoAvailable = true;
-let geoFetch = null;
 
-export function setGeoResolver(fetchCountries) {
+// JSON body POST /api/geoip resolves to. `available: false` means the
+// controller has no GeoIP database staged at all (a deployment choice, not a
+// failed request) -- a rejected promise is the transport-error case instead,
+// handled by requestGeo's `.catch`.
+export interface GeoLookupResult {
+  available?: boolean;
+  countries?: Record<string, string>;
+}
+
+let geoFetch: ((ips: string[]) => Promise<GeoLookupResult>) | null = null;
+
+export function setGeoResolver(fetchCountries: (ips: string[]) => Promise<GeoLookupResult>): void {
   geoFetch = fetchCountries;
 }
 
-function requestGeo(rows) {
+function requestGeo(rows: Pick<FleetConnectionRow, "ip">[]): void {
   if (!geoAvailable || !geoFetch) return;
-  const wanted = [];
+  const wanted: string[] = [];
   for (const row of rows) {
     const ip = row.ip;
     if (!ip || geoCache.has(ip) || geoPending.has(ip) || localAddressLabel(ip)) continue;
@@ -457,7 +541,7 @@ function requestGeo(rows) {
   geoFetch(wanted)
     .then((result) => {
       if (result && result.available === false) geoAvailable = false;
-      const countries = result?.countries || {};
+      const countries: Record<string, string> = result?.countries || {};
       for (const ip of wanted) geoCache.set(ip, countries[ip] || "");
     })
     .catch(() => {
@@ -469,7 +553,7 @@ function requestGeo(rows) {
     });
 }
 
-function geoCell(row) {
+function geoCell(row: Pick<FleetConnectionRow, "ip">): string {
   const local = localAddressLabel(row.ip);
   if (local) return `<span class="dash-geo-local">${escapeHTML(local)}</span>`;
   const code = geoCache.get(row.ip);
@@ -477,13 +561,20 @@ function geoCell(row) {
   return `<span class="dash-geo"><span class="dash-geo-flag" aria-hidden="true">${countryFlag(code)}</span>${escapeHTML(code)}</span>`;
 }
 
-function connectionTarget(row) {
+// connectionTarget's rendered result: the primary label (host, or the raw
+// address when there is none) plus a secondary line shown alongside it.
+interface ConnectionTargetLabel {
+  primary: string;
+  secondary: string;
+}
+
+function connectionTarget(row: Pick<FleetConnectionRow, "host" | "ip" | "port">): ConnectionTargetLabel {
   const address = [row.ip, row.port].filter(Boolean).join(":");
   if (row.host) return { primary: row.host, secondary: address };
   return { primary: address || "—", secondary: "" };
 }
 
-function connectionRow(row, now) {
+function connectionRow(row: FleetConnectionRow, now: number): string {
   const target = connectionTarget(row);
   const up = formatRate(row.up);
   const down = formatRate(row.down);
@@ -513,7 +604,7 @@ function connectionRow(row, now) {
     </tr>`;
 }
 
-function connectionsCard(state, now) {
+function connectionsCard(state: Pick<FleetState, "instances">, now: number): string {
   const running = (state.instances || []).filter((item) => item.status === "running");
   const all = fleetConnectionRows(running);
   const matched = sortConnections(filterConnections(all, connectionQuery));
@@ -565,17 +656,28 @@ function connectionsCard(state, now) {
     </article>`;
 }
 
-// The whole dashboard is re-rendered from scratch on every 1.8s poll, which
-// would otherwise drop the caret out of the search box mid-word.
-function captureLiveState(container) {
-  const search = container.querySelector(".dash-conn-search");
-  const focused = search && document.activeElement === search;
-  return { caret: focused ? [search.selectionStart, search.selectionEnd] : null };
+// captureLiveState/restoreLiveState's payload: the search box's caret position
+// (both ends, since a selection can be non-empty), or `null` when the box was
+// not the focused element at capture time.
+interface DashboardCaretState {
+  caret: [number | null, number | null] | null;
 }
 
-function restoreLiveState(container, live) {
+// The whole dashboard is re-rendered from scratch on every 1.8s poll, which
+// would otherwise drop the caret out of the search box mid-word.
+function captureLiveState(container: HTMLElement): DashboardCaretState {
+  const search = container.querySelector<HTMLInputElement>(".dash-conn-search");
+  // The condition is tested inline (rather than through an intermediate
+  // boolean) so the compiler can narrow `search` to non-null in the branch
+  // that reads `.selectionStart`/`.selectionEnd` below.
+  return {
+    caret: search && document.activeElement === search ? [search.selectionStart, search.selectionEnd] : null,
+  };
+}
+
+function restoreLiveState(container: HTMLElement, live: DashboardCaretState): void {
   if (!live.caret) return;
-  const search = container.querySelector(".dash-conn-search");
+  const search = container.querySelector<HTMLInputElement>(".dash-conn-search");
   if (!search) return;
   search.focus();
   // A search input rejects setSelectionRange in some engines; losing the caret
@@ -593,11 +695,15 @@ function restoreLiveState(container, live) {
 // than any scheme that keeps the input node alive across an innerHTML swap.
 let composing = false;
 
-function bindComposition(container) {
+function bindComposition(container: HTMLElement): void {
   if (container.dataset.dashComposition === "1") return;
   container.dataset.dashComposition = "1";
   container.addEventListener("compositionstart", (event) => {
-    if (event.target.closest?.(".dash-conn-search")) composing = true;
+    // event.target is EventTarget, which doesn't guarantee `.closest` (only
+    // Element does); the cast documents that this listener only cares about
+    // element targets, matching the runtime guard the optional call performs.
+    const target = event.target as Element | null;
+    if (target?.closest?.(".dash-conn-search")) composing = true;
   });
   container.addEventListener("compositionend", () => {
     composing = false;
@@ -605,15 +711,24 @@ function bindComposition(container) {
   // If the input loses focus mid-composition the browser may never fire
   // compositionend, and a stuck flag would freeze the dashboard for good.
   container.addEventListener("focusout", (event) => {
-    if (event.target.closest?.(".dash-conn-search")) composing = false;
+    const target = event.target as Element | null;
+    if (target?.closest?.(".dash-conn-search")) composing = false;
   });
 }
 
-function instancesNote(state) {
+function instancesNote(state: Pick<FleetState, "instances">): string {
   const total = (state.instances || []).length;
   const hidden = total - Math.min(total, rowBudgets.instances);
   if (hidden > 0) return `显示 ${total - hidden} / ${total} 台 · 其余在左侧列表`;
   return "点选查看右侧趋势；双击或点「打开工作台」进入该实例。";
+}
+
+// One fitTables measurement target: which rowBudgets entry to update, and the
+// selectors for the box and table that back it.
+interface TableFitSpec {
+  key: keyof RowBudgets;
+  body: string;
+  table: string;
 }
 
 // Both tables fill a box the grid sized for them, so how many rows fit is a
@@ -621,15 +736,15 @@ function instancesNote(state) {
 // next pass render exactly that many. The budgets cannot feed back into the
 // layout (the boxes are `1fr` with overflow hidden), so this converges in one
 // extra pass instead of oscillating.
-function fitTables(container) {
-  const specs = [
+function fitTables(container: HTMLElement): boolean {
+  const specs: TableFitSpec[] = [
     { key: "connections", body: ".dash-conn-body", table: ".dash-conn-table" },
     { key: "instances", body: ".dash-inst-body", table: ".dash-instance-table" },
   ];
   let changed = false;
   for (const spec of specs) {
     const body = container.querySelector(spec.body);
-    const table = body?.querySelector(spec.table);
+    const table = body?.querySelector<HTMLTableElement>(spec.table);
     const firstRow = table?.tBodies?.[0]?.rows?.[0];
     // No box, no rows, or a collapsed panel: keep the current budget rather
     // than derive one from a zero-height measurement.
@@ -650,12 +765,12 @@ function fitTables(container) {
 // breakpoint. Outside fit mode the table boxes grow with their content, and
 // measuring them would feed row count back into box height -- a loop that adds
 // rows forever.
-function viewportFitActive(container) {
+function viewportFitActive(container: HTMLElement): boolean {
   if (typeof getComputedStyle !== "function") return false;
   return getComputedStyle(container).getPropertyValue("--dash-fit").trim() === "1";
 }
 
-export function renderDashboard(container, state) {
+export function renderDashboard(container: HTMLElement | null | undefined, state: FleetState): void {
   if (!container) return;
   bindComposition(container);
   if (composing) return;
@@ -673,7 +788,7 @@ export function renderDashboard(container, state) {
   if (fit && fitTables(container)) paintDashboard(container, state);
 }
 
-function paintDashboard(container, state) {
+function paintDashboard(container: HTMLElement, state: FleetState): void {
   const live = captureLiveState(container);
   const instances = state.instances || [];
   const running = instances.filter((item) => item.status === "running");

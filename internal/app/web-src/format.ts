@@ -6,14 +6,16 @@ import {
   defaultLatencyTimeout,
   defaultLatencyUrl,
   proxyCopyDefs,
-} from "./constants.js";
-import { localizedMessage } from "./i18n.js";
+} from "./constants.ts";
+import type { InstanceMode, LatencyKind, ProxyCopyActionDef, ProxyCopyActionId } from "./constants.ts";
+import { localizedMessage } from "./i18n.ts";
+import type { FleetInstance, FleetProfile, FleetProxyGroup, FleetSubscriptionInfo, LatencyResult } from "./state.ts";
 
-export function instanceMode(item) {
+export function instanceMode(item: Pick<FleetInstance, "mode"> | null | undefined): InstanceMode {
   return item?.mode === instanceModes.globalChain ? instanceModes.globalChain : instanceModes.rule;
 }
 
-export function modeLabel(mode) {
+export function modeLabel(mode: InstanceMode): string {
   return mode === instanceModes.globalChain ? "全局链式" : "规则分流";
 }
 
@@ -23,16 +25,18 @@ export function modeLabel(mode) {
 // shows it has a line to spare, and only the version number identifies the
 // build to a human. The go version is skipped explicitly: it also matches the
 // semver shape and would otherwise win on a banner without a leading "v".
-export function shortMihomoVersion(raw) {
+export function shortMihomoVersion(raw: string | null | undefined): string {
   const text = String(raw || "").trim();
   if (!text) return "";
   const match = text.replace(/\bgo\d+(\.\d+)*/gi, " ").match(/v?(\d+\.\d+(?:\.\d+)?(?:[-+][0-9a-z.]+)?)/i);
-  if (match) return match[1];
+  // The pattern's only capturing group is mandatory (not nested inside an
+  // optional group), so a successful match always populates match[1].
+  if (match) return match[1]!;
   // Not a shape we know: show something bounded rather than the whole banner.
   return text.length > 32 ? `${text.slice(0, 32)}…` : text;
 }
 
-export function formatBytes(value) {
+export function formatBytes(value: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let size = Number(value) || 0;
   let unit = 0;
@@ -40,18 +44,23 @@ export function formatBytes(value) {
     size /= 1024;
     unit += 1;
   }
-  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+  // `unit` only ever advances while staying below units.length, so this
+  // index is always in range even though noUncheckedIndexedAccess can't
+  // prove the loop invariant on its own.
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]!}`;
 }
 
-export function formatProfileUpdate(profile) {
+export function formatProfileUpdate(profile: Pick<FleetProfile, "lastUpdateError" | "lastUpdatedAt">): string {
   if (profile.lastUpdateError) return `上次更新失败：${localizedMessage(profile.lastUpdateError)}`;
   if (profile.lastUpdatedAt) return `上次更新 ${new Date(profile.lastUpdatedAt).toLocaleString()}`;
   return "尚未更新";
 }
 
-export function formatSubscriptionInfo(profile) {
-  const parts = [];
-  const info = profile.subscriptionInfo || {};
+export function formatSubscriptionInfo(
+  profile: Pick<FleetProfile, "subscriptionInfo" | "autoUpdate" | "updateIntervalMinutes">,
+): string {
+  const parts: string[] = [];
+  const info: Partial<FleetSubscriptionInfo> = profile.subscriptionInfo || {};
   if (info.total) parts.push(`流量 ${formatBytes((info.upload || 0) + (info.download || 0))} / ${formatBytes(info.total)}`);
   if (info.expire) parts.push(`到期 ${new Date(info.expire * 1000).toLocaleDateString()}`);
   if (profile.autoUpdate && profile.updateIntervalMinutes) parts.push(`每 ${profile.updateIntervalMinutes} 分钟自动更新`);
@@ -59,16 +68,19 @@ export function formatSubscriptionInfo(profile) {
   return parts.join(" · ") || "暂无订阅元数据";
 }
 
-export function isHttpUrl(value) {
+export function isHttpUrl(value: string | null | undefined): boolean {
   return /^https?:\/\//i.test(String(value || "").trim());
 }
 
-export function normalizeStoredLatencyUrl(value) {
+export function normalizeStoredLatencyUrl(value: string | null | undefined): string {
   const url = String(value || "").trim();
   return !url || url === legacyDefaultLatencyUrl ? defaultLatencyUrl : url;
 }
 
-export function normalizeStoredLatencyTimeout(value, storedUrl) {
+export function normalizeStoredLatencyTimeout(
+  value: string | null | undefined,
+  storedUrl: string | null | undefined,
+): string {
   const timeout = String(value || "").trim();
   const url = String(storedUrl || "").trim();
   if (!timeout || (timeout === legacyDefaultLatencyTimeout && (!url || url === legacyDefaultLatencyUrl))) {
@@ -77,7 +89,9 @@ export function normalizeStoredLatencyTimeout(value, storedUrl) {
   return timeout;
 }
 
-export function selectionSummary(item) {
+export function selectionSummary(
+  item: Pick<FleetInstance, "selectedProxies" | "selectedProxy" | "selectedGroup">,
+): string {
   const entries = Object.entries(item.selectedProxies || {});
   if (entries.length) {
     return entries.map(([group, proxy]) => `${group} -> ${proxy}`).join("；");
@@ -85,32 +99,39 @@ export function selectionSummary(item) {
   return item.selectedProxy ? `${item.selectedGroup} -> ${item.selectedProxy}` : "无";
 }
 
-export function chainSummary(item) {
+export function chainSummary(
+  item: Pick<FleetInstance, "mode" | "chain" | "selectedProxies" | "selectedGroup" | "selectedProxy">,
+): string {
   if (instanceMode(item) !== instanceModes.globalChain) return "不适用";
   const chain = Array.isArray(item.chain) ? item.chain.filter(Boolean) : [];
   if (!chain.length) return "默认";
   return chain.map((name) => chainLabel(item, name)).join(" -> ");
 }
 
-export function chainLabel(item, name) {
+export function chainLabel(
+  item: Pick<FleetInstance, "selectedProxies" | "selectedGroup" | "selectedProxy">,
+  name: string,
+): string {
   if (name !== "节点选择") return name;
   const selected = item.selectedProxies?.[name]
     || (item.selectedGroup === name ? item.selectedProxy : "");
   return selected ? `${name}（${selected}）` : name;
 }
 
-export function chainFromText(value) {
+export function chainFromText(value: string): string[] {
   return String(value || "")
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
 
-export function chainToText(values) {
+export function chainToText(values: string[] | null | undefined): string {
   return Array.isArray(values) ? values.join("\n") : "";
 }
 
-export function proxyBindAddresses(item) {
+export function proxyBindAddresses(
+  item: Partial<Pick<FleetInstance, "proxyBind">> | null | undefined,
+): string[] {
   const values = String(item?.proxyBind || defaultProxyBind)
     .split(",")
     .map((value) => value.trim())
@@ -118,40 +139,46 @@ export function proxyBindAddresses(item) {
   return values.length ? values : [defaultProxyBind];
 }
 
-export function proxyPort(port) {
+// Accepts genuinely arbitrary input (JSON payload fields, form values):
+// the typeof guards below are the actual validation, not just narrowing.
+export function proxyPort(port: unknown): number {
   if (typeof port !== "number" && typeof port !== "string") return 0;
   if (typeof port === "string" && !/^\d+$/.test(port.trim())) return 0;
   const value = Number(port);
   return Number.isInteger(value) && value >= 1 && value <= 65535 ? value : 0;
 }
 
-export function proxyPortLabel(port) {
+export function proxyPortLabel(port: unknown): number | string {
   return proxyPort(port) || "未分配";
 }
 
-export function formatProxyHost(host) {
+export function formatProxyHost(host: string): string {
   const value = String(host || defaultProxyBind).trim();
   return value.includes(":") && !value.startsWith("[") ? `[${value}]` : value;
 }
 
-export function proxyEndpoint(port, host = defaultProxyBind) {
+export function proxyEndpoint(port: unknown, host: string = defaultProxyBind): string {
   const value = proxyPort(port);
   if (!value) return "";
   return `${formatProxyHost(host)}:${value}`;
 }
 
-export function proxyEndpoints(item) {
+export function proxyEndpoints(
+  item: Partial<Pick<FleetInstance, "mixedPort" | "proxyBind">> | null | undefined,
+): string[] {
   const port = proxyPort(item?.mixedPort);
   if (!port) return [];
   return proxyBindAddresses(item).map((host) => proxyEndpoint(port, host));
 }
 
-export function proxyEndpointText(item) {
+export function proxyEndpointText(
+  item: Partial<Pick<FleetInstance, "mixedPort" | "proxyBind">> | null | undefined,
+): string {
   const endpoints = proxyEndpoints(item);
   return endpoints.length ? endpoints.join("，") : "端口未分配";
 }
 
-export function proxyEnvExports(http, socks) {
+export function proxyEnvExports(http: string, socks: string): string {
   return [
     `export HTTP_PROXY='${http}'`,
     `export HTTPS_PROXY='${http}'`,
@@ -162,24 +189,34 @@ export function proxyEnvExports(http, socks) {
   ].join("\n");
 }
 
-export function proxyCopyPlaceholders() {
+/** A rendered proxy-copy button: proxyCopyDefs's static def plus the runtime value/message to copy. */
+export interface ProxyCopyAction extends ProxyCopyActionDef {
+  value: string;
+  message?: string;
+}
+
+export function proxyCopyPlaceholders(): ProxyCopyAction[] {
   return proxyCopyDefs.map((action) => ({ ...action, value: "" }));
 }
 
-export function proxyCopyActions(item) {
+export function proxyCopyActions(
+  item: Pick<FleetInstance, "name"> & Partial<Pick<FleetInstance, "mixedPort" | "proxyBind">>,
+): ProxyCopyAction[] {
   const endpoints = proxyEndpoints(item);
   if (!endpoints.length) return proxyCopyPlaceholders();
   const httpValues = endpoints.map((endpoint) => `http://${endpoint}`);
   const socksValues = endpoints.map((endpoint) => `socks5://${endpoint}`);
-  const http = httpValues[0];
-  const socks = socksValues[0];
-  const values = {
+  // `endpoints` is non-empty here (checked above), so both mapped arrays
+  // have a first element.
+  const http = httpValues[0]!;
+  const socks = socksValues[0]!;
+  const values: Record<ProxyCopyActionId, string> = {
     addr: endpoints.join("\n"),
     http: httpValues.join("\n"),
     socks: socksValues.join("\n"),
     env: proxyEnvExports(http, socks),
   };
-  const messages = {
+  const messages: Record<ProxyCopyActionId, string> = {
     addr: `已复制 ${item.name} 地址。`,
     http: `已复制 ${item.name} HTTP。`,
     socks: `已复制 ${item.name} SOCKS。`,
@@ -192,8 +229,11 @@ export function proxyCopyActions(item) {
   }));
 }
 
-export function proxyLabelSources(profiles, instances) {
-  const sources = new Set();
+export function proxyLabelSources(
+  profiles: Pick<FleetProfile, "name">[],
+  instances: Pick<FleetInstance, "profileName">[],
+): string[] {
+  const sources = new Set<string>();
   for (const profile of profiles) {
     const name = String(profile.name || "").trim();
     if (name) sources.add(name);
@@ -205,7 +245,13 @@ export function proxyLabelSources(profiles, instances) {
   return [...sources].sort((left, right) => right.length - left.length);
 }
 
-export function splitProxyLabel(name, sources) {
+/** Result of peeling a known profile/instance name prefix off a raw proxy name. */
+export interface ProxyLabelSplit {
+  source: string;
+  name: string;
+}
+
+export function splitProxyLabel(name: string, sources: string[]): ProxyLabelSplit {
   const full = String(name || "");
   for (const source of sources) {
     for (const separator of [" - ", "-"]) {
@@ -218,7 +264,29 @@ export function splitProxyLabel(name, sources) {
   return { source: "", name: full };
 }
 
-export function formatBatchMessage(action, payload) {
+/** Mirrors internal/app/manager.go's InstanceBatchError. */
+export interface BatchActionError {
+  id?: string;
+  name?: string;
+  error: string;
+}
+
+/**
+ * Mirrors the JSON body handleInstancesBatch (internal/app/controller.go)
+ * sends: InstanceBatchResult's fields plus the refreshed `instances` list.
+ * `instances` is unused by formatBatchMessage itself but kept here so other
+ * modules reading the same batch response reuse this type instead of
+ * redeclaring it.
+ */
+export interface BatchActionPayload {
+  total: number;
+  success: number;
+  failed: number;
+  errors?: BatchActionError[];
+  instances?: FleetInstance[];
+}
+
+export function formatBatchMessage(action: string, payload: BatchActionPayload): string {
   const verb = action === "start-all" ? "启动" : "关闭";
   const total = Number(payload.total) || 0;
   const success = Number(payload.success) || 0;
@@ -235,26 +303,32 @@ export function formatBatchMessage(action, payload) {
   return text;
 }
 
-export function isBuiltInProxy(name) {
+export function isBuiltInProxy(name: string): boolean {
   const text = String(name || "");
   return ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL"].includes(text.toUpperCase());
 }
 
-export function currentLatencyTarget(group, proxyGroups = []) {
+export function currentLatencyTarget(
+  group: Pick<FleetProxyGroup, "name" | "now"> | null | undefined,
+  proxyGroups: Pick<FleetProxyGroup, "name">[] = [],
+): string {
   const name = String(group?.now || "").trim();
   if (!name || isBuiltInProxy(name)) return "";
   if (proxyGroups.some((item) => item.name === name && item.name !== group?.name)) return "";
   return name;
 }
 
-export function isSelectableProxyGroup(group) {
+export function isSelectableProxyGroup(group: Pick<FleetProxyGroup, "type"> | null | undefined): boolean {
   const type = String(group?.type || "select").toLowerCase();
   return type !== "relay";
 }
 
-export function alignProxyNamesToProfileOrder(names, profileGroup) {
+export function alignProxyNamesToProfileOrder(
+  names: string[],
+  profileGroup: Pick<FleetProxyGroup, "all"> | null | undefined,
+): string[] {
   if (!profileGroup || !Array.isArray(profileGroup.all) || !profileGroup.all.length) return names;
-  const order = new Map();
+  const order = new Map<string, number>();
   profileGroup.all.forEach((name, index) => {
     if (!order.has(name)) order.set(name, index);
   });
@@ -271,9 +345,14 @@ export function alignProxyNamesToProfileOrder(names, profileGroup) {
     .map((item) => item.name);
 }
 
-export function alignProxyGroupsToProfileOrder(runtimeGroups, profileGroups) {
+export function alignProxyGroupsToProfileOrder(
+  runtimeGroups: FleetProxyGroup[],
+  profileGroups: FleetProxyGroup[] | null | undefined,
+): FleetProxyGroup[] {
   if (!Array.isArray(profileGroups) || !profileGroups.length) return runtimeGroups;
-  const profileByName = new Map(profileGroups.map((group, index) => [group.name, { ...group, index }]));
+  const profileByName = new Map(
+    profileGroups.map((group, index): [string, FleetProxyGroup & { index: number }] => [group.name, { ...group, index }]),
+  );
   return runtimeGroups
     .map((group, index) => {
       const profileGroup = profileByName.get(group.name);
@@ -291,12 +370,15 @@ export function alignProxyGroupsToProfileOrder(runtimeGroups, profileGroups) {
     .map(({ _runtimeIndex, ...group }) => group);
 }
 
-export function filterRuntimeProxyGroups(selected, groups) {
+export function filterRuntimeProxyGroups(
+  selected: Pick<FleetInstance, "mode"> | null | undefined,
+  groups: FleetProxyGroup[],
+): FleetProxyGroup[] {
   if (instanceMode(selected) !== instanceModes.globalChain) return groups;
   return groups.filter((group) => String(group.name || "").toUpperCase() !== "GLOBAL");
 }
 
-export function formatLatencyValue(result, running) {
+export function formatLatencyValue(result: LatencyResult | null | undefined, running: boolean): string {
   if (running) return "测速中";
   if (!result) return "—";
   if (result.error) return "失败";
@@ -305,7 +387,10 @@ export function formatLatencyValue(result, running) {
   return "—";
 }
 
-export function latencyTone(result, running) {
+export function latencyTone(
+  result: LatencyResult | null | undefined,
+  running: boolean,
+): "running" | "idle" | "bad" | "warn" | "good" {
   if (running) return "running";
   if (!result) return "idle";
   if (result.error || result.delay === 0) return "bad";
@@ -313,10 +398,10 @@ export function latencyTone(result, running) {
   return "good";
 }
 
-export function latencyLabel(kind) {
+export function latencyLabel(kind: LatencyKind): string {
   return kind === "real" ? "真" : "测";
 }
 
-export function latencyTitle(kind) {
+export function latencyTitle(kind: LatencyKind): string {
   return kind === "real" ? "真延迟" : "URL 延迟";
 }

@@ -1,18 +1,22 @@
 import { basicSetup } from "codemirror";
 import { Compartment, EditorState } from "@codemirror/state";
 import { linter, lintGutter } from "@codemirror/lint";
+import type { Diagnostic } from "@codemirror/lint";
 import { yaml as yamlLanguage } from "@codemirror/lang-yaml";
 import { openSearchPanel } from "@codemirror/search";
 import { EditorView, keymap } from "@codemirror/view";
 import { parseDocument } from "yaml";
 
-export * from "./app-logic.js";
+export * from "./app-logic.ts";
 
-function yamlDiagnostics(view) {
+function yamlDiagnostics(view: EditorView): Diagnostic[] {
   const text = view.state.doc.toString();
+  // `document` here is a yaml.Document.Parsed (parseDocument()'s return value),
+  // not the global DOM `document`. It only shadows the global within this
+  // function body.
   const document = parseDocument(text, { prettyErrors: false, strict: true });
   const length = text.length;
-  return [...document.errors, ...document.warnings].map((problem) => {
+  return [...document.errors, ...document.warnings].map((problem): Diagnostic => {
     const positions = Array.isArray(problem.pos) ? problem.pos : [0, 0];
     const from = Math.max(0, Math.min(length, Number(positions[0]) || 0));
     const to = Math.max(from, Math.min(length, Number(positions[1]) || from));
@@ -25,7 +29,30 @@ function yamlDiagnostics(view) {
   });
 }
 
-export function createYamlEditor(host, options = {}) {
+/** Options accepted by {@link createYamlEditor}. */
+export interface YamlEditorOptions {
+  /** Initial document text. Defaults to an empty document. */
+  value?: string;
+  /** Accessible label applied to the editor's content element. */
+  ariaLabel?: string;
+  /** Called after a user-driven (non-programmatic) edit, with the full text and a monotonically increasing version counter. */
+  onChange?: (value: string, version: number) => void;
+  /** Called when the user presses Mod-S (Cmd/Ctrl-S) while the editor is focused. */
+  onSave?: () => void;
+}
+
+/** Handle returned by {@link createYamlEditor} for controlling the mounted editor. */
+export interface YamlEditorHandle {
+  getValue(): string;
+  setValue(value: string): void;
+  setReadOnly(readOnly: boolean): void;
+  focusSearch(): void;
+  focus(): void;
+  getVersion(): number;
+  destroy(): void;
+}
+
+export function createYamlEditor(host: Element, options: YamlEditorOptions = {}): YamlEditorHandle {
   const editable = new Compartment();
   let suppressChange = false;
   let version = 0;
