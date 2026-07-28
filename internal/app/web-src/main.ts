@@ -1,20 +1,14 @@
 // Vite entry point. Boots the Vue shell, then hands off to the legacy vanilla
 // application in app.ts.
 //
-// ORDER IS LOAD-BEARING. app.ts is not a passive module: at module scope it
-// calls bindElements(), which runs non-null-asserted `document.querySelector`
-// lookups for a handful of ids (the four top-level panel hosts it still
-// toggles `.hidden` on, the two chain-field wrappers, and latencyUrl/
-// latencyTimeout). Those ids only exist once the views below have mounted --
-// #dashboardPanel/#profilePanel/#createPanel/#emptyPanel are the very hosts
-// mounted here, and latencyUrl/latencyTimeout/the chain-field wrappers are
-// rendered deeper inside InstanceDetail's and CreatePanel's own trees.
-// Importing app.ts before that mount work runs would bind those fields to
-// `null`, which then throws the first time render() touches them -- not at
-// import time, so the failure would show up far from its real cause. That is
-// why app.ts is pulled in with a dynamic import() below rather than a static
-// one: static imports are hoisted and evaluated before this module's body,
-// which would defeat the ordering entirely.
+// ORDER STILL MATTERS, though less than it did: app.ts no longer reads the DOM
+// at all (bindElements()/dom.ts are gone), but it does call refresh() at module
+// scope, which writes to the shared store and then expects the views below to
+// already be listening. Mounting first also means the first paint is the real
+// UI rather than index.html's skeleton. app.ts is therefore pulled in with a
+// dynamic import() at the bottom rather than a static one: static imports are
+// hoisted and evaluated before this module's body, which would put its boot
+// sequence ahead of every mount.
 import { createApp, watchEffect } from "vue";
 import type { Component } from "vue";
 
@@ -33,8 +27,8 @@ import "./styles.css";
 // element (<header class="topbar">, <aside class="sidebar">) and the component
 // supplies only the inner fragment. That keeps index.html's layout skeleton and
 // every existing styles.css selector working unchanged.
-function mountShell(component: Component, selector: string): void {
-  const host = document.querySelector(selector);
+function mountShell(component: Component, selector: string): HTMLElement {
+  const host = document.querySelector<HTMLElement>(selector);
   if (!host) {
     // Fail loudly. A missing host means index.html and the components have
     // drifted apart; silently skipping would leave a blank region that looks
@@ -42,22 +36,43 @@ function mountShell(component: Component, selector: string): void {
     throw new Error(`Vue shell host not found: ${selector}`);
   }
   createApp(component).mount(host);
+  return host;
 }
 
 mountShell(TopBar, ".topbar");
 mountShell(SideBar, ".sidebar");
 mountShell(MessageBanner, "#messageMount");
-mountShell(DashboardView, "#dashboardPanel");
-mountShell(ProfileManagerView, "#profilePanel");
-mountShell(CreatePanel, "#createPanel");
-mountShell(EmptyPanel, "#emptyPanel");
+const dashboardPanel = mountShell(DashboardView, "#dashboardPanel");
+const profilePanel = mountShell(ProfileManagerView, "#profilePanel");
+const createPanel = mountShell(CreatePanel, "#createPanel");
+const emptyPanel = mountShell(EmptyPanel, "#emptyPanel");
 mountShell(InstanceDetail, "#detailMount");
 
-// Taken over from renderPanels() (app.ts), which used to toggle this class as a
-// side effect even though the condition it reads -- the active view -- is the
-// shell's concern and <body> sits outside every Vue mount point.
+// All of renderPanels() (app.ts), moved here wholesale.
+//
+// These four elements are Vue mount *hosts*: mount() replaces their children
+// but never the host itself, so no component can set its own host's class the
+// way InstanceDetail.vue sets #detailPanel's. Driving them from one
+// watchEffect keeps them reactive anyway.
+//
+// This is also a bug fix. renderPanels() only ran from app.ts's render(), and
+// the two navigation actions ProfileManagerView.vue registers
+// (openProfileManager/closeProfileManager) set store.view without calling it --
+// nothing in app.ts is reachable from there. Panel visibility therefore lagged
+// a click by up to one slow-poll interval: measured at 374ms against the
+// dashboard's 86ms, because the flip actually rode in on the next refresh().
 watchEffect(() => {
-  document.body.classList.toggle("view-dashboard", store.view === "dashboard");
+  const profilesView = store.view === "profiles";
+  const dashboardView = store.view === "dashboard";
+  // Anything that is not the instance workbench hides the workbench panels.
+  // Testing "not instances" rather than "is profiles" keeps this correct as
+  // further views are added.
+  const away = profilesView || dashboardView;
+  profilePanel.classList.toggle("hidden", !profilesView);
+  dashboardPanel.classList.toggle("hidden", !dashboardView);
+  createPanel.classList.toggle("hidden", away || !store.creating);
+  emptyPanel.classList.toggle("hidden", away || store.creating || store.instances.length > 0);
+  document.body.classList.toggle("view-dashboard", dashboardView);
 });
 
 // Every mount above renders synchronously, so by this line the shell DOM is in

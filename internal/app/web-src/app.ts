@@ -1,9 +1,8 @@
 import "./styles.css";
-import { fastPollIntervalMs, instanceModes, slowPollIntervalMs } from "./constants.ts";
+import { fastPollIntervalMs, slowPollIntervalMs } from "./constants.ts";
 import { api, writeClipboard } from "./api.ts";
 import { sampleFleet, setGeoResolver } from "./dashboard.ts";
 import type { ConnectionsFetchPayload, GeoLookupResult } from "./dashboard.ts";
-import { bindElements } from "./dom.ts";
 import { formatBatchMessage } from "./format.ts";
 import type { BatchActionPayload } from "./format.ts";
 import { clearLatencyStateForInstance } from "./state.ts";
@@ -11,7 +10,10 @@ import type { FleetInstance, FleetProfile, FleetSystemStatus } from "./state.ts"
 import { actions, banner, chrome, registerActions } from "./bridge.ts";
 import type { CreateInstancePayload, SaveProfilePayload } from "./bridge.ts";
 import { store } from "./store.ts";
-import { createActionGate } from "./yaml-editor.ts";
+// Straight from app-logic.ts, not through yaml-editor.ts's `export *`
+// re-export. Reaching it through yaml-editor.ts made this module a static
+// importer of CodeMirror purely to get a 12-line helper.
+import { createActionGate } from "./app-logic.ts";
 
 // Aliased (not reassigned -- `state` stays `const`) to the same reactive
 // object store.ts wraps in reactive(createState()). Vue's chrome components
@@ -19,7 +21,6 @@ import { createActionGate } from "./yaml-editor.ts";
 // makes their re-render happen with no explicit render() call needed on
 // their side. See store.ts for the contract.
 const state = store;
-const el = bindElements();
 
 const createGate = createActionGate();
 const saveProfileGate = createActionGate();
@@ -58,10 +59,9 @@ function showMessage(text: string, kind: string = "info"): void {
   banner.tone = kind === "error" ? "error" : "info";
 }
 
-/** Options accepted by refresh(); see call sites below and in bindEvents(). */
+/** Options accepted by refresh(); see call sites below. */
 interface RefreshOptions {
   forceInstances?: boolean;
-  periodic?: boolean;
 }
 
 async function refresh(options: RefreshOptions = {}): Promise<void> {
@@ -88,8 +88,7 @@ async function refresh(options: RefreshOptions = {}): Promise<void> {
       }
     }
     localStorage.setItem("activeInstance", state.activeId);
-    render();
-    await refreshActiveDetails({ skipFast: options.periodic });
+    syncProfileBusy();
   } catch (err) {
     if (seq !== refreshSeq) return;
     const message = err instanceof Error ? err.message : String(err);
@@ -97,14 +96,13 @@ async function refresh(options: RefreshOptions = {}): Promise<void> {
   }
 }
 
-function render(): void {
-  // ActionGate objects backing profileOperationRunning() live outside the
-  // reactive graph (plain closures in this module), so a component reading
-  // them directly would never re-render; render() is the sync point since it
-  // already runs on every state change (see bridge.ts's `chrome`).
+// The three ActionGate objects backing profileOperationRunning() are plain
+// closures in this module, outside Vue's reactive graph -- a component reading
+// them directly would never re-render. Mirroring them onto `chrome` is the
+// whole job; everything else the old render() did (panel visibility, bulk
+// controls, chain-field toggles) is now the components' own business.
+function syncProfileBusy(): void {
   chrome.profileBusy = profileOperationRunning();
-  updateBulkControls();
-  renderPanels();
 }
 
 async function copyProxyValue(value: string, success: string | undefined): Promise<void> {
@@ -115,34 +113,6 @@ async function copyProxyValue(value: string, success: string | undefined): Promi
     console.warn("Unable to copy proxy value.", err);
     showMessage("复制失败，请检查浏览器剪贴板权限。", "error");
   }
-}
-
-function updateBulkControls(): void {
-  // el.emptyCreate.disabled used to be pushed from here; EmptyPanel.vue now
-  // computes its own `disabled` straight from store.bulkRunning. Kept as a
-  // (currently empty) function rather than deleted, since render()/
-  // runBulkAction() still call it and may grow other bulk-only DOM pushes.
-}
-
-function renderPanels(): void {
-  const profilesView = state.view === "profiles";
-  const dashboardView = state.view === "dashboard";
-  // Anything that is not the instance workbench hides the workbench panels.
-  // Testing "not instances" rather than "is profiles" keeps this correct as
-  // further views are added.
-  const away = profilesView || dashboardView;
-  el.profilePanel.classList.toggle("hidden", !profilesView);
-  el.dashboardPanel.classList.toggle("hidden", !dashboardView);
-  el.createPanel.classList.toggle("hidden", away || !state.creating);
-  el.emptyPanel.classList.toggle("hidden", away || state.creating || state.instances.length > 0);
-}
-
-// mode is compared against instanceModes.globalChain here rather than through
-// format.ts's instanceMode() helper because callers already have the raw
-// mode string (an <select> value or a FleetInstance field) to hand.
-function applyModeFields(prefix: "edit" | "create", mode: string): void {
-  const chainMode = mode === instanceModes.globalChain;
-  el[`${prefix}ChainFields`].classList.toggle("hidden", !chainMode);
 }
 
 function clearActiveDetailCache(): void {
@@ -177,8 +147,6 @@ function selectInstance(id: string): boolean {
   state.view = "instances";
   state.creating = false;
   localStorage.setItem("activeInstance", id);
-  render();
-  refreshActiveDetails();
   return true;
 }
 
@@ -196,7 +164,6 @@ function showCreate(): boolean {
   state.view = "instances";
   state.creating = true;
   showMessage("");
-  render();
   return true;
 }
 
@@ -212,35 +179,14 @@ function openDashboard(): boolean {
     state.profileConfigDirty = false;
   }
   state.view = "dashboard";
-  render();
   sampleFleetTraffic();
   return true;
 }
 
 function closeDashboard(): boolean {
   state.view = "instances";
-  render();
-  refreshActiveDetails();
   return true;
 }
-
-/** Options accepted by refreshActiveDetails(); see call sites in app.ts. */
-interface RefreshActiveDetailsOptions {
-  skipFast?: boolean;
-}
-
-// Now a no-op: every tab that used to poll through here (overview/proxies/
-// logs) owns its own fetch-on-visible/fetch-on-interval loop (see
-// views/detail/useTabPolling.ts), driven off store.activeTab/store.activeId
-// directly rather than being told to refresh by this module. Kept (rather
-// than deleted) because refresh()/selectInstance()/closeDashboard()/
-// runBulkAction() all still call it, and turning every one of those into a
-// conditional call site is more churn than one empty function.
-async function refreshActiveDetails(options: RefreshActiveDetailsOptions = {}): Promise<void> {}
-
-// See refreshActiveDetails() above -- same reasoning, this is the half that
-// used to dispatch to refreshLogs()/refreshProxies() by active tab.
-async function pollActiveTab(): Promise<void> {}
 
 /** Request body POST/PUT /api/profiles(/:id) accepts; see saveProfile(). */
 interface SaveProfileBody {
@@ -262,7 +208,7 @@ async function saveProfile(payload: SaveProfilePayload): Promise<FleetProfile> {
   if (profileOperationRunning() || !saveProfileGate.begin()) {
     throw new Error("配置档操作正在进行，请稍候。");
   }
-  render();
+  syncProfileBusy();
   try {
     const body: SaveProfileBody = { name: payload.name };
     if (payload.source === "subscription") {
@@ -283,22 +229,27 @@ async function saveProfile(payload: SaveProfilePayload): Promise<FleetProfile> {
     return saved;
   } finally {
     saveProfileGate.end();
-    render();
+    syncProfileBusy();
   }
 }
 
+// Network + gate only. The store bookkeeping that used to live here (dropping
+// the row, moving activeProfileId, re-polling) moved to the caller, because
+// refresh() reassigns state.activeProfileId when the active profile vanishes --
+// and that is exactly the field ProfileManagerView.vue's post-await guard
+// compares against, so doing it here made the guard fail on every successful
+// delete: the row disappeared but the form kept showing the deleted profile and
+// no "已删除" message ever appeared. See bridge.ts's note on this key.
 async function deleteProfile(profileId: string): Promise<void> {
   if (profileOperationRunning() || !deleteProfileGate.begin()) {
     throw new Error("配置档操作正在进行，请稍候。");
   }
-  render();
+  syncProfileBusy();
   try {
     await api(`/api/profiles/${profileId}`, { method: "DELETE" });
-    state.profiles = state.profiles.filter((item) => item.id !== profileId);
-    await refresh({ forceInstances: true });
   } finally {
     deleteProfileGate.end();
-    render();
+    syncProfileBusy();
   }
 }
 
@@ -306,7 +257,7 @@ async function refreshSubscriptionProfile(profileId: string): Promise<FleetProfi
   if (profileOperationRunning() || !refreshSubscriptionGate.begin()) {
     throw new Error("配置档操作正在进行，请稍候。");
   }
-  render();
+  syncProfileBusy();
   try {
     const refreshed = await api<FleetProfile>(`/api/profiles/${profileId}/refresh`, { method: "POST" });
     state.profiles = state.profiles.map((item) => (item.id === refreshed.id ? refreshed : item));
@@ -314,7 +265,7 @@ async function refreshSubscriptionProfile(profileId: string): Promise<FleetProfi
     return refreshed;
   } finally {
     refreshSubscriptionGate.end();
-    render();
+    syncProfileBusy();
   }
 }
 
@@ -328,7 +279,7 @@ async function fetchProfileConfig(profileId: string): Promise<string> {
 
 async function createInstance(payload: CreateInstancePayload): Promise<void> {
   if (!createGate.begin()) return;
-  render();
+  syncProfileBusy();
   try {
     const created = await api<FleetInstance>("/api/instances", {
       method: "POST",
@@ -345,7 +296,7 @@ async function createInstance(payload: CreateInstancePayload): Promise<void> {
     showMessage(message, "error");
   } finally {
     createGate.end();
-    render();
+    syncProfileBusy();
   }
 }
 
@@ -366,25 +317,23 @@ async function suggestPorts(): Promise<SuggestedPorts> {
 
 function cancelCreate(): void {
   state.creating = false;
-  render();
 }
 
+// state.bulkRunning is reactive, so setting it is the whole of what
+// updateBulkControls() used to push into the DOM: EmptyPanel.vue and
+// InstanceDetail.vue read it and disable themselves.
 async function runBulkAction(action: string): Promise<void> {
   try {
     state.bulkRunning = true;
-    updateBulkControls();
     const payload = await api<BatchActionPayload>(`/api/instances?action=${encodeURIComponent(action)}`, { method: "POST" });
     state.instances = payload.instances || state.instances;
     showMessage(formatBatchMessage(action, payload), payload.failed ? "error" : "info");
-    render();
-    await refreshActiveDetails();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     showMessage(message, "error");
     await refresh({ forceInstances: true });
   } finally {
     state.bulkRunning = false;
-    updateBulkControls();
   }
 }
 
@@ -404,7 +353,7 @@ function scheduleSlowPoll(delay: number = slowPollIntervalMs): void {
 }
 
 async function runSlowPoll(): Promise<void> {
-  if (!document.hidden) await refresh({ periodic: true });
+  if (!document.hidden) await refresh();
   scheduleSlowPoll();
 }
 
@@ -432,11 +381,12 @@ async function sampleFleetTraffic(): Promise<void> {
   chrome.trafficTick += 1;
 }
 
+// The per-tab half of this loop is gone: overview/proxies/logs each own their
+// own fetch-on-visible/fetch-on-interval loop now (views/detail/useTabPolling.ts),
+// driven off store.activeTab/store.activeId rather than being told to refresh
+// from here.
 async function runFastPoll(): Promise<void> {
-  if (!document.hidden) {
-    await sampleFleetTraffic();
-    await pollActiveTab();
-  }
+  if (!document.hidden) await sampleFleetTraffic();
   scheduleFastPoll();
 }
 
@@ -476,6 +426,7 @@ registerActions({
   cancelCreate,
   saveProfile,
   deleteProfile,
+  refreshFleet: refresh,
   refreshSubscriptionProfile,
   fetchProfileConfig,
 });

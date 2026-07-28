@@ -42,4 +42,12 @@ Sidebar for fleet membership and port matrix. Detail pane for selected instance 
 
 ## Frontend structure
 
-Source lives in `internal/app/web-src` as ES modules (`app.js`, `api.js`, `state.js`, `format.js`, `latency.js`, `dom.js`, `i18n.js`, `constants.js`, `yaml-editor.js`, `app-logic.js`, `dashboard.js`, `traffic.js`). `pnpm build:web` bundles into `internal/app/web/app.js` for Go embed.
+Source lives in `internal/app/web-src`: Vue 3 SFCs with `<script setup lang="ts">` for the UI, plus framework-free TypeScript modules for the logic those components call (`api.ts`, `state.ts`, `format.ts`, `latency.ts`, `messages.ts`, `constants.ts`, `yaml-editor.ts`, `app-logic.ts`, `dashboard.ts`, `traffic.ts`). `pnpm build:web` runs Vite and writes `internal/app/web/` for Go embed. Those artifacts are **not** in git; releases build them before `go build`, and only `internal/app/web/README.md` is tracked, because `go:embed web/*` fails to compile against an empty directory.
+
+There is no root `App.vue`. `main.ts` mounts eight independent roots into hosts that `index.html` supplies (topbar, sidebar, message banner, and the five panels), so `styles.css`'s 2.5k lines of global selectors and the existing layout skeleton kept working through the migration untouched. Panel visibility is one `watchEffect` in `main.ts`, not a component's business: those elements are mount *hosts*, so no component can set its own host's class.
+
+`bridge.ts` holds the shared action table the components call into. Each key is owned by exactly one registrant — `app.ts` registers most of them at boot, `ProfileManagerView.vue` claims `openProfileManager`/`closeProfileManager` because they need the editor handle. Registration is `Object.assign`, so a key listed twice silently takes whichever registered last.
+
+Two chunks load lazily and both must stay dynamic imports: `chunk-app.ts` (polling and the profile network layer) and `chunk-yaml-editor.js` (CodeMirror 6, ~512KB, fetched only when the profiles view is first opened). Verify after any bundler change by grepping the emitted `app.js` for `from"./chunk`, which must find nothing.
+
+No i18n framework, deliberately. UI copy is hardcoded Chinese in the templates; `messages.ts` only maps the Go backend's English error strings and status enum into Chinese.

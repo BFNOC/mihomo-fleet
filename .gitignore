@@ -17,7 +17,7 @@ mihomo
 # 前端构建产物。由 pnpm build:web 生成，发布流程在编译 Go 之前重新生成。
 # 目录本身必须留有 README.md，否则 go:embed web/* 在新克隆上编译失败。
 /internal/app/web/app.js
-/internal/app/web/chunk-app.js
+/internal/app/web/chunk-*.js
 /internal/app/web/styles.css
 /internal/app/web/index.html
 /internal/app/web/vendor/

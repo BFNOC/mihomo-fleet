@@ -13,7 +13,7 @@ import { store } from "../store.ts";
 import { actions, chrome } from "../bridge.ts";
 import { activeInstance } from "../state.ts";
 import { shortMihomoVersion } from "../format.ts";
-import { statusText } from "../i18n.ts";
+import { statusText } from "../messages.ts";
 
 // Mirrors renderSystem()'s #systemLine half (app.ts:419-425). Falls back to
 // the static placeholder index.html previously hard-coded into <p id="systemLine">

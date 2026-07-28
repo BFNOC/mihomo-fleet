@@ -33,7 +33,7 @@ import { activeInstance, profileById, profileReferenceCount } from "../../state.
 import type { FleetProfile, ProfileCreateSource } from "../../state.ts";
 import { defaultConfig } from "../../constants.ts";
 import { formatProfileUpdate, formatSubscriptionInfo, isHttpUrl } from "../../format.ts";
-import { localizedMessage } from "../../i18n.ts";
+import { localizedMessage } from "../../messages.ts";
 import { canClearSavedProfileConfig, shouldApplyProfileConfigLoad, shouldApplyProfileOperation } from "../../app-logic.ts";
 import YamlCodeEditor from "./YamlCodeEditor.vue";
 
@@ -61,6 +61,12 @@ const configEditorErrorText = ref("");
 const saving = ref(false);
 const deleting = ref(false);
 const refreshingSub = ref(false);
+
+// False until YamlCodeEditor.vue's dynamically imported CodeMirror chunk lands
+// (see its header comment). Purely for the status line -- every editor call in
+// this file is buffered on the other side, so nothing here has to wait on it.
+const editorReady = ref(false);
+const editorLoadErrorText = ref("");
 
 // Local sequence counter mirroring app.ts's profileContextSeq /
 // advanceProfileContext(). Only this component's own navigation functions
@@ -104,7 +110,9 @@ const configEditorStatus = computed<{ text: string; state: string }>(() => {
   if (saving.value) return { text: "正在保存", state: "saving" };
   if (deleting.value) return { text: "正在删除配置档", state: "saving" };
   if (refreshingSub.value) return { text: "正在更新订阅", state: "saving" };
+  if (editorLoadErrorText.value) return { text: "编辑器不可用", state: "error" };
   if (configEditorErrorText.value) return { text: "操作失败，修改未丢失", state: "error" };
+  if (!editorReady.value) return { text: "编辑器加载中", state: "loading" };
   if (isSubscription.value) return { text: "订阅缓存，只读", state: "readonly" };
   if (store.profileConfigDirty) return { text: "未保存修改", state: "dirty" };
   if (configContextMatches.value) return { text: "已保存", state: "saved" };
@@ -260,6 +268,19 @@ async function loadProfileConfig(profileId: string): Promise<void> {
 function onEditorChange(): void {
   store.profileConfigDirty = true;
   setConfigEditorError("");
+}
+
+function onEditorReady(): void {
+  editorReady.value = true;
+}
+
+// Kept out of configEditorErrorText on purpose. That ref is transient -- every
+// successful load/save clears it -- whereas a failed chunk load is permanent
+// for the page's lifetime, and a permanently blank YAML box reads as "this
+// profile has no config", which would invite saving over one that is in fact
+// still on disk.
+function onEditorLoadError(message: string): void {
+  editorLoadErrorText.value = `YAML 编辑器加载失败，无法编辑当前配置：${message}`;
 }
 
 async function discardConfig(): Promise<void> {
@@ -472,17 +493,21 @@ async function deleteProfile(): Promise<void> {
   const operationContext = captureOperationContext(profile.id);
   deleting.value = true;
   try {
-    // actions.deleteProfile() is expected to remove the row from
-    // store.profiles itself (app.ts and this component share the same
-    // reactive object), so store.profiles is already current once this
-    // resolves -- no local splice needed.
+    // actions.deleteProfile() is the network call and nothing else, so the
+    // guard below still sees the pre-delete store -- which is the only state
+    // it can meaningfully compare against. Every mutation the delete implies
+    // happens after it, in the order the pre-Vue code used: drop the row, move
+    // the selection, clear the editor, report, and only then re-poll.
+    // Re-polling first would move activeProfileId itself and defeat the guard.
     await actions.deleteProfile(profile.id);
     if (!operationContextMatches(operationContext)) return;
     profileContextSeq += 1;
+    store.profiles = store.profiles.filter((item) => item.id !== profile.id);
     store.activeProfileId = store.profiles[0]?.id || "";
     store.profileFormDirty = false;
     resetConfigEditor();
     actions.showMessage("配置档已删除。");
+    await actions.refreshFleet({ forceInstances: true });
     if (store.view === "profiles" && store.activeProfileId) {
       selectProfile(store.activeProfileId, { force: true, allowBusy: true });
     }
@@ -490,6 +515,7 @@ async function deleteProfile(): Promise<void> {
     if (operationContextMatches(operationContext)) {
       const message = err instanceof Error ? err.message : String(err);
       actions.showMessage(message, "error");
+      await actions.refreshFleet({ forceInstances: true });
     }
   } finally {
     deleting.value = false;
@@ -626,8 +652,15 @@ async function refreshSubscription(): Promise<void> {
               <button id="discardConfig" type="button" :disabled="discardDisabled" @click="discardConfig">放弃修改</button>
             </div>
           </div>
-          <YamlCodeEditor ref="editorRef" @change="onEditorChange" @save="saveProfile" />
-          <div id="configEditorError" class="config-editor-error" :class="{ hidden: !configEditorErrorText }" role="alert">{{ configEditorErrorText }}</div>
+          <YamlCodeEditor
+            ref="editorRef"
+            :active="store.view === 'profiles'"
+            @change="onEditorChange"
+            @save="saveProfile"
+            @ready="onEditorReady"
+            @load-error="onEditorLoadError"
+          />
+          <div id="configEditorError" class="config-editor-error" :class="{ hidden: !configEditorErrorText && !editorLoadErrorText }" role="alert">{{ editorLoadErrorText || configEditorErrorText }}</div>
         </div>
         <p id="profileDeleteHint" class="profile-delete-hint">{{ deleteHintText }}</p>
         <div class="profile-editor-actions">

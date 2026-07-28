@@ -45,7 +45,7 @@ import {
 } from "../../state.ts";
 import type { FleetInstance, FleetProxyGroup } from "../../state.ts";
 import type { LatencyKind } from "../../constants.ts";
-import { localizedMessage } from "../../i18n.ts";
+import { localizedMessage } from "../../messages.ts";
 import {
   alignProxyGroupsToProfileOrder,
   currentLatencyTarget,

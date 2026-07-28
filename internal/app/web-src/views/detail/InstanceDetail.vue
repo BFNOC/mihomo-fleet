@@ -20,7 +20,7 @@ import { api } from "../../api.ts";
 import { activeInstance, clearLatencyStateForInstance } from "../../state.ts";
 import type { FleetInstance, FleetTab } from "../../state.ts";
 import { proxyPortLabel } from "../../format.ts";
-import { localizedMessage, statusText } from "../../i18n.ts";
+import { localizedMessage, statusText } from "../../messages.ts";
 import { refreshInstancesList } from "./instance-refresh.ts";
 import OverviewTab from "./OverviewTab.vue";
 import ProxiesTab from "./ProxiesTab.vue";

@@ -5,12 +5,16 @@
 正常构建后这里会有：
 
 ```
-app.js        Vue 外壳入口
-chunk-app.js  动态加载的遗留代码
+app.js                 Vue 入口，首屏唯一阻塞的脚本
+chunk-app.js           动态加载：轮询与配置档网络层（app.ts）
+chunk-yaml-editor.js   动态加载：CodeMirror 6，只有配置档视图会取
 styles.css
 index.html
 vendor/THIRD_PARTY_NOTICES.txt
 ```
+
+两个 chunk 都必须是**动态** import。`app.js` 里出现 `from"./chunk-*.js"`
+（静态）就是回归，构建后 grep 产物确认，别看构建日志。
 
 ## 这个文件本身为什么要提交
 

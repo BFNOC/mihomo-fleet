@@ -6,7 +6,7 @@ import { store } from "../../store.ts";
 import { api } from "../../api.ts";
 import { activeInstance } from "../../state.ts";
 import { logStickThreshold } from "../../constants.ts";
-import { localizedMessage } from "../../i18n.ts";
+import { localizedMessage } from "../../messages.ts";
 import { useTabPolling } from "./useTabPolling.ts";
 
 const selected = computed(() => activeInstance(store));

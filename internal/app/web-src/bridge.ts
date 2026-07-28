@@ -71,7 +71,17 @@ export interface FleetActions {
   // existing ActionGate objects, which still drive chrome.profileBusy); the
   // component owns everything that touches the editor.
   saveProfile: (payload: SaveProfilePayload) => Promise<FleetProfile>;
+  /**
+   * Network DELETE only -- deliberately does NOT touch store.profiles or
+   * re-poll. ProfileManagerView.vue's post-delete guard compares
+   * store.profileFormOwnerId against store.activeProfileId, and refreshFleet()
+   * moves activeProfileId off a profile that no longer exists, so a refresh on
+   * this side of the await makes that guard fail every time. The caller owns
+   * the ordering; see the delete path in ProfileManagerView.vue.
+   */
   deleteProfile: (profileId: string) => Promise<void>;
+  /** Re-pulls system + profiles + instances into the store. */
+  refreshFleet: (options?: { forceInstances?: boolean }) => Promise<void>;
   refreshSubscriptionProfile: (profileId: string) => Promise<FleetProfile>;
   fetchProfileConfig: (profileId: string) => Promise<string>;
 }
@@ -107,6 +117,7 @@ export const actions: FleetActions = {
   cancelCreate: noop,
   saveProfile: () => Promise.reject(new Error("saveProfile called before app.ts registered it")),
   deleteProfile: async () => {},
+  refreshFleet: async () => {},
   refreshSubscriptionProfile: () =>
     Promise.reject(new Error("refreshSubscriptionProfile called before app.ts registered it")),
   fetchProfileConfig: async () => "",

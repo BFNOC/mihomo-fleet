@@ -49,7 +49,7 @@ import {
 } from "../../traffic.ts";
 import type { FormattedRate, TrafficSeries } from "../../traffic.ts";
 import { formatBytes, shortMihomoVersion } from "../../format.ts";
-import { statusClass, statusText } from "../../i18n.ts";
+import { statusClass, statusText } from "../../messages.ts";
 import DashboardSparkline from "./DashboardSparkline.vue";
 
 // ---------------------------------------------------------------------------

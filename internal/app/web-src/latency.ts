@@ -13,7 +13,7 @@ import {
   latencyTitle,
   latencyTone,
 } from "./format.ts";
-import { localizedMessage } from "./i18n.ts";
+import { localizedMessage } from "./messages.ts";
 import {
   isLatencyRunning,
   latencyResult,
@@ -21,9 +21,19 @@ import {
   setLatencyRunning,
 } from "./state.ts";
 import type { FleetInstance, FleetProxyGroup, FleetState } from "./state.ts";
-import type { DomElements } from "./dom.ts";
 
 export { currentLatencyTarget };
+
+/**
+ * The two settings inputs this controller reads its URL and timeout from, and
+ * writes the clamped timeout back into. ProxiesTab.vue owns both as template
+ * refs and passes them in; this used to be a `Pick<DomElements, ...>` off the
+ * global element table, which was the last thing keeping dom.ts alive.
+ */
+export interface LatencySettingsInputs {
+  latencyUrl: HTMLInputElement;
+  latencyTimeout: HTMLInputElement;
+}
 
 /** Return value of latencySettings()/the first half of persistLatencySettings(). */
 export interface LatencySettings {
@@ -54,10 +64,10 @@ interface LatencyTestResponse {
   timeoutMs: number;
 }
 
-/** Options accepted by createLatencyController(); see app.ts for the call site. */
+/** Options accepted by createLatencyController(); see ProxiesTab.vue for the call site. */
 export interface LatencyControllerOptions {
   state: FleetState;
-  el: Pick<DomElements, "latencyUrl" | "latencyTimeout">;
+  el: LatencySettingsInputs;
   getActive: () => FleetInstance | null;
   showMessage: (text: string, kind?: string) => void;
   onControlsChange?: () => void;

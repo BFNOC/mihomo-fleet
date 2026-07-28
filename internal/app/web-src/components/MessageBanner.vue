@@ -5,7 +5,7 @@
 // now the only thing that reads that state and puts it on screen.
 import { computed, onUnmounted, watch } from "vue";
 import { banner } from "../bridge.ts";
-import { localizedMessage } from "../i18n.ts";
+import { localizedMessage } from "../messages.ts";
 
 // localizedMessage() used to run right where the old showMessage() wrote to
 // the DOM (app.ts:270), not at any of its ~25 call sites -- those just pass
@@ -18,7 +18,7 @@ import { localizedMessage } from "../i18n.ts";
 //     set (app.ts's showMessage() is being migrated concurrently by another
 //     agent; this component must be correct without depending on the shape
 //     that migration lands in);
-//   - it keeps the translation table (i18n.ts/constants.ts) out of caller
+//   - it keeps the translation table (messages.ts/constants.ts) out of caller
 //     code, matching how it was isolated before.
 // localizedMessage() is a lookup-or-passthrough -- text that doesn't match a
 // known backend error string/pattern (which includes any already-Chinese

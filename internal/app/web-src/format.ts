@@ -8,7 +8,7 @@ import {
   proxyCopyDefs,
 } from "./constants.ts";
 import type { InstanceMode, LatencyKind, ProxyCopyActionDef, ProxyCopyActionId } from "./constants.ts";
-import { localizedMessage } from "./i18n.ts";
+import { localizedMessage } from "./messages.ts";
 import type { FleetInstance, FleetProfile, FleetProxyGroup, FleetSubscriptionInfo, LatencyResult } from "./state.ts";
 
 export function instanceMode(item: Pick<FleetInstance, "mode"> | null | undefined): InstanceMode {

@@ -1,3 +1,12 @@
+// Chinese display text for values that reach the browser in English: the Go
+// backend's error strings and its status enum. Renamed from i18n.ts, which was
+// a misnomer -- there is no internationalisation here and deliberately none
+// planned (no vue-i18n, no locale files, no language switch; UI copy stays
+// hardcoded Chinese in the templates). This is a one-way English-to-Chinese
+// lookup and nothing else.
+//
+// localizedMessage() in particular is load-bearing, not cosmetic: drop it and
+// raw Go error strings surface in the UI.
 import { errorLabels, errorPatterns, statusLabels } from "./constants.ts";
 
 // constants.ts currently exports these as bare object/array literals (no
@@ -30,18 +39,4 @@ export function statusText(status: string): string {
 
 export function statusClass(status: string): string {
   return statusLabelMap[status] ? status : "unknown";
-}
-
-export function escapeHTML(input: unknown): string {
-  const escapes: Record<string, string> = {
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#039;",
-  };
-  // The regex only ever matches characters that are keys of `escapes`, so the
-  // lookup is always defined; the assertion documents that invariant instead
-  // of widening the return type with a fallback that can never trigger.
-  return String(input).replace(/[&<>"']/g, (ch) => escapes[ch]!);
 }

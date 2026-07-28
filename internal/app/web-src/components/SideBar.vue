@@ -24,7 +24,7 @@ import { actions, chrome } from "../bridge.ts";
 import { activeInstance } from "../state.ts";
 import type { FleetInstance } from "../state.ts";
 import { proxyCopyActions, proxyCopyPlaceholders, proxyEndpointText, proxyPort, proxyPortLabel, selectionSummary } from "../format.ts";
-import { statusClass, statusText } from "../i18n.ts";
+import { statusClass, statusText } from "../messages.ts";
 
 // Mirrors render()'s `selected` argument, computed the same way app.ts does
 // it (active() = activeInstance(state), app.ts:139-141): the instance
