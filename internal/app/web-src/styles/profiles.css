@@ -8,16 +8,8 @@
   gap: 14px;
 }
 
-.profile-manager-head,
-.profile-editor-head,
-.profile-catalog-head,
-.profile-editor-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
+/* .profile-manager-head's flex-row base lives in shell.css now (shared with
+   .side-head/.detail-head/.panel-title/.actions). */
 .profile-manager-grid {
   min-height: 0;
   display: grid;
@@ -56,27 +48,22 @@
   width: 100%;
   min-width: 0;
   min-height: 72px;
-  padding: 9px 10px;
+  padding: 8px 10px;
   display: grid;
-  gap: 3px;
+  gap: 4px;
   text-align: left;
   background: var(--surface);
   box-shadow: none;
 }
 
+/* Byte-identical to .port-row.active in ports.css, and stays duplicated on
+   purpose -- see the note in shell.css where the consolidated copy used to be. */
 .profile-row.active {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   background: var(--accent-soft);
 }
 
-.profile-row-main,
-.profile-row-meta,
-.profile-row-id {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* .profile-row-main/-meta/-id's truncation quad lives in shell.css now. */
 
 .profile-row-main {
   font-weight: 700;
@@ -141,7 +128,7 @@
 
 .inline-notice {
   margin: 4px 0 14px;
-  padding: 9px 10px;
+  padding: 8px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -162,7 +149,7 @@
 .instance-row {
   width: 100%;
   text-align: left;
-  padding: 10px 11px;
+  padding: 10px 10px;
   min-height: 64px;
   background: var(--surface);
   border: 1px solid var(--line);

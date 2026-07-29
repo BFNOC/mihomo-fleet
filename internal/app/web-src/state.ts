@@ -204,7 +204,7 @@ export function profileReferenceCount(state: FleetState, profileId: string): num
   return state.instances.filter((item) => item.profileId === profileId).length;
 }
 
-export function latencyKey(instanceId: string, group: string, proxy: string, kind: LatencyKind): string {
+function latencyKey(instanceId: string, group: string, proxy: string, kind: LatencyKind): string {
   return [instanceId, group, proxy, kind].join(latencyKeySeparator);
 }
 

@@ -117,7 +117,9 @@
 .message.error {
   background: var(--danger-soft);
   border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
-  color: var(--danger);
+  /* Same text-on-danger-soft pair as .latency-chip.bad, which fails 4.5:1
+     with --danger; --danger-text is the text-safe variant. */
+  color: var(--danger-text);
 }
 
 .panel,
@@ -285,9 +287,9 @@ label,
   width: max-content;
   max-width: 100%;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--panel);
-  padding: 3px;
+  padding: 2px;
   margin-top: 14px;
   gap: 2px;
 }
@@ -298,7 +300,9 @@ label,
   background: transparent;
   box-shadow: none;
   color: var(--muted);
-  border-radius: 7px;
+  /* Outer radius (--radius-sm, 8px) minus outer padding (2px) so the inner
+     corner nests exactly under the outer one. */
+  border-radius: var(--radius-xs);
   font-weight: 600;
 }
 
@@ -330,24 +334,6 @@ label,
   display: grid;
   gap: 12px;
   margin: 14px 0;
-}
-
-.orphan-profiles {
-  display: grid;
-  gap: 8px;
-  margin: 18px 0 0;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-}
-
-.orphan-profiles p {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.orphan-profiles .form-grid.two {
-  align-items: end;
-  margin: 0;
 }
 
 .checkline {

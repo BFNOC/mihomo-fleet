@@ -21,6 +21,7 @@
     --warn-soft: oklch(0.96 0.035 85);
     --danger: oklch(0.55 0.15 30);
     --danger-soft: oklch(0.95 0.03 30);
+    --danger-text: oklch(0.5 0.13 30);
     --on-accent: oklch(0.99 0.004 175);
     --shadow-sm: 0 1px 2px oklch(0.3 0.02 160 / 0.05);
     --shadow: 0 8px 28px oklch(0.3 0.02 160 / 0.07);
@@ -100,7 +101,11 @@ textarea:focus-visible {
 }
 
 button.primary {
-  background: var(--accent);
+  /* --on-accent on --accent alone is 4.2:1, below AA for 14px/400 text; mixing
+     in a little black gets the resting state to ~5.2:1 without touching
+     --accent itself, which many non-text uses (charts, borders, checkboxes)
+     depend on at its current value. */
+  background: color-mix(in srgb, var(--accent) 88%, black);
   border-color: var(--accent);
   color: var(--on-accent);
   box-shadow: 0 1px 0 color-mix(in srgb, var(--accent-strong) 35%, transparent);
@@ -114,7 +119,9 @@ button.primary:hover {
 button.danger {
   border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
   background: var(--danger-soft);
-  color: var(--danger);
+  /* Same text-on-danger-soft pair as .latency-chip.bad, which fails 4.5:1
+     with --danger; --danger-text is the text-safe variant. */
+  color: var(--danger-text);
   box-shadow: none;
 }
 
@@ -134,7 +141,11 @@ input,
 select {
   height: var(--control-h);
   padding: 0 10px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  /* Was rgba(255,255,255,.55), a literal white DESIGN.md says to avoid, and a
+     different alpha than the near-identical highlight in proxies.css's .logs
+     (.65) despite being the same "inset highlight" pattern. Both now share
+     this color-mix and alpha. */
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface) 60%, transparent);
 }
 
 input[type="checkbox"] {
@@ -188,6 +199,24 @@ h3 {
   letter-spacing: 0.01em;
 }
 
+/* The app's only <a> (subscription home URL, ProfileFormFields.vue): base
+   elements above already style button/input/select/textarea here, so the
+   anchor belongs with them rather than left to UA defaults. */
+a {
+  color: var(--accent-strong);
+  text-decoration-color: color-mix(in srgb, var(--accent-strong) 45%, transparent);
+}
+
+a:hover {
+  color: var(--accent);
+}
+
+a:focus-visible {
+  outline: none;
+  border-radius: var(--radius-xs);
+  box-shadow: var(--focus);
+}
+
 .shell {
   min-height: 100vh;
   min-height: 100dvh;
@@ -222,6 +251,23 @@ h3 {
   min-width: 0;
 }
 
+/* Same flex-row body as 4 more selectors in sidebar.css and 4 in profiles.css;
+   consolidated here since this file is the common base every later partial
+   imports after. Do not re-add per-file copies; extend this list instead. */
+.side-head,
+.detail-head,
+.panel-title,
+.actions,
+.profile-manager-head,
+.profile-editor-head,
+.profile-catalog-head,
+.profile-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .brand p,
 .panel-title p,
 .empty p,
@@ -230,15 +276,42 @@ h3 {
   font-size: 12.5px;
 }
 
+/* Truncation quad, otherwise written out 4x across proxies.css and profiles.css
+   and ports.css; consolidated here for the same reason as the flex-row rule
+   above. Extend this list instead of copying the four declarations again. */
+.proxy-group-head strong,
+.proxy-group-meta > span:first-child,
+.profile-row-main,
+.profile-row-meta,
+.profile-row-id,
+.port-row-name,
+.port-address {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* NOT consolidated here, deliberately: `.profile-row.active` / `.port-row.active`
+   have byte-identical bodies, but they must stay in their own partials.
+   `.port-row:focus-within` (ports.css) sets border-color at the same (0,2,0)
+   specificity, so the winner is decided purely by source order -- and this file
+   is imported second. Moving the .active rule here silently flipped a selected
+   row's border from 45% accent down to 40% the moment anything inside it took
+   focus. Two declarations is not the "large duplicated block" the code standard
+   is aimed at; a silent cascade flip is exactly what it is aimed at. */
+
 .empty-mark {
   width: 48px;
   height: 48px;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   display: grid;
   place-items: center;
   color: var(--on-accent);
+  /* white was a literal pure white DESIGN.md says to avoid; --surface is the
+     app's near-white paper tone. */
   background:
-    linear-gradient(145deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent-strong));
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 88%, var(--surface)), var(--accent-strong));
   font-size: 13px;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -248,12 +321,12 @@ h3 {
 .mark {
   width: 34px;
   height: 34px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   display: grid;
   place-items: center;
   color: var(--on-accent);
   background:
-    linear-gradient(145deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent-strong));
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 88%, var(--surface)), var(--accent-strong));
   border: 1px solid color-mix(in srgb, var(--accent-strong) 55%, transparent);
   font-size: 11px;
   font-weight: 800;
@@ -264,7 +337,7 @@ h3 {
 
 .selector {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   min-width: 280px;
 }
 

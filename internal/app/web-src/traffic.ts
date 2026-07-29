@@ -431,8 +431,3 @@ export function formatRate(bytesPerSecond: number): FormattedRate {
   // hits; the fallback only exists to satisfy noUncheckedIndexedAccess.
   return { value: size.toFixed(digits), unit: units[unit] ?? "B/s" };
 }
-
-export function formatRateText(bytesPerSecond: number): string {
-  const { value, unit } = formatRate(bytesPerSecond);
-  return `${value} ${unit}`;
-}

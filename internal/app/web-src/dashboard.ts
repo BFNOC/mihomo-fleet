@@ -24,9 +24,10 @@ const sampleCapacity = Math.ceil((trafficWindowSeconds * 1000) / 1800) + 2;
 // the last /connections snapshot to derive the next rate and render the
 // connection table. This in-memory sampling history has no counterpart in
 // FleetState/FleetInstance (the controller doesn't track it), so it is kept
-// here, one entry per instance, for as long as pruneSamplers/
-// forgetInstanceSamples lets it live. Exported so the Vue migration can reuse
-// the exact shape instead of redeclaring it.
+// here, one entry per instance, for as long as pruneSamplers() (called every
+// sampleFleet() tick, see below) lets it live -- deleted instances are pruned
+// there, not on any per-instance removal hook. Exported so the Vue migration
+// can reuse the exact shape instead of redeclaring it.
 export interface DashboardSampler {
   series: TrafficSeries;
   previous: TrafficCounterSample | null;
@@ -86,10 +87,6 @@ function resetConnectionState(entry: DashboardSampler): void {
   entry.sampledAt = 0;
 }
 
-export function forgetInstanceSamples(instanceId: string): void {
-  samplers.delete(instanceId);
-}
-
 // Deleted instances would otherwise keep contributing to the fleet total
 // forever, since nothing else ever clears their sampler.
 export function pruneSamplers(instances: Pick<FleetInstance, "id">[] | null | undefined): void {
@@ -106,22 +103,6 @@ export function instanceSeries(instanceId: string): TrafficSeries | null {
 export function instanceConnections(instanceId: string): number {
   const entry = samplers.get(instanceId);
   return entry?.reachable ? entry.connections : 0;
-}
-
-// Whether the instance's most recent sample actually reached mihomo. A
-// stopped/unreachable instance is held at zero connections rather than
-// dropped (see resetConnectionState()), so instanceConnections() alone can't
-// tell "reachable with zero connections" apart from "unreachable" -- this
-// does. Mirrors instanceConnections()'s lookup shape.
-export function instanceReachable(instanceId: string): boolean {
-  return samplers.get(instanceId)?.reachable ?? false;
-}
-
-// The last raw cumulative counter reading a sampler derived its most recent
-// rate from (i.e. lifetime upload/download totals, not a rate). Mirrors
-// instanceConnections()'s lookup shape.
-export function instanceTotals(instanceId: string): TrafficCounterSample | null {
-  return samplers.get(instanceId)?.previous ?? null;
 }
 
 export function fleetSeries(instances: Pick<FleetInstance, "id">[] | null | undefined): TrafficSeries {

@@ -7,7 +7,7 @@ import { store } from "../../store.ts";
 import type { FleetInstance } from "../../state.ts";
 import { formatRate, seriesLatest, trafficWindowSeconds } from "../../traffic.ts";
 import type { FormattedRate } from "../../traffic.ts";
-import { statusClass, statusText } from "../../messages.ts";
+import { localizedMessage, statusClass, statusText } from "../../messages.ts";
 import DashboardSparkline from "./DashboardSparkline.vue";
 import { useRowBudget } from "./use-row-budget.ts";
 import {
@@ -48,8 +48,18 @@ function instanceStatusSuffix(item: FleetInstance): string {
   return item.pendingRestart ? " · 待重启" : "";
 }
 
+// Backend errors arrive as raw English (e.g. "signal: terminated"); route
+// through localizedMessage the same way InstanceDetail.vue's metaText does so
+// the row and the detail view never disagree on wording. 48 chars is a row
+// budget, not a real limit, so a cut mid-sentence must read as cut -- an
+// unmarked slice looked like the whole (localized) message.
+const errorSuffixMaxLength = 48;
+
 function instanceErrorSuffix(item: FleetInstance): string {
-  return isBad(item) && item.lastError ? ` · ${String(item.lastError).slice(0, 48)}` : "";
+  if (!isBad(item) || !item.lastError) return "";
+  const text = localizedMessage(item.lastError);
+  const shown = text.length > errorSuffixMaxLength ? `${text.slice(0, errorSuffixMaxLength)}…` : text;
+  return ` · ${shown}`;
 }
 
 // Trimming the list must never hide the row the user is looking at, so the

@@ -14,6 +14,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The placeholder URL is a hair wider than the input at 375px with no
+   ellipsis; text-overflow also clips an unfocused placeholder in Chrome/
+   Firefox. */
+#latencyUrl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .proxy-filter {
   width: 100%;
   margin-top: 12px;
@@ -40,13 +48,9 @@
   margin-bottom: 10px;
 }
 
-.proxy-group-head strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+/* .proxy-group-head strong's truncation quad lives in shell.css now (shared
+   with .proxy-group-meta > span:first-child below and the profile-row / port-row
+   selectors). */
 .proxy-group-meta {
   min-width: 0;
   display: flex;
@@ -56,12 +60,7 @@
   font-size: 12px;
 }
 
-.proxy-group-meta > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* .proxy-group-meta > span:first-child's truncation quad lives in shell.css. */
 
 .proxy-group-actions {
   display: flex;
@@ -70,9 +69,17 @@
 
 .proxy-group-actions button {
   min-height: 28px;
-  padding: 0 9px;
+  padding: 0 8px;
   font-size: 12px;
   box-shadow: none;
+}
+
+/* The unconditional box-shadow: none above also wins over the base
+   button:focus-visible rule at equal specificity (shell.css is earlier in
+   import order), so :focus-visible never got a visible ring. Higher
+   specificity here restores it regardless of source order. */
+.proxy-group-actions button:focus-visible {
+  box-shadow: var(--focus);
 }
 
 .proxy-grid {
@@ -85,7 +92,7 @@
   width: 100%;
   min-height: 48px;
   text-align: left;
-  padding: 7px 10px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -120,7 +127,7 @@
   position: fixed;
   z-index: 200;
   max-width: min(520px, calc(100vw - 16px));
-  padding: 7px 9px;
+  padding: 8px;
   border: 1px solid var(--line);
   border-radius: var(--radius-xs);
   background: var(--surface);
@@ -166,7 +173,9 @@
 
 .latency-chip.bad {
   background: var(--danger-soft);
-  color: var(--danger);
+  /* --danger is decorative-tuned and reads under 4.5:1 here; --danger-text is
+     the text-safe variant (see tokens.css). */
+  color: var(--danger-text);
 }
 
 .latency-chip.running {
@@ -197,11 +206,14 @@
   padding: 12px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
-  background: #f7f5f0;
+  /* Was a hardcoded #f7f5f0 that didn't equal any token, so it sat off the
+     paper family and did not shift with --panel/--surface in the oklch
+     block. --panel is the nearest existing surface. */
+  background: var(--panel);
   color: var(--text);
   font: 12px/1.55 var(--mono);
   white-space: pre-wrap;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface) 60%, transparent);
 }
 
 .hidden {

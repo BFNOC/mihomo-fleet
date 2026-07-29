@@ -135,9 +135,10 @@ export function registerActions(table: Partial<FleetActions>): void {
 // land with no re-render, so the banner would silently never update.
 export type BannerTone = "info" | "error";
 
-export const banner = reactive<{ text: string; tone: BannerTone }>({
+export const banner = reactive<{ text: string; tone: BannerTone; seq: number }>({
   text: "",
   tone: "info",
+  seq: 0,
 });
 
 /**
@@ -148,10 +149,19 @@ export const banner = reactive<{ text: string; tone: BannerTone }>({
  * MessageBanner.vue owns the localizedMessage() translation and the 6s
  * auto-dismiss timer, so neither happens here -- pass the backend's English
  * string through untouched.
+ *
+ * `seq` is bumped unconditionally on every call, including a call that
+ * repeats the exact same `text`/`kind` as last time. Vue's reactive proxy only
+ * triggers watchers on an actual value change (Object.is), so writing the
+ * identical string into `banner.text` is not a mutation it reports -- without
+ * `seq`, MessageBanner.vue's watch(banner, ...) would never re-fire for a
+ * repeat message and its 6s dismiss timer would keep counting down from the
+ * *first* call instead of restarting.
  */
 export function showMessage(text: string, kind: string = "info"): void {
   banner.text = text;
   banner.tone = kind === "error" ? "error" : "info";
+  banner.seq += 1;
 }
 
 // Derived chrome state that the shell renders from but that does NOT live in

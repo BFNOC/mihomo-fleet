@@ -35,8 +35,7 @@
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
 }
 
-.dashboard-grid-strip,
-.dashboard-grid-instances {
+.dashboard-grid-strip {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -165,6 +164,18 @@
   }
 }
 
+/* Below this, the outer dashboard grids already stack to one column
+   (dashboard-tables.css's 760px block); the strip's own 2-column grid from
+   the 1240px query above did not follow, so its fleet-headline column was
+   left fighting the rates column's 200px minimum for space -- crushed to
+   ~47px at 375px wide. Stacking the strip too, at the same breakpoint,
+   gives the fleet block the full card width again. */
+@media (max-width: 760px) {
+  .dash-card.dash-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Last in the card and first to give up space: min-height 0 lets the chart
    shrink toward nothing instead of pushing the numbers out of the card. */
 .dash-selected-spark {
@@ -192,19 +203,6 @@
   margin: 0;
   font-size: 17px;
   font-weight: 620;
-}
-
-.dash-fleet-state {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.dash-fleet-state p {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-  overflow-wrap: anywhere;
 }
 
 .dash-orb {
@@ -237,11 +235,26 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent);
 }
 
+/* Was unreachable: the selector never matched any rendered element
+   (DashboardStrip.vue folded the fleet warning into the plain muted caption,
+   so a down-instance alert looked identical to the idle data-dir line). Now
+   applied there when there is something to say. Styled as a chip like the
+   app's other status pills (.pending-restart-chip, .reference-badge) rather
+   than the old block-level banner, since it now sits inline under the
+   headline instead of as its own row. font-weight is the non-color channel
+   pairing the warn/danger tone -- the wording itself ("异常"/"待重启") is
+   already distinct without color too. */
 .dash-alert {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
+  width: max-content;
+  max-width: 100%;
+  margin: 2px 0 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dash-alert.is-warn {
@@ -251,24 +264,9 @@
 
 .dash-alert.is-danger {
   background: var(--danger-soft);
-  color: var(--danger);
-}
-
-.dash-checks {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 12px 0 0;
-  border-top: 1px solid var(--line);
-  list-style: none;
-}
-
-.dash-checks li {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  /* --danger is decorative-tuned and fails 4.5:1 as text here; --danger-text
+     is the text-safe variant (see tokens.css and .latency-chip.bad). */
+  color: var(--danger-text);
 }
 
 .dash-check-dot {
@@ -294,25 +292,15 @@
   background: var(--line-hover);
 }
 
-.dash-check-value {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.dash-rate {
-  position: relative;
-  gap: 8px;
-  overflow: hidden;
-}
-
-.dash-rate-head {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 10px;
-}
-
-.dash-rate[data-direction="up"] .dash-rate-icon {
+/* .dash-rate and .dash-rate-head above this point are dead (never applied in
+   any template), except the rule immediately below, which is a live bug: the
+   template emits .dash-strip-rate[data-direction="up"] (DashboardStrip.vue),
+   not .dash-rate[data-direction="up"] -- the parent class was renamed in the
+   Vue migration and this selector was left behind, so the upload icon never
+   got its amber and fell through to the base .dash-rate-icon color, matching
+   download. Selector fixed below; do not delete this rule when cleaning up
+   the dead .dash-rate/.dash-rate-head siblings that used to surround it. */
+.dash-strip-rate[data-direction="up"] .dash-rate-icon {
   background: color-mix(in srgb, var(--spark-up) 16%, transparent);
   color: var(--spark-up);
 }
@@ -326,12 +314,6 @@
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-size: 15px;
-}
-
-.dash-rate-label {
-  margin: 2px 0 0;
-  font-size: 15px;
-  font-weight: 600;
 }
 
 .dash-live {
@@ -381,46 +363,6 @@
   margin: -6px 0 0;
   color: var(--muted);
   font-size: 12px;
-}
-
-.dash-rate-foot {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.dash-rate .spark {
-  margin: 2px -18px -16px;
-  width: calc(100% + 36px);
-}
-
-.dash-split {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin: auto 0 0;
-  padding: 12px 0 0;
-  border-top: 1px solid var(--line);
-  list-style: none;
-}
-
-.dash-split li {
-  display: grid;
-  gap: 2px;
-}
-
-.dash-split strong {
-  font-size: 20px;
-  font-weight: 620;
-  font-variant-numeric: tabular-nums;
-}
-
-.dash-split span {
-  color: var(--muted);
-  font-size: 11px;
 }
 
 .dash-trend-head,

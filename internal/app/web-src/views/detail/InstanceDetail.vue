@@ -1,11 +1,9 @@
 <script setup lang="ts">
-// Vue replacement for the whole #detailPanel region (index.html:178-310) and
-// the "selected" half of app.ts's renderPanels() (app.ts:412-471, everything
-// from `el.detailName.textContent = selected.name;` down through
-// `updateLatencyControls();`), plus setActiveTab() (app.ts:1172-1186) and the
-// tabList keydown handler from bindEvents() (app.ts:1357-1372), plus the
-// start/stop/restart/clone/delete button handlers from bindEvents()
-// (app.ts:1423-1478).
+// Vue replacement for the whole #detailPanel region (index.html:178-310) plus
+// four pieces of the pre-Vue app.ts: the "selected" half of renderPanels()
+// (everything from `el.detailName.textContent = selected.name;` down through
+// `updateLatencyControls();`), setActiveTab(), and bindEvents()'s tabList
+// keydown handler and start/stop/restart/clone/delete button handlers.
 //
 // Self-toggles its own `.hidden` class from `store.view`/`store.creating`/
 // the active instance, the same pattern MessageBanner.vue uses for #message
@@ -29,8 +27,8 @@ import LogsTab from "./LogsTab.vue";
 const selected = computed(() => activeInstance(store));
 
 // Mirrors renderPanels()'s `el.detailPanel.classList.toggle("hidden", away ||
-// state.creating || !selected)` (app.ts:423), where `away` is
-// `state.view === "profiles" || state.view === "dashboard"` (app.ts:413-418).
+// state.creating || !selected)` (pre-Vue app.ts), where `away` is
+// `state.view === "profiles" || state.view === "dashboard"` (pre-Vue app.ts).
 const visible = computed(() => store.view === "instances" && !store.creating && selected.value !== null);
 
 const metaText = computed(() => {
@@ -45,11 +43,28 @@ const showPendingRestart = computed(
   () => Boolean(selected.value?.pendingRestart === true && selected.value?.status === "running"),
 );
 
+// Per-component in-flight tracking for the four action buttons below, so a
+// double-click can't fire two POSTs/DELETEs for the same action before the
+// first one's response (and the follow-up refreshInstancesList()) lands.
+// This is local UI state, not FleetState -- nothing outside this component
+// needs to know a button is mid-click.
+const pendingActions = ref<Set<"start" | "stop" | "restart" | "delete">>(new Set());
+
 const startDisabled = computed(() => {
   const instance = selected.value;
-  return store.bulkRunning || !instance || instance.status === "running" || instance.status === "starting";
+  return (
+    store.bulkRunning ||
+    !instance ||
+    instance.status === "running" ||
+    instance.status === "starting" ||
+    pendingActions.value.has("start")
+  );
 });
-const stopDisabled = computed(() => store.bulkRunning || !selected.value || selected.value.status !== "running");
+const stopDisabled = computed(
+  () => store.bulkRunning || !selected.value || selected.value.status !== "running" || pendingActions.value.has("stop"),
+);
+const restartDisabled = computed(() => store.bulkRunning || pendingActions.value.has("restart"));
+const deleteDisabled = computed(() => store.bulkRunning || pendingActions.value.has("delete"));
 const cloneDisabled = computed(() => store.bulkRunning || store.cloneRunning || !selected.value);
 
 interface TabDef {
@@ -73,7 +88,7 @@ function setActiveTab(id: FleetTab): void {
   store.activeTab = id;
 }
 
-// Mirrors bindEvents()'s el.tabList keydown handler (app.ts:1357-1372):
+// Mirrors bindEvents()'s el.tabList keydown handler (pre-Vue app.ts):
 // ArrowLeft/ArrowRight cycles focus (and selection) between tabs.
 function onTabListKeydown(event: KeyboardEvent): void {
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -88,13 +103,14 @@ function onTabListKeydown(event: KeyboardEvent): void {
   void nextTick(() => tabButtonRefs.value[next.id]?.focus());
 }
 
-// Mirrors runAction() (app.ts:1141-1151), reused by the start/stop/restart
+// Mirrors runAction() (pre-Vue app.ts), reused by the start/stop/restart
 // buttons below. The original called the module-wide refresh() (system +
 // profiles + instances); this narrows to just the instances list -- see
 // instance-refresh.ts for why that is enough here.
 async function runInstanceAction(action: "start" | "stop" | "restart", success: string): Promise<void> {
   const instance = selected.value;
-  if (!instance) return;
+  if (!instance || pendingActions.value.has(action)) return;
+  pendingActions.value.add(action);
   try {
     await api(`/api/instances/${instance.id}/${action}`, { method: "POST" });
     actions.showMessage(success);
@@ -102,16 +118,21 @@ async function runInstanceAction(action: "start" | "stop" | "restart", success: 
     const message = err instanceof Error ? err.message : String(err);
     actions.showMessage(message, "error");
   } finally {
+    pendingActions.value.delete(action);
     await refreshInstancesList(store);
   }
 }
 
-// Mirrors clearActiveDetailCache() (app.ts:805-816), minus the DOM-cache
-// fields (`el.logs.dataset.instanceId`, `el.proxiesList.innerHTML`,
-// `lastProxyGroupsSnapshot`) that existed only to make the old innerHTML
-// repaint behave -- ProxiesTab.vue/LogsTab.vue pick up an activeId change
-// through their own reactive watchers instead, so there is nothing left to
-// cache here.
+// Mirrors clearActiveDetailCache() in the pre-Vue app.ts, minus the DOM-cache
+// fields (`el.logs.dataset.instanceId`, `el.proxiesList.innerHTML`) that
+// existed only to make the old innerHTML repaint behave -- ProxiesTab.vue and
+// LogsTab.vue pick up an activeId change through their own reactive watchers.
+//
+// proxy-groups.ts does keep a `lastProxyGroupsSnapshot` again, but it is not a
+// DOM cache and is deliberately NOT reset from here: it self-invalidates by
+// checking `store.proxyGroups.length` before short-circuiting, precisely so
+// that every caller that blanks store.proxyGroups (this function included)
+// stays correct without having to know about it.
 function resetActiveDetailState(): void {
   store.editInstanceId = "";
   store.editDirty = false;
@@ -122,7 +143,7 @@ function resetActiveDetailState(): void {
   store.latencyBatchToken += 1;
 }
 
-// Mirrors the #cloneBtn click handler (app.ts:1436-1461). `confirmDiscardChanges`
+// Mirrors the #cloneBtn click handler (pre-Vue app.ts). `confirmDiscardChanges`
 // itself is not imported (it is app.ts-private and also weighs
 // profileFormDirty/configEditorDirty, which cannot be true while this panel
 // is visible -- that only happens in the profiles view); the equivalent
@@ -153,23 +174,36 @@ async function cloneInstance(): Promise<void> {
   }
 }
 
-// Mirrors the #deleteBtn click handler (app.ts:1463-1478). The original's
+// Mirrors the #deleteBtn click handler (pre-Vue app.ts). The original's
 // warning also folded in profileFormDirty/configEditorDirty via
 // hasUnsavedChanges(); same scoping note as cloneInstance() above applies.
 async function deleteInstance(): Promise<void> {
   const instance = selected.value;
-  if (!instance) return;
+  if (!instance || pendingActions.value.has("delete")) return;
   const dirtyWarning = store.editDirty ? " 未保存的修改也会丢失。" : "";
   if (!window.confirm(`确定删除 ${instance.name}？${dirtyWarning}`)) return;
+  // Captured before the await: if the user selects a different instance while
+  // the DELETE is in flight, store.activeId no longer matches by the time we
+  // come back, and clearing the selection / resetting the detail panel here
+  // would wipe whatever the user just switched to.
+  const deletedId = instance.id;
+  pendingActions.value.add("delete");
   try {
-    await api(`/api/instances/${instance.id}`, { method: "DELETE" });
-    store.activeId = "";
-    resetActiveDetailState();
+    await api(`/api/instances/${deletedId}`, { method: "DELETE" });
+    // The deleted instance is gone either way, so its latency results are
+    // permanently stale -- prune them regardless of what's currently selected.
+    clearLatencyStateForInstance(store, deletedId);
+    if (store.activeId === deletedId) {
+      store.activeId = "";
+      resetActiveDetailState();
+    }
     actions.showMessage("实例已删除。");
     await refreshInstancesList(store);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     actions.showMessage(message, "error");
+  } finally {
+    pendingActions.value.delete("delete");
   }
 }
 </script>
@@ -200,10 +234,10 @@ async function deleteInstance(): Promise<void> {
         <button
           id="restartBtn"
           type="button"
-          :disabled="store.bulkRunning"
+          :disabled="restartDisabled"
           @click="runInstanceAction('restart', '已请求重启。')"
         >重启</button>
-        <button id="deleteBtn" class="danger" type="button" :disabled="store.bulkRunning" @click="deleteInstance">删除</button>
+        <button id="deleteBtn" class="danger" type="button" :disabled="deleteDisabled" @click="deleteInstance">删除</button>
       </div>
     </div>
 

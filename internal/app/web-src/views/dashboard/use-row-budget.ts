@@ -1,4 +1,4 @@
-import { nextTick, onMounted, onUnmounted, ref } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import type { Ref } from "vue";
 
 const maxRowHeight = 120;
@@ -85,6 +85,22 @@ export function useRowBudget({ initial, scrollFallback }: RowBudgetOptions): Row
     if (typeof ResizeObserver === "function" && hostEl) {
       resizeObserver = new ResizeObserver(() => scheduleFit());
       resizeObserver.observe(hostEl);
+    }
+  });
+
+  // Both tables conditionally render (DashboardInstances.vue's `v-else`,
+  // DashboardConnections.vue's `v-if`) while their data is empty, so `tableEl`
+  // starts null and mount's applyFit() above hits the `!table` early return,
+  // leaving budget stuck at its initial/scrollFallback value. The table
+  // appearing later (zero connections/instances -> some) does not resize
+  // #dashboardPanel -- the host's own box is fixed by the grid layout, so the
+  // ResizeObserver above never fires for it either. Watching the ref itself
+  // catches exactly that empty -> non-empty transition, independent of both
+  // triggers above.
+  watch(tableEl, (next, previous) => {
+    if (next && !previous) {
+      applyFit();
+      void nextTick(() => applyFit());
     }
   });
 

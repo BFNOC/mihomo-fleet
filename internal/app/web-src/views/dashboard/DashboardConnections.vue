@@ -113,7 +113,20 @@ function connectionChainTitle(row: FleetConnectionRow): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in shownConnectionRows" :key="row.id">
+          <!-- row.id (mihomo's own connection id) is only unique within one
+               instance's process, not fleet-wide -- two instances can and do
+               issue the same id independently. Keying on row.id alone breaks
+               Vue's keyed-diff invariant (duplicate keys in one v-for), which
+               does not just mispatch props: on every re-render it leaves the
+               previous patch's now-orphaned nodes in the DOM instead of
+               reusing or removing them, so the table's real node count grows
+               without bound every heartbeat tick even while the panel is
+               display:none. Confirmed by measurement: a single running
+               instance (unique ids) converges and stays flat; three instances
+               (colliding ids) grow tr/td/small counts every tick with no
+               plateau. instanceId scopes the key back to what mihomo actually
+               guarantees unique. -->
+          <tr v-for="row in shownConnectionRows" :key="`${row.instanceId}:${row.id}`">
             <td class="dash-conn-target">
               <strong>{{ targetPrimary(row) }}</strong>
               <small v-if="connectionSubtitle(row)">{{ connectionSubtitle(row) }}</small>

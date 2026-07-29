@@ -30,7 +30,7 @@ import {
 } from "./dashboard-data.ts";
 
 // Started once here rather than per card: the cards mount and unmount with this
-// view, so one timer owned by the parent needs no refcounting.
+// view, so one watcher owned by the parent needs no refcounting.
 useDashboardHeartbeat();
 
 // NOTE (gap): the pre-Vue caption also appended " · N 台未取到" -- the count of
@@ -38,7 +38,9 @@ useDashboardHeartbeat();
 // only on dashboard.ts's private `samplers` entries; instanceConnections() folds
 // it into "0 connections", which is indistinguishable from "reachable with zero
 // connections". Restoring it needs a new dashboard.ts export, e.g.
-// `instanceReachable(id: string): boolean` mirroring instanceConnections().
+// `instanceReachable(id: string): boolean` mirroring instanceConnections() --
+// there was one, but nothing ever called it, so it was removed as dead code;
+// re-add it if this caption gets restored.
 const summaryText = computed(() => {
   const parts = [
     `${store.instances.length} 个实例`,

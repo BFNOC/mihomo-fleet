@@ -23,11 +23,16 @@ export const defaultProxyBind: string = "127.0.0.1";
 export const API_SECRET_STORAGE_KEY: string = "fleetApiSecret";
 export const slowPollIntervalMs: number = 4000;
 export const fastPollIntervalMs: number = 1800;
+// services/polling.ts's traffic-sampling cadence while the dashboard is not
+// the active view: the rolling 60s window still needs pre-warming (see
+// sampleFleetTraffic()'s comment there), just not at the full rate when
+// nobody is reading the per-tick connection rows.
+export const fastPollBackgroundIntervalMs: number = 5400;
 
 // `as const` gives each property its literal string type, so
 // `(typeof latencyKinds)[keyof typeof latencyKinds]` below is the exact
 // "url" | "real" union instead of a widened `string`.
-export const latencyKinds = {
+const latencyKinds = {
   url: "url",
   real: "real",
 } as const;
@@ -96,6 +101,12 @@ export const errorLabels: Record<string, string> = {
   "profile changed while configuration was being edited": "配置档已被改绑，未保存的 YAML 没有写入。请重新加载后再编辑。",
   "subscriptionUrl requires a new profile": "订阅链接只能用于创建新配置档。",
   "home URL must start with http:// or https://": "主页链接必须以 http:// 或 https:// 开头。",
+  "unknown proxy group or node": "节点组或节点不存在，请刷新后重试。",
+  "subscription host did not resolve": "无法解析订阅链接对应的主机，请检查链接或网络连接。",
+  "subscription redirect limit exceeded": "订阅链接重定向次数过多，请检查链接是否正确。",
+  "remote profile is empty": "订阅返回的配置内容为空，请检查订阅链接。",
+  "fetched subscription is required": "缺少已拉取的订阅内容，请重新更新订阅。",
+  "instance state conflict": "实例状态发生冲突，请刷新后重试。",
 };
 
 export type ErrorPatternRenderer = (match: RegExpMatchArray) => string;
@@ -105,8 +116,14 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   [/^profile "(.+)" not found$/, (match) => `配置档 ${match[1]} 不存在。`],
   [/^profile "(.+)" is not a subscription profile$/, (match) => `配置档 ${match[1]} 不是订阅配置档。`],
   [/^profile "(.+)" subscription update is already running$/, (match) => `配置档 ${match[1]} 正在更新订阅。`],
+  [/^profile "(.+)" subscription URL changed during update$/, (match) => `配置档 ${match[1]} 的订阅链接在更新过程中被修改，请重新触发更新。`],
   [/^instance "(.+)" not found$/, (match) => `实例 ${match[1]} 不存在。`],
   [/^instance "(.+)" is being deleted$/, (match) => `实例 ${match[1]} 正在删除中，请稍后重试。`],
+  // Hit routinely: the proxies tab polls an instance during the 1-4s window
+  // right after it stops, while it is still transitioning through the
+  // backend's not-running state.
+  [/^instance "(.+)" is not running$/, (match) => `实例 ${match[1]} 未在运行，请等待其停止完成或重新启动。`],
+  [/^instance "(.+)" did not stop starting in time$/, (match) => `实例 ${match[1]} 未能在限定时间内停止启动，请稍后重试。`],
   [/^stop instance before delete: (.+)$/, (match) => `删除前请先停止实例：${match[1]}`],
   [/^mixed proxy port (\d+) is unavailable$/, (match) => `混合端口 ${match[1]} 不可用。`],
   [/^controller port (\d+) is unavailable$/, (match) => `控制端口 ${match[1]} 不可用。`],
@@ -118,6 +135,7 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   [/^mihomo returned (.+)$/, (match) => `mihomo 返回错误：${match[1]}`],
   [/^parse user config: (.+)$/, (match) => `解析用户配置失败：${match[1]}`],
   [/^subscription server returned (.+)$/, (match) => `订阅服务器返回错误：${match[1]}`],
+  [/^subscription is larger than (\d+) bytes$/, (match) => `订阅内容超过 ${match[1]} 字节限制，请更换更小的订阅。`],
   [/^subscription host resolves to blocked address (.+)$/, () => "订阅链接解析到本机、内网或保留地址，已阻止。"],
   [/^remote profile data is invalid yaml: (.+)$/, (match) => `订阅内容不是有效 YAML：${match[1]}`],
   [/^remote profile must contain proxies or proxy-providers$/, () => "订阅内容缺少 proxies 或 proxy-providers。"],
@@ -126,6 +144,7 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   [/^local proxy (.+) is missing name$/, (match) => `本地节点 ${match[1]} 缺少 name。`],
   [/^local proxy name "(.+)" is duplicated$/, (match) => `本地节点 ${match[1]} 重名。`],
   [/^local proxy name "(.+)" conflicts with generated global-chain group$/, (match) => `本地节点 ${match[1]} 与内置链路组重名。`],
+  [/^proxy name "(.+)" conflicts with generated global-chain group$/, (match) => `节点 ${match[1]} 与内置链路组重名。`],
   [/^local proxy name "(.+)" conflicts with profile proxy$/, (match) => `本地节点 ${match[1]} 与配置档节点重名。`],
   [/^chain references unknown proxy or group "(.+)"$/, (match) => `链路顺序引用了不存在的节点或组：${match[1]}。`],
   [/^chain cannot reference generated relay group "(.+)"$/, (match) => `链路顺序不能引用 ${match[1]} 自身。`],

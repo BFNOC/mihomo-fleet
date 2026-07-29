@@ -79,7 +79,7 @@ export interface OperationContext {
   profileId: string;
 }
 
-export function activeProfileContextId(): string {
+function activeProfileContextId(): string {
   return store.profileCreating ? "__new__" : store.activeProfileId;
 }
 

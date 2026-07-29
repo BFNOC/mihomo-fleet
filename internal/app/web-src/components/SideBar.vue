@@ -1,20 +1,20 @@
 <script setup lang="ts">
 // Vue replacement for the inner content of <aside class="sidebar"> (index.html:28-50)
 // and parts of five app.ts render functions:
-//   - renderSystem() (app.ts:419-432) -- only the #systemWarning half
-//     (app.ts:427-431). The #systemLine half is the topbar, migrated separately.
-//   - renderViewNavigation() (app.ts:407-417) -- only the #showDashboardBtn
+//   - renderSystem() (pre-Vue app.ts) -- only the #systemWarning half
+//     (pre-Vue app.ts). The #systemLine half is the topbar, migrated separately.
+//   - renderViewNavigation() (pre-Vue app.ts) -- only the #showDashboardBtn
 //     part. #manageProfilesBtn/#instanceSelectorWrap are the topbar's concern.
-//   - renderList() (app.ts:493-529) -- the instance list, in full.
-//   - renderPortMatrix() (app.ts:538-607) -- the port matrix, in full,
+//   - renderList() (pre-Vue app.ts) -- the instance list, in full.
+//   - renderPortMatrix() (pre-Vue app.ts) -- the port matrix, in full,
 //     including the per-row copy-action buttons.
-//   - updateBulkControls() (app.ts:632-639) -- only the #newBtn/#startAllBtn/
+//   - updateBulkControls() (pre-Vue app.ts) -- only the #newBtn/#startAllBtn/
 //     #stopAllBtn disabled states. #emptyCreate belongs to a non-shell panel
 //     and is intentionally not reproduced here.
 //
 // Deliberately NOT reproduced: instanceListSnapshot()/capturedInstanceListFocusKey()/
-// restoreInstanceListFocus() (app.ts:463-491), portMatrixSnapshot()/the inline
-// focus capture/restorePortMatrixFocus()/portFocusInstanceId() (app.ts:531-536,
+// restoreInstanceListFocus() (pre-Vue app.ts), portMatrixSnapshot()/the inline
+// focus capture/restorePortMatrixFocus()/portFocusInstanceId() (pre-Vue app.ts,
 // 544-547, 609-620). Those exist only so a full `innerHTML = ""` repaint can
 // fake focus/DOM-identity preservation; Vue's keyed v-for does that natively,
 // so none of that machinery has a job left to do here.
@@ -27,15 +27,15 @@ import { proxyCopyActions, proxyCopyPlaceholders, proxyEndpointText, proxyPort, 
 import { statusClass, statusText } from "../messages.ts";
 
 // Mirrors render()'s `selected` argument, computed the same way app.ts does
-// it (active() = activeInstance(state), app.ts:139-141): the instance
+// it (active() = activeInstance(state), pre-Vue app.ts): the instance
 // matching state.activeId, falling back to the first instance. Used for the
 // "active" row highlight in both the instance list and the port matrix.
 const selectedId = computed(() => activeInstance(store)?.id ?? "");
 
-// Mirrors renderViewNavigation()'s #showDashboardBtn half (app.ts:413-415).
+// Mirrors renderViewNavigation()'s #showDashboardBtn half (pre-Vue app.ts).
 const onDashboard = computed(() => store.view === "dashboard");
 
-// Mirrors renderSystem()'s #systemWarning half (app.ts:426-431). Empty when
+// Mirrors renderSystem()'s #systemWarning half (pre-Vue app.ts). Empty when
 // there is nothing to warn about (system not loaded yet, or mihomo found),
 // which the template turns into the `.hidden` toggle below.
 const systemWarningText = computed(() => {
@@ -44,14 +44,26 @@ const systemWarningText = computed(() => {
   return "未在 Mihomo Fleet 同目录或 PATH 中找到 mihomo。你仍然可以创建实例，但启动需要同目录二进制文件，或通过 -mihomo 参数指定路径。";
 });
 
-// Mirrors updateBulkControls()'s canStart/canStop (app.ts:633-634).
+// Mirrors updateBulkControls()'s canStart/canStop (pre-Vue app.ts).
 const canStart = computed(() => store.instances.some((item) => item.status !== "running" && item.status !== "starting"));
 const canStop = computed(() => store.instances.some((item) => item.status === "running"));
+const runningInstanceCount = computed(() => store.instances.filter((item) => item.status === "running").length);
 
-// Mirrors renderPortMatrix()'s #portMatrixCount text (app.ts:539).
+// 全部关闭 stops every running instance in one request, with no per-instance
+// confirmation of its own, sitting immediately beside 全部启动 -- a stray
+// click takes down the whole fleet. Names the blast radius before acting,
+// matching the confirm style already used for profile deletion
+// (views/profiles/profile-operations.ts's deleteProfile: a plain
+// window.confirm naming what is about to be lost).
+function confirmStopAll(): void {
+  if (!window.confirm(`确定停止全部 ${runningInstanceCount.value} 个运行中的实例？`)) return;
+  actions.stopAll();
+}
+
+// Mirrors renderPortMatrix()'s #portMatrixCount text (pre-Vue app.ts).
 const portMatrixCountText = computed(() => `${store.instances.length} 个出口`);
 
-// Mirrors renderList()'s inline profile/selection text (app.ts:504-506).
+// Mirrors renderList()'s inline profile/selection text (pre-Vue app.ts).
 function profileLabel(item: FleetInstance): string {
   return item.profileName || item.profileId || "未选择配置档";
 }
@@ -61,13 +73,13 @@ function selectionSuffix(item: FleetInstance): string {
   return text !== "无" ? ` · ${text}` : "";
 }
 
-// Mirrors renderPortMatrix()'s per-row copy-tool actions (app.ts:585).
+// Mirrors renderPortMatrix()'s per-row copy-tool actions (pre-Vue app.ts).
 function copyActionsFor(item: FleetInstance) {
   return proxyPort(item.mixedPort) ? proxyCopyActions(item) : proxyCopyPlaceholders();
 }
 
 // Mirrors renderPortMatrix()'s aria-label suffix for an unavailable copy
-// action (app.ts:593-594).
+// action (pre-Vue app.ts).
 function copyUnavailableSuffix(value: string): string {
   return value ? "" : "（端口未分配，无法复制）";
 }
@@ -94,7 +106,7 @@ function copyUnavailableSuffix(value: string): string {
 
   <div class="side-actions">
     <button id="startAllBtn" class="primary" type="button" :disabled="store.bulkRunning || !canStart" @click="actions.startAll()">全部启动</button>
-    <button id="stopAllBtn" type="button" :disabled="store.bulkRunning || !canStop" @click="actions.stopAll()">全部关闭</button>
+    <button id="stopAllBtn" type="button" :disabled="store.bulkRunning || !canStop" @click="confirmStopAll()">全部关闭</button>
   </div>
 
   <!-- Stays mounted and toggles `.hidden` (styles.css: `display: none !important`)

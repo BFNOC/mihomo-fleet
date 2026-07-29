@@ -97,6 +97,15 @@
   background: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 
+/* Instance rows are the only <tr> the app makes focusable (tabindex="0" +
+   keydown, DashboardInstances.vue). The global button/select/input/textarea
+   --focus ring (shell.css) doesn't cover <tr>, and box-shadow on a table row
+   is unreliable across engines, so this uses outline instead. */
+.dash-table tbody tr:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .dash-table tbody tr.is-active td {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
@@ -230,10 +239,6 @@
   /* The trend plots are the elastic part of the layout: their SVGs use
      preserveAspectRatio="none", so they take whatever height is left after the
      tables have claimed their rows, instead of holding a fixed 112px. */
-  body.view-dashboard .dash-rate .spark {
-    height: 40px;
-  }
-
   body.view-dashboard .dash-trend-plot {
     flex: 1 1 auto;
     min-height: 60px;
@@ -266,6 +271,17 @@
   overflow: hidden;
 }
 
+/* The connections table carries more columns than fit at narrow widths
+   (target, instance, exit node + rule, country, rate, age -- all individually
+   load-bearing per DESIGN.md, unlike the instance table which can afford to
+   drop its duplicate columns). Truncating further would defeat the table's
+   purpose, so this scrolls horizontally instead while keeping the vertical
+   row-budget clipping the viewport-fit mode depends on. */
+.dash-conn-body {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 body.view-dashboard .dash-inst-body,
 body.view-dashboard .dash-conn-body {
   flex: 1 1 auto;
@@ -284,9 +300,9 @@ body.view-dashboard .dash-conn-body {
 
 .dash-conn-search {
   width: min(280px, 45vw);
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: inherit;
   font: inherit;
@@ -421,9 +437,7 @@ body.view-dashboard .dash-conn-body {
 }
 
 @media (max-width: 760px) {
-  .dashboard-grid,
-  .dashboard-grid-lower,
-  .dashboard-grid-instances {
+  .dashboard-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -437,10 +451,6 @@ body.view-dashboard .dash-conn-body {
 
   .dash-figure-lg .dash-figure-value {
     font-size: 38px;
-  }
-
-  .dash-selected-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   /* Drop recoverable columns rather than forcing horizontal scroll. */

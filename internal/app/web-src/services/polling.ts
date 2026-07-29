@@ -1,4 +1,4 @@
-import { fastPollIntervalMs, slowPollIntervalMs } from "../constants.ts";
+import { fastPollBackgroundIntervalMs, fastPollIntervalMs, slowPollIntervalMs } from "../constants.ts";
 import { api } from "../api.ts";
 import { chrome } from "../bridge.ts";
 import { sampleFleet } from "../dashboard.ts";
@@ -20,11 +20,24 @@ function scheduleSlowPoll(delay: number = slowPollIntervalMs): void {
 }
 
 async function runSlowPoll(): Promise<void> {
-  if (!document.hidden) await refresh();
+  // periodic: true -- see fleet-refresh.ts's RefreshOptions.periodic doc. This
+  // is the only call site allowed to set it: it is the one that can race a
+  // profile save/delete/refresh-subscription still holding chrome.profileBusy.
+  if (!document.hidden) await refresh({ periodic: true });
   scheduleSlowPoll();
 }
 
-function scheduleFastPoll(delay: number = fastPollIntervalMs): void {
+// Full 1.8s cadence only while the dashboard is the active view. Every other
+// view still needs sampleFleetTraffic() ticking -- see its own comment on why
+// the rolling 60s window must stay pre-warmed regardless of which view is
+// open -- but nothing is reading per-tick connection rows while some other
+// view is open, so there is no reason to pay for the full cadence in that
+// state. See constants.ts for the two interval values.
+function nextFastPollDelay(): number {
+  return store.view === "dashboard" ? fastPollIntervalMs : fastPollBackgroundIntervalMs;
+}
+
+function scheduleFastPoll(delay: number = nextFastPollDelay()): void {
   clearTimeout(fastPollTimer || undefined);
   fastPollTimer = null;
   if (document.hidden) return;
@@ -33,7 +46,9 @@ function scheduleFastPoll(delay: number = fastPollIntervalMs): void {
 
 /**
  * Keep sampling while any view is open so opening the dashboard already has a
- * filled window. Cost is one /connections call per running instance per tick.
+ * filled window. Cost is one /connections call per running instance per tick,
+ * at fastPollIntervalMs while the dashboard is open and the slower
+ * fastPollBackgroundIntervalMs otherwise (see scheduleFastPoll()).
  *
  * Exported because openDashboard() takes an extra sample on the way in.
  */

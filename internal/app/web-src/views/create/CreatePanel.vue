@@ -4,34 +4,25 @@
 //
 // Stays mounted for the app's lifetime (main.ts's mountShell() pattern,
 // matching TopBar/SideBar/MessageBanner) rather than being gated behind
-// `v-if`. That is a correction, not the original design: an earlier draft of
-// this file wrapped everything in `v-if="store.creating"` to get a fresh
-// form per open "for free". That is unsafe here specifically -- app.ts's
-// bindElements() (app.ts:73) and bindEvents() (app.ts:1693) still run
-// synchronously at boot, before store.creating can ever be true, and
-// together issue ~150 non-null-asserted `querySelector`/`addEventListener`
-// calls including every #createXxx id this component renders. A `v-if`'d
-// root means those ids are absent from the DOM at that moment; the first
-// missing one breaks the chain before app.ts ever reaches
-// registerActions() (app.ts:1698), which would leave the bridge wired to
-// no-ops for every view, not just this one. Staying permanently mounted
-// keeps every #createXxx id present in the DOM at boot, exactly like the
-// original static markup was, so those lookups keep succeeding.
+// `v-if`.
 //
-// Visibility is therefore still app.ts's job, unchanged: renderPanels()
-// (app.ts:421) toggles `.hidden` on the <section id="createPanel"> host
-// itself, which mountShell() never touches (it only ever replaces a host's
-// *children*). A `display: none` ancestor already hides everything this
-// component renders, the same way it hid the original always-present static
-// markup pre-migration -- so there is no need for a second, redundant
-// hidden-class toggle inside this component's own template.
+// A previous version of this comment justified that with app.ts's
+// bindElements()/bindEvents() needing the #createXxx ids present at boot.
+// That reason is gone -- those functions no longer exist, app.ts does not
+// touch the DOM at all, and panel visibility is main.ts's watchEffect
+// toggling `.hidden` on the <section id="createPanel"> host. mountShell()
+// only ever replaces a host's *children*, so a `display: none` ancestor
+// already hides everything rendered here and no in-template hidden toggle is
+// needed either.
 //
-// FORM RESET: since the component is never destroyed/recreated, the field
-// values below persist across opens unless something explicitly clears them.
-// That "something" is the watcher on `store.creating` near the bottom of
-// this file: it mirrors showCreate()'s field resets (app.ts:856-863) and its
-// trailing fillSuggestedPorts() call (app.ts:866), running them every time
-// `store.creating` flips false -> true, i.e. every time the panel opens.
+// The reason that is still live is the form reset below. Because the
+// component is never destroyed/recreated, its field values persist across
+// opens, and the watcher on `store.creating` near the bottom of this file is
+// what clears them -- it fires on every false -> true flip and also runs
+// fillSuggestedPorts(). Gating the root on `v-if="store.creating"` would get
+// a fresh form "for free" but mount the component only *after* the flag is
+// already true, so that watcher would never see the transition: no port
+// suggestions, ever. Keep the root unconditional.
 import { computed, reactive, ref, watch } from "vue";
 import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
@@ -41,7 +32,7 @@ import { profileReferenceCount } from "../../state.ts";
 import type { FleetProfile } from "../../state.ts";
 import { profileOptionLabel } from "../../app-logic.ts";
 
-// Shape of the payload createInstanceFromForm() (app.ts:1196-1205) builds
+// Shape of the payload createInstanceFromForm() (pre-Vue app.ts) builds
 // and POSTs to /api/instances. Today that function reads these fields
 // straight off el.createName/el.createProfile/etc. -- once this component
 // owns that markup those DOM reads return nothing meaningful, so the
@@ -59,7 +50,7 @@ interface CreateInstancePayload {
   chain: string[];
 }
 
-// Shape GET /api/ports/suggest resolves to (mirrors app.ts:789-792's
+// Shape GET /api/ports/suggest resolves to (mirrors pre-Vue app.ts's
 // SuggestedPorts). fillSuggestedPorts() currently writes straight onto
 // el.createMixedPort.placeholder/el.createControllerPort.placeholder; this
 // component needs the value returned instead, so it can bind its own
@@ -101,10 +92,10 @@ const form = reactive<CreateFormState>({
 });
 
 // Mirrors updateCreateProfileControls()'s hasProfiles-derived disables
-// (app.ts:780-784).
+// (pre-Vue app.ts).
 const hasProfiles = computed(() => store.profiles.length > 0);
 
-// Mirrors applyModeFields("create", mode) (app.ts:473-476): toggles the
+// Mirrors applyModeFields("create", mode) (pre-Vue app.ts): toggles the
 // chain-only fields' `.hidden` class rather than removing them from the DOM,
 // so text typed into #createLocalProxies/#createChain survives switching
 // the mode select back and forth. Only a fresh *open* clears them (via the
@@ -112,8 +103,8 @@ const hasProfiles = computed(() => store.profiles.length > 0);
 // fields on a mode change either.
 const isChainMode = computed(() => form.mode === instanceModes.globalChain);
 
-// Mirrors renderProfileOptions() (app.ts:480-495) as consumed for the
-// create select specifically (app.ts:779, 861). The options list itself is
+// Mirrors the pre-Vue renderProfileOptions(), as consumed for the create
+// select specifically. The options list itself is
 // just a `v-for` over store.profiles below -- Vue's reactivity keeps that in
 // sync for free, which is what renderProfileOptions had to do by hand by
 // re-running on every render(). The one piece of behaviour that isn't "for
@@ -136,7 +127,7 @@ function profileLabel(profile: FleetProfile): string {
 }
 
 async function loadSuggestedPorts(): Promise<void> {
-  // Mirrors the early return at app.ts:795. Always false right after a
+  // Mirrors the early return at pre-Vue app.ts. Always false right after a
   // reset (both fields are cleared below before this runs) -- kept for
   // exact parity in case that ever stops being true.
   if (form.mixedPort && form.controllerPort) return;
@@ -148,8 +139,8 @@ async function loadSuggestedPorts(): Promise<void> {
 // The actual form reset. Fires on every false -> true transition of
 // store.creating, i.e. every time showCreate()/the empty-state button opens
 // this panel -- never on the initial (false) value, matching "reset on
-// open" rather than "reset on boot". Mirrors showCreate()'s field resets
-// (app.ts:856-863) and its trailing fillSuggestedPorts() call (app.ts:866).
+// open" rather than "reset on boot". Mirrors the pre-Vue showCreate()'s field
+// resets and its trailing fillSuggestedPorts() call.
 watch(
   () => store.creating,
   (creating) => {
@@ -168,7 +159,7 @@ watch(
   },
 );
 
-// Mirrors el.createSubmit.disabled = createGate.isRunning() (app.ts:424).
+// Mirrors el.createSubmit.disabled = createGate.isRunning() (pre-Vue app.ts).
 // The concurrency guard itself (createGate.begin()/.end()) stays inside
 // app.ts's side of `actions.createInstance` -- this flag only needs to
 // cover this component's own button, which a synchronous double-click
@@ -176,7 +167,7 @@ watch(
 const submitting = ref(false);
 
 async function submit(): Promise<void> {
-  // Mirrors createInstanceFromForm()'s guard (app.ts:1189-1192) exactly.
+  // Mirrors createInstanceFromForm()'s guard (pre-Vue app.ts) exactly.
   // Relocated here rather than left in app.ts because the field it reads --
   // the selected profile -- now lives in this component's local `form`
   // state instead of an el.createProfile DOM node app.ts can see.
@@ -203,12 +194,14 @@ async function submit(): Promise<void> {
   }
 }
 
-// Mirrors the #createCancel click handler (app.ts:1417-1420): `state.creating
-// = false; render();`. Needs a bridge action rather than setting
-// store.creating directly, because render() also drives plain-DOM siblings
-// this component cannot reach (el.emptyPanel/el.detailPanel's hidden
-// toggles inside renderPanels()) -- skipping it would leave the workbench
-// showing nothing until some unrelated action happened to trigger a render.
+// Mirrors the #createCancel click handler in the pre-Vue app.ts:
+// `state.creating = false; render();`.
+//
+// The bridge hop is no longer load-bearing: render()/renderPanels() are gone,
+// and main.ts's watchEffect reacts to `store.creating` directly, so setting it
+// here would repaint the sibling panels just fine. It stays a bridge action
+// purely for consistency -- every other cross-view navigation goes through the
+// action table, and cancelCreate() has exactly one owner there.
 function cancel(): void {
   actions.cancelCreate();
 }

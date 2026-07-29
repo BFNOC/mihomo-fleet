@@ -1,13 +1,13 @@
 <script setup lang="ts">
 // Vue replacement for the inner content of <header class="topbar"> (index.html:10-25)
 // and three app.ts render functions:
-//   - renderSystem() (app.ts:419-425 half) -- the #systemLine text only. The
-//     other half of that function (#systemWarning, app.ts:427-431) belongs to
+//   - renderSystem() (pre-Vue app.ts half) -- the #systemLine text only. The
+//     other half of that function (#systemWarning, pre-Vue app.ts) belongs to
 //     the sidebar and is being migrated separately.
-//   - renderViewNavigation() (app.ts:407-417) -- only the #manageProfilesBtn
+//   - renderViewNavigation() (pre-Vue app.ts) -- only the #manageProfilesBtn
 //     and #instanceSelectorWrap parts. #showDashboardBtn also lives in that
 //     function but belongs to the sidebar, migrated separately.
-//   - renderSelector() (app.ts:441-461) in full.
+//   - renderSelector() (pre-Vue app.ts) in full.
 import { computed, nextTick } from "vue";
 import { store } from "../store.ts";
 import { actions, chrome } from "../bridge.ts";
@@ -15,7 +15,7 @@ import { activeInstance } from "../state.ts";
 import { shortMihomoVersion } from "../format.ts";
 import { statusText } from "../messages.ts";
 
-// Mirrors renderSystem()'s #systemLine half (app.ts:419-425). Falls back to
+// Mirrors renderSystem()'s #systemLine half (pre-Vue app.ts). Falls back to
 // the static placeholder index.html previously hard-coded into <p id="systemLine">
 // for the boot gap before the first GET /api/system response lands.
 const systemLineText = computed(() => {
@@ -28,24 +28,24 @@ const systemLineText = computed(() => {
 });
 
 // Mirrors renderViewNavigation()'s #manageProfilesBtn/#instanceSelectorWrap
-// half (app.ts:408-411, 416). #showDashboardBtn's onDashboard-only styling is
+// half (pre-Vue app.ts). #showDashboardBtn's onDashboard-only styling is
 // the sidebar's concern, so it is intentionally not reproduced here.
 const managingProfiles = computed(() => store.view === "profiles");
 const selectorMuted = computed(() => managingProfiles.value || store.view === "dashboard");
 const manageProfilesLabel = computed(() => (managingProfiles.value ? "返回实例" : "配置档管理"));
 
 // Mirrors renderSelector()'s `selected` argument, which render() computes as
-// active() = activeInstance(state) (app.ts:139-141, 395-398): the instance
+// active() = activeInstance(state) (pre-Vue app.ts): the instance
 // matching state.activeId, falling back to the first instance.
 const selectedInstance = computed(() => activeInstance(store));
 
-// Mirrors the click handler app.ts wires onto #manageProfilesBtn (app.ts:1612-1615).
+// Mirrors the click handler app.ts wires onto #manageProfilesBtn (pre-Vue app.ts).
 function toggleProfileManager(): void {
   if (store.view === "profiles") actions.closeProfileManager();
   else actions.openProfileManager();
 }
 
-// Mirrors the change handler app.ts wires onto #instanceSelect (app.ts:1611),
+// Mirrors the change handler app.ts wires onto #instanceSelect (pre-Vue app.ts),
 // which calls selectInstance(id) -- a function that does far more than set a
 // field (resets editors, refetches), so this goes through the bridge instead
 // of a v-model on store.activeId directly.

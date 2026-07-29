@@ -21,7 +21,7 @@ export const configEditorErrorText = ref("");
 // False until YamlCodeEditor.vue's dynamically imported CodeMirror chunk lands
 // (see its header). Purely for the status line -- every editor call here is
 // buffered on the other side, so nothing has to wait on it.
-export const editorReady = ref(false);
+const editorReady = ref(false);
 export const editorLoadErrorText = ref("");
 
 // Guards a slow GET /config response from clobbering a newer load or a

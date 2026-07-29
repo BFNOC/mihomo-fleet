@@ -51,6 +51,9 @@ const alertText = computed(() => {
   if (pendingInstances.value.length) return `待重启：${namesList(pendingInstances.value)}`;
   return "";
 });
+// Mirrors alertText's own precedence (failed beats pending), so this is only
+// ever read together with a non-empty alertText.
+const alertTone = computed(() => (failedInstances.value.length ? "is-danger" : "is-warn"));
 const fleetSubtitle = computed(() => alertText.value || systemStatus.value.dataDir || "本地控制器");
 
 const chips = computed<DashboardChip[]>(() => [
@@ -71,7 +74,8 @@ const chips = computed<DashboardChip[]>(() => [
       <span class="dash-orb" :class="fleetTone" aria-hidden="true"></span>
       <div class="dash-strip-fleet-copy">
         <h3>{{ headlineText }}</h3>
-        <p>{{ fleetSubtitle }}</p>
+        <p v-if="alertText" class="dash-alert" :class="alertTone">{{ fleetSubtitle }}</p>
+        <p v-else>{{ fleetSubtitle }}</p>
       </div>
       <ul class="dash-chips" role="list">
         <li v-for="chip in chips" :key="chip.label" :class="chip.tone">

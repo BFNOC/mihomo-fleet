@@ -2,11 +2,10 @@
 // Vue replacement for #tab-overview's markup (index.html:207-276): the
 // read-only port/mode/chain summary panel and the "编辑基础信息" edit form.
 //
-// Ports app.ts's edit-form half of renderPanels() (app.ts:451-464:
-// `if ((!state.editDirty || state.editInstanceId !== selected.id) &&
-// !editFormContainsFocus()) { ... }`), applyModeFields("edit", ...)
-// (app.ts:473-476), markEditFormDirty() (app.ts:818-823), and
-// saveActiveBasics() (app.ts:1225-1256).
+// Ports four things from the pre-Vue app.ts: the edit-form half of
+// renderPanels() (`if ((!state.editDirty || state.editInstanceId !==
+// selected.id) && !editFormContainsFocus()) { ... }`), applyModeFields("edit",
+// ...), markEditFormDirty(), and saveActiveBasics().
 //
 // EDIT FORM DIRTY-STATE CONTRACT: `store.editDirty`/`store.editInstanceId`/
 // `store.editVersion` are shared FleetState fields (state.ts), not local to
@@ -53,7 +52,7 @@ function formHasFocus(): boolean {
   return Boolean(editFormEl.value && editFormEl.value.contains(document.activeElement));
 }
 
-// Mirrors markEditFormDirty() (app.ts:818-823) exactly.
+// Mirrors markEditFormDirty() (pre-Vue app.ts) exactly.
 function markDirty(): void {
   store.editInstanceId = selected.value?.id || store.editInstanceId;
   store.editDirty = true;
@@ -90,7 +89,7 @@ watch(
 const saveGate = createActionGate();
 const saving = ref(false);
 
-// Mirrors saveActiveBasics() (app.ts:1225-1256), narrowed to an
+// Mirrors saveActiveBasics() (pre-Vue app.ts), narrowed to an
 // instances-only refetch afterward -- see instance-refresh.ts.
 async function saveBasics(): Promise<void> {
   const instance = selected.value;
@@ -138,7 +137,7 @@ function referenceCount(profileId: string): number {
 }
 
 // FleetInstance's optional overview fields fall back the same way
-// renderPanels() did (app.ts:438-446).
+// renderPanels() did (pre-Vue app.ts).
 const overviewMixed = computed(() => (selected.value ? proxyEndpointText(selected.value) : ""));
 const overviewProxyBind = computed(() => selected.value?.proxyBind || defaultProxyBind);
 const overviewController = computed(() => (selected.value ? `127.0.0.1:${selected.value.controllerPort}` : ""));

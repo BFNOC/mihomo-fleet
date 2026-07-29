@@ -51,16 +51,8 @@
   font-weight: 500;
 }
 
-.side-head,
-.detail-head,
-.panel-title,
-.actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
+/* .side-head's flex-row base lives in shell.css now (shared with
+   .detail-head/.panel-title/.actions and the profile-*-head selectors). */
 .side-head h2 {
   font-size: 13px;
   font-weight: 700;

@@ -75,8 +75,11 @@ watchEffect(() => {
   document.body.classList.toggle("view-dashboard", dashboardView);
 });
 
-// Every mount above renders synchronously, so by this line the shell DOM is in
-// place and app.ts's bindElements() can find what it needs.
+// Deliberately last, and deliberately dynamic. app.ts calls refresh() at module
+// scope and registers the action table; both must land after every mount above
+// has subscribed to the store, or the first refresh writes into a store nobody
+// is listening to yet. (This is no longer about DOM lookups -- see the ORDER
+// note at the top: bindElements()/dom.ts are gone.)
 void import("./app.ts").catch((err: unknown) => {
   console.error("Failed to boot the legacy application shell.", err);
 });

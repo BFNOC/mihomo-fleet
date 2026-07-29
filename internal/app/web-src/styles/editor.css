@@ -39,7 +39,9 @@
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: #f8f7f3;
+  /* Was a hardcoded #f8f7f3 that didn't equal any token, so the editor
+     surface sat off the paper family and ignored the oklch token block. */
+  background: var(--panel);
   font: 12px/1.5 var(--mono);
   tab-size: 2;
 }

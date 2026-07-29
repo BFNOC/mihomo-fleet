@@ -74,18 +74,18 @@
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
 }
 
+/* Must stay AFTER .port-row:focus-within above: same (0,2,0) specificity, so
+   source order alone decides which border-color wins, and a selected row must
+   keep looking selected while something inside it holds focus. This is why the
+   rule is not consolidated into shell.css with its byte-identical twin
+   .profile-row.active -- shell.css is imported second, which loses. */
 .port-row.active {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   background: var(--accent-soft);
 }
 
-.port-row-name,
-.port-address {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* .port-row-name/.port-address's truncation quad lives in shell.css now (see
+   the .profile-row-main comment there). */
 
 .port-row-name {
   font-weight: 700;

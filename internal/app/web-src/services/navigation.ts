@@ -67,6 +67,15 @@ export function showCreate(): boolean {
     return false;
   }
   if (!confirmDiscardChanges("新建实例")) return false;
+  if (store.view === "profiles") {
+    // Matches selectInstance's (~47-48) and openDashboard's (~85-86) discard
+    // paths: the profile editor's dirty flags are not this module's state, but
+    // hasUnsavedChanges()/beforeunload read them, so leaving them set after the
+    // user already agreed to discard makes every later navigation re-prompt
+    // "有未保存的修改…" for a discard that already happened.
+    store.profileFormDirty = false;
+    store.profileConfigDirty = false;
+  }
   if (hasUnsavedChanges()) clearActiveDetailCache();
   store.view = "instances";
   store.creating = true;

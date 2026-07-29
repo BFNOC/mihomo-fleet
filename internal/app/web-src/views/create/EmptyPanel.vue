@@ -2,13 +2,13 @@
 // Vue replacement for the inner content of <section id="emptyPanel">
 // (index.html:171-176), plus two small pieces of app.ts that only ever
 // touch this panel's one button:
-//   - renderPanels()'s #emptyCreate text (app.ts:425): "创建第一个实例" once
+//   - renderPanels()'s #emptyCreate text (pre-Vue app.ts): "创建第一个实例" once
 //     at least one profile exists, "先创建配置档" while there are none. The
 //     button opens the same create flow either way -- showCreate() itself
 //     redirects to the profile manager with an error message when there are
-//     no profiles yet (app.ts:846-851), so this label is purely a hint, not
+//     no profiles yet (pre-Vue app.ts), so this label is purely a hint, not
 //     a different action.
-//   - updateBulkControls()'s #emptyCreate disabled state (app.ts:405).
+//   - updateBulkControls()'s #emptyCreate disabled state (pre-Vue app.ts).
 //     SideBar.vue's top comment notes this is intentionally not reproduced
 //     there, since #emptyCreate belongs to this panel, not the shell.
 //

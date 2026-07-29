@@ -108,7 +108,7 @@ export function chainSummary(
   return chain.map((name) => chainLabel(item, name)).join(" -> ");
 }
 
-export function chainLabel(
+function chainLabel(
   item: Pick<FleetInstance, "selectedProxies" | "selectedGroup" | "selectedProxy">,
   name: string,
 ): string {
@@ -129,7 +129,7 @@ export function chainToText(values: string[] | null | undefined): string {
   return Array.isArray(values) ? values.join("\n") : "";
 }
 
-export function proxyBindAddresses(
+function proxyBindAddresses(
   item: Partial<Pick<FleetInstance, "proxyBind">> | null | undefined,
 ): string[] {
   const values = String(item?.proxyBind || defaultProxyBind)
@@ -152,18 +152,18 @@ export function proxyPortLabel(port: unknown): number | string {
   return proxyPort(port) || "未分配";
 }
 
-export function formatProxyHost(host: string): string {
+function formatProxyHost(host: string): string {
   const value = String(host || defaultProxyBind).trim();
   return value.includes(":") && !value.startsWith("[") ? `[${value}]` : value;
 }
 
-export function proxyEndpoint(port: unknown, host: string = defaultProxyBind): string {
+function proxyEndpoint(port: unknown, host: string = defaultProxyBind): string {
   const value = proxyPort(port);
   if (!value) return "";
   return `${formatProxyHost(host)}:${value}`;
 }
 
-export function proxyEndpoints(
+function proxyEndpoints(
   item: Partial<Pick<FleetInstance, "mixedPort" | "proxyBind">> | null | undefined,
 ): string[] {
   const port = proxyPort(item?.mixedPort);
@@ -178,7 +178,7 @@ export function proxyEndpointText(
   return endpoints.length ? endpoints.join("，") : "端口未分配";
 }
 
-export function proxyEnvExports(http: string, socks: string): string {
+function proxyEnvExports(http: string, socks: string): string {
   return [
     `export HTTP_PROXY='${http}'`,
     `export HTTPS_PROXY='${http}'`,
@@ -190,7 +190,7 @@ export function proxyEnvExports(http: string, socks: string): string {
 }
 
 /** A rendered proxy-copy button: proxyCopyDefs's static def plus the runtime value/message to copy. */
-export interface ProxyCopyAction extends ProxyCopyActionDef {
+interface ProxyCopyAction extends ProxyCopyActionDef {
   value: string;
   message?: string;
 }
@@ -246,7 +246,7 @@ export function proxyLabelSources(
 }
 
 /** Result of peeling a known profile/instance name prefix off a raw proxy name. */
-export interface ProxyLabelSplit {
+interface ProxyLabelSplit {
   source: string;
   name: string;
 }
@@ -265,7 +265,7 @@ export function splitProxyLabel(name: string, sources: string[]): ProxyLabelSpli
 }
 
 /** Mirrors internal/app/manager.go's InstanceBatchError. */
-export interface BatchActionError {
+interface BatchActionError {
   id?: string;
   name?: string;
   error: string;
@@ -303,7 +303,7 @@ export function formatBatchMessage(action: string, payload: BatchActionPayload):
   return text;
 }
 
-export function isBuiltInProxy(name: string): boolean {
+function isBuiltInProxy(name: string): boolean {
   const text = String(name || "");
   return ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL"].includes(text.toUpperCase());
 }
@@ -323,7 +323,7 @@ export function isSelectableProxyGroup(group: Pick<FleetProxyGroup, "type"> | nu
   return type !== "relay";
 }
 
-export function alignProxyNamesToProfileOrder(
+function alignProxyNamesToProfileOrder(
   names: string[],
   profileGroup: Pick<FleetProxyGroup, "all"> | null | undefined,
 ): string[] {

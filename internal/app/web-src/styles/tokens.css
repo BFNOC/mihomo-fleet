@@ -21,6 +21,10 @@
   --warn-soft: #f7edd6;
   --danger: #c24735;
   --danger-soft: #f8e3de;
+  /* Darker than --danger: --danger is tuned for decorative use (orbs, dots,
+     borders) and fails 4.5:1 as text on --danger-soft, mirroring why
+     --warn-text exists alongside --warn. */
+  --danger-text: #99402e;
   --on-accent: #f7fffc;
   --shadow-sm: 0 1px 2px rgba(28, 36, 33, 0.04);
   --shadow: 0 8px 28px rgba(28, 36, 33, 0.06);

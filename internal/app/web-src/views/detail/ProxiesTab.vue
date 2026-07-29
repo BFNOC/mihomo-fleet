@@ -17,7 +17,15 @@ import { activeInstance } from "../../state.ts";
 import { currentLatencyTarget, normalizeStoredLatencyTimeout, normalizeStoredLatencyUrl } from "../../format.ts";
 import { useTabPolling } from "./useTabPolling.ts";
 import { useProxyTooltip } from "./use-proxy-tooltip.ts";
-import { displayGroups, filterText, loadError, proxySourceText, refreshProxies, selectProxy } from "./proxy-groups.ts";
+import {
+  displayGroups,
+  filterText,
+  loadError,
+  proxiesLoading,
+  proxySourceText,
+  refreshProxies,
+  selectProxy,
+} from "./proxy-groups.ts";
 
 const selected = computed(() => activeInstance(store));
 const isActiveTab = computed(() => store.activeTab === "proxies");
@@ -81,6 +89,7 @@ useTabPolling(isActiveTab, computed(() => selected.value?.id || ""), refreshProx
             <strong>{{ entry.group.name }}</strong>
             <div class="proxy-group-meta">
               <span>{{ entry.group.now ? `当前 ${entry.group.now}` : `${entry.count} 个节点` }}</span>
+              <span v-if="entry.pending" class="latency-chip running">切换中</span>
               <span v-if="entry.chips.length" class="latency-chips current">
                 <span v-for="chip in entry.chips" :key="chip.kind" :class="chip.className" :title="chip.title" :aria-label="chip.title">{{ chip.text }}</span>
               </span>
@@ -97,10 +106,10 @@ useTabPolling(isActiveTab, computed(() => selected.value?.id || ""), refreshProx
               type="button"
               class="proxy-choice"
               :class="{ selected: entry.group.now === proxy.name }"
-              :disabled="!entry.selectable"
+              :disabled="!entry.selectable || entry.pending"
               :aria-label="proxy.name"
               :aria-pressed="entry.selectable ? (entry.group.now === proxy.name ? 'true' : 'false') : undefined"
-              @click="entry.selectable && selectProxy(entry.group.name, proxy.name)"
+              @click="entry.selectable && !entry.pending && selectProxy(entry.group.name, proxy.name)"
               @pointerenter="showTooltipFromPointer($event, proxy.name)"
               @pointerleave="hideTooltip"
               @focus="showTooltip($event.currentTarget as HTMLElement, proxy.name)"
@@ -112,7 +121,8 @@ useTabPolling(isActiveTab, computed(() => selected.value?.id || ""), refreshProx
           </div>
         </section>
         <div v-if="!displayGroups.length && store.proxyGroups.length" class="warning">没有匹配的节点。</div>
-        <div v-if="!store.proxyGroups.length" class="warning">没有可显示的节点组。使用 proxy-providers 的订阅需要启动实例后读取 mihomo 运行态节点。</div>
+        <div v-if="!store.proxyGroups.length && proxiesLoading" class="warning">正在加载节点组。</div>
+        <div v-else-if="!store.proxyGroups.length" class="warning">没有可显示的节点组。使用 proxy-providers 的订阅需要启动实例后读取 mihomo 运行态节点。</div>
       </template>
     </div>
   </section>
