@@ -3,3 +3,17 @@ packages:
 
 allowBuilds:
   esbuild: true
+
+# node_modules/ 位于 virtiofs 共享目录，macOS 宿主与 Linux 虚拟机共用同一份。
+# rollup 和 esbuild 的原生二进制走 optionalDependencies 按平台分发，pnpm 默认只装
+# 当前平台那一份并剪掉其它——于是谁最后 install，另一边就报
+# "Cannot find module @rollup/rollup-<os>-<cpu>"。这里让两边的二进制同时落盘。
+# current 是给 CI 的（ubuntu-latest 是 linux/x64）。
+supportedArchitectures:
+  os:
+    - darwin
+    - linux
+    - current
+  cpu:
+    - arm64
+    - current
