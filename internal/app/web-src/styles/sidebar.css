@@ -74,6 +74,10 @@
   font-size: 12.5px;
 }
 
+.instance-search {
+  margin-top: 12px;
+}
+
 .content {
   padding: 18px 20px 28px;
   overflow: auto;

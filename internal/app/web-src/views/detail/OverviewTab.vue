@@ -214,14 +214,14 @@ const overviewSelection = computed(() => (selected.value ? selectionSummary(sele
           <span>混合端口</span>
           <input id="editMixedPort" type="number" min="1" max="65535" v-model="editMixedPort" @input="markDirty">
         </label>
-        <div class="stacked">
-          <span>代理绑定地址</span>
-          <ProxyBindField v-model="editProxyBind" input-id="editProxyBind" @dirty="markDirty" />
-        </div>
         <label>
           <span>控制端口</span>
           <input id="editControllerPort" type="number" min="1" max="65535" v-model="editControllerPort" @input="markDirty">
         </label>
+        <div class="stacked proxy-bind-row">
+          <span>代理绑定地址</span>
+          <ProxyBindField v-model="editProxyBind" input-id="editProxyBind" @dirty="markDirty" />
+        </div>
       </div>
       <div id="editChainFields" class="chain-fields" :class="{ hidden: !showChainFields }">
         <div class="stacked">
@@ -238,7 +238,7 @@ const overviewSelection = computed(() => (selected.value ? selectionSummary(sele
           <ChainOrderField v-model="editChain" :candidates="chainCandidates.state" @dirty="markDirty" />
         </div>
       </div>
-      <button id="saveBasics" type="button" :disabled="!selected || saving" @click="saveBasics">保存基础信息</button>
+      <button id="saveBasics" class="save-basics" type="button" :disabled="!selected || saving" @click="saveBasics">保存基础信息</button>
     </section>
   </div>
 </template>

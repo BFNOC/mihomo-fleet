@@ -125,6 +125,14 @@
 }
 
 @media (max-width: 520px) {
+  .proxy-bind-control {
+    grid-template-columns: 1fr;
+  }
+
+  .proxy-bind-select {
+    justify-self: start;
+  }
+
   .topbar-tools,
   .profile-manager-head,
   .profile-editor-head,

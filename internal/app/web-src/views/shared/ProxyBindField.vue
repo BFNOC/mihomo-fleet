@@ -50,20 +50,22 @@ function removeAt(index: number): void {
 </script>
 
 <template>
-  <div class="picker-field">
-    <div class="field-chips" role="list">
-      <span v-for="(address, index) in selected" :key="`${address}-${index}`" class="field-chip" role="listitem">
-        <span class="chip-text">{{ address }}</span>
-        <button
-          type="button"
-          class="chip-remove"
-          :aria-label="`移除 ${address}`"
-          :disabled="selected.length < 2"
-          :title="selected.length < 2 ? '至少保留一个绑定地址' : '移除'"
-          @click="removeAt(index)"
-        >×</button>
-      </span>
-      <button type="button" class="chip-add" :aria-expanded="pickerOpen" @click="pickerOpen = true">
+  <div class="picker-field proxy-bind-picker">
+    <div class="proxy-bind-control">
+      <div class="field-chips proxy-bind-chips" role="list">
+        <span v-for="(address, index) in selected" :key="`${address}-${index}`" class="field-chip" role="listitem">
+          <span class="chip-text">{{ address }}</span>
+          <button
+            type="button"
+            class="chip-remove"
+            :aria-label="`移除 ${address}`"
+            :disabled="selected.length < 2"
+            :title="selected.length < 2 ? '至少保留一个绑定地址' : '移除'"
+            @click="removeAt(index)"
+          >×</button>
+        </span>
+      </div>
+      <button type="button" class="proxy-bind-select" :aria-expanded="pickerOpen" @click="pickerOpen = true">
         选择网卡
       </button>
     </div>

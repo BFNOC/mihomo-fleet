@@ -276,12 +276,21 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.form-grid.two > .proxy-bind-row {
+  grid-column: 1 / -1;
+}
+
+.save-basics {
+  display: block;
+  margin-left: auto;
+}
+
 label,
 .stacked {
   display: grid;
   gap: 6px;
-  /* Grid's default stretch tears a label from its control whenever a taller
-     sibling shares the row (混合端口 next to 代理绑定地址); pack to the top. */
+  /* Keep labels and controls packed together when a grid row contains fields
+     with different intrinsic heights. */
   align-content: start;
 }
 

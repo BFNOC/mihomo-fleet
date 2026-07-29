@@ -275,14 +275,14 @@ function cancel(): void {
       <span>混合端口</span>
       <input id="createMixedPort" v-model="form.mixedPort" type="number" min="1" max="65535" :placeholder="mixedPortPlaceholder" @input="markCreateDirty">
     </label>
-    <div class="stacked">
-      <span>代理绑定地址</span>
-      <ProxyBindField v-model="form.proxyBind" input-id="createProxyBind" @dirty="markCreateDirty" />
-    </div>
     <label>
       <span>控制端口</span>
       <input id="createControllerPort" v-model="form.controllerPort" type="number" min="1" max="65535" :placeholder="controllerPortPlaceholder" @input="markCreateDirty">
     </label>
+    <div class="stacked proxy-bind-row">
+      <span>代理绑定地址</span>
+      <ProxyBindField v-model="form.proxyBind" input-id="createProxyBind" @dirty="markCreateDirty" />
+    </div>
   </div>
   <div id="createChainFields" class="chain-fields" :class="{ hidden: !isChainMode }">
     <div class="stacked">

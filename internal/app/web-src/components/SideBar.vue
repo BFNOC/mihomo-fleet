@@ -143,7 +143,7 @@ function copyUnavailableSuffix(value: string): string {
        `label, .stacked` rule in workbench.css) is what makes a bare <input>,
        otherwise inline-block, span the sidebar's full width like every other
        control here, with no new CSS rule needed. -->
-  <label v-if="store.instances.length">
+  <label v-if="store.instances.length" class="instance-search">
     <input
       id="instanceSearch"
       v-model="instanceSearch"
