@@ -17,6 +17,7 @@
 // stays a single always-mounted component, same as TopBar/SideBar/
 // MessageBanner (and, now, CreatePanel.vue too).
 import { computed } from "vue";
+import BrandMark from "../../components/BrandMark.vue";
 import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
 
@@ -25,7 +26,7 @@ const disabled = computed(() => store.bulkRunning);
 </script>
 
 <template>
-  <div class="empty-mark" aria-hidden="true">MF</div>
+  <div class="empty-mark" aria-hidden="true"><BrandMark /></div>
   <h2>还没有实例</h2>
   <p>创建一个本地 mihomo 实例。Fleet 会分配端口、写入运行配置，并让控制器绑定到本机回环地址。</p>
   <button id="emptyCreate" class="primary" type="button" :disabled="disabled" @click="actions.showCreate()">{{ label }}</button>

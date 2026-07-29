@@ -1,0 +1,20 @@
+<!-- Standalone copy of components/BrandMark.vue's fleet glyph with the .mark
+     tile baked in. Colors are tokens.css values resolved by hand (XML comments
+     cannot hold a CSS custom-property name, its double hyphen is illegal here):
+     #2b9884 is color-mix(in srgb, accent 88%, surface), #0b6b5b is
+     accent-strong, #f7fffc is on-accent. Keep in sync with BrandMark.vue when
+     the glyph changes. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.7" y2="1">
+      <stop offset="0" stop-color="#2b9884"/>
+      <stop offset="1" stop-color="#0b6b5b"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#tile)"/>
+  <g fill="#f7fffc" transform="translate(8 8) scale(2)">
+    <path d="M11.5 6.9L20 12L11.5 17.1L13.9 12Z"/>
+    <path d="M4.2 2.4L9.8 5.8L4.2 9.2L5.8 5.8Z"/>
+    <path d="M4.2 14.8L9.8 18.2L4.2 21.6L5.8 18.2Z"/>
+  </g>
+</svg>

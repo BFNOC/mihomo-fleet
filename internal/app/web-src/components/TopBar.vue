@@ -9,6 +9,7 @@
 //     function but belongs to the sidebar, migrated separately.
 //   - renderSelector() (pre-Vue app.ts) in full.
 import { computed, nextTick } from "vue";
+import BrandMark from "./BrandMark.vue";
 import { store } from "../store.ts";
 import { actions, chrome } from "../bridge.ts";
 import { activeInstance } from "../state.ts";
@@ -67,7 +68,7 @@ async function onInstanceChange(event: Event): Promise<void> {
 
 <template>
   <div class="brand">
-    <div class="mark" aria-hidden="true">MF</div>
+    <div class="mark" aria-hidden="true"><BrandMark /></div>
     <div class="brand-copy">
       <h1>Mihomo Fleet</h1>
       <p>{{ systemLineText }}</p>
