@@ -126,6 +126,15 @@ function profileLabel(profile: FleetProfile): string {
   return profileOptionLabel(profile, profileReferenceCount(store, profile.id));
 }
 
+// Mirrors OverviewTab.vue's markDirty()/ProfileFormFields.vue's
+// markProfileFormDirty(): an explicit per-field handler rather than a deep
+// watch on `form`, so navigation.ts's hasUnsavedChanges() (and therefore
+// selectInstance()/showCreate()'s discard prompts) knows this form has
+// content worth confirming before it is thrown away.
+function markCreateDirty(): void {
+  store.createDirty = true;
+}
+
 async function loadSuggestedPorts(): Promise<void> {
   // Mirrors the early return at pre-Vue app.ts. Always false right after a
   // reset (both fields are cleared below before this runs) -- kept for
@@ -144,6 +153,13 @@ async function loadSuggestedPorts(): Promise<void> {
 watch(
   () => store.creating,
   (creating) => {
+    // Clears on both edges: opening starts from a blank (not-yet-dirty) form,
+    // and closing -- cancel or a successful createInstance() -- means there is
+    // nothing left this flag should still be protecting. Done here rather than
+    // at cancelCreate()/createInstance() (services/instances.ts, not this
+    // component's file) because every store.creating = false transition,
+    // wherever it originates, routes through this watcher.
+    store.createDirty = false;
     if (!creating) return;
     form.name = "";
     form.profileId = store.profiles[0]?.id ?? "";
@@ -215,11 +231,11 @@ function cancel(): void {
   <div class="form-grid two">
     <label>
       <span>名称</span>
-      <input id="createName" v-model="form.name" placeholder="香港网关">
+      <input id="createName" v-model="form.name" placeholder="香港网关" @input="markCreateDirty">
     </label>
     <label>
       <span>配置档</span>
-      <select id="createProfile" v-model="form.profileId" :disabled="!hasProfiles">
+      <select id="createProfile" v-model="form.profileId" :disabled="!hasProfiles" @change="markCreateDirty">
         <option v-for="profile in store.profiles" :key="profile.id" :value="profile.id">{{ profileLabel(profile) }}</option>
       </select>
     </label>
@@ -231,7 +247,7 @@ function cancel(): void {
   <div class="form-grid two">
     <label>
       <span>实例模式</span>
-      <select id="createMode" v-model="form.mode">
+      <select id="createMode" v-model="form.mode" @change="markCreateDirty">
         <option value="rule">规则分流</option>
         <option value="global-chain">全局链式</option>
       </select>
@@ -240,25 +256,25 @@ function cancel(): void {
   <div class="form-grid two">
     <label>
       <span>混合端口</span>
-      <input id="createMixedPort" v-model="form.mixedPort" type="number" min="1" max="65535" :placeholder="mixedPortPlaceholder">
+      <input id="createMixedPort" v-model="form.mixedPort" type="number" min="1" max="65535" :placeholder="mixedPortPlaceholder" @input="markCreateDirty">
     </label>
     <label>
       <span>代理绑定地址</span>
-      <input id="createProxyBind" v-model="form.proxyBind" placeholder="127.0.0.1">
+      <input id="createProxyBind" v-model="form.proxyBind" placeholder="127.0.0.1" @input="markCreateDirty">
     </label>
     <label>
       <span>控制端口</span>
-      <input id="createControllerPort" v-model="form.controllerPort" type="number" min="1" max="65535" :placeholder="controllerPortPlaceholder">
+      <input id="createControllerPort" v-model="form.controllerPort" type="number" min="1" max="65535" :placeholder="controllerPortPlaceholder" @input="markCreateDirty">
     </label>
   </div>
   <div id="createChainFields" class="chain-fields" :class="{ hidden: !isChainMode }">
     <label class="stacked">
       <span>本地节点 YAML</span>
-      <textarea id="createLocalProxies" v-model="form.localProxies" class="compact-code" spellcheck="false" wrap="off" placeholder="- name: local-hop"></textarea>
+      <textarea id="createLocalProxies" v-model="form.localProxies" class="compact-code" spellcheck="false" wrap="off" placeholder="- name: local-hop" @input="markCreateDirty"></textarea>
     </label>
     <label class="stacked">
       <span>链路顺序</span>
-      <textarea id="createChain" v-model="form.chain" class="compact-code" spellcheck="false" wrap="off" placeholder="local-hop&#10;节点选择"></textarea>
+      <textarea id="createChain" v-model="form.chain" class="compact-code" spellcheck="false" wrap="off" placeholder="local-hop&#10;节点选择" @input="markCreateDirty"></textarea>
     </label>
   </div>
   <div class="actions">

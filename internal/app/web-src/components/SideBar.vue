@@ -18,7 +18,7 @@
 // 544-547, 609-620). Those exist only so a full `innerHTML = ""` repaint can
 // fake focus/DOM-identity preservation; Vue's keyed v-for does that natively,
 // so none of that machinery has a job left to do here.
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { store } from "../store.ts";
 import { actions, chrome } from "../bridge.ts";
 import { activeInstance } from "../state.ts";
@@ -73,6 +73,29 @@ function selectionSuffix(item: FleetInstance): string {
   return text !== "无" ? ` · ${text}` : "";
 }
 
+// Filters #instanceList only -- the port matrix below is a fleet-wide
+// reference table (its own count header says so), not a second copy of the
+// same list, so narrowing it along with the search box would hide ports the
+// user may still want to see.
+const instanceSearch = ref("");
+
+// Everything a row actually prints (name, status, port, profile) is fair
+// search game -- a fleet grows past "scan it visually" quickly, and a user
+// who remembers "the stopped one" or "port 7890" shouldn't have to remember
+// the name too.
+function instanceHaystack(item: FleetInstance): string {
+  return [item.name, profileLabel(item), statusText(item.status), proxyPortLabel(item.mixedPort)]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+const filteredInstances = computed(() => {
+  const needle = instanceSearch.value.trim().toLowerCase();
+  if (!needle) return store.instances;
+  return store.instances.filter((item) => instanceHaystack(item).includes(needle));
+});
+
 // Mirrors renderPortMatrix()'s per-row copy-tool actions (pre-Vue app.ts).
 function copyActionsFor(item: FleetInstance) {
   return proxyPort(item.mixedPort) ? proxyCopyActions(item) : proxyCopyPlaceholders();
@@ -114,9 +137,27 @@ function copyUnavailableSuffix(value: string): string {
        this element and MessageBanner.vue uses for #message. -->
   <div id="systemWarning" class="warning" :class="{ hidden: !systemWarningText }">{{ systemWarningText }}</div>
 
+  <!-- Bare <label>, no caption: matches DashboardConnections.vue's search box
+       (aria-label + placeholder carry the meaning there too). The wrapper
+       itself is not decorative -- label's block/grid display (the bare
+       `label, .stacked` rule in workbench.css) is what makes a bare <input>,
+       otherwise inline-block, span the sidebar's full width like every other
+       control here, with no new CSS rule needed. -->
+  <label v-if="store.instances.length">
+    <input
+      id="instanceSearch"
+      v-model="instanceSearch"
+      type="search"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="搜索实例名称、状态、端口或配置档"
+      aria-label="搜索实例"
+    >
+  </label>
+
   <div id="instanceList" class="instance-list">
     <button
-      v-for="item in store.instances"
+      v-for="item in filteredInstances"
       :key="item.id"
       type="button"
       class="instance-row"
@@ -130,6 +171,12 @@ function copyUnavailableSuffix(value: string): string {
       </div>
       <div class="row-meta">混合端口 {{ proxyPortLabel(item.mixedPort) }} · {{ profileLabel(item) }}{{ selectionSuffix(item) }}</div>
     </button>
+    <!-- instanceSearch.trim() in the guard (not just !filteredInstances.length)
+         keeps this from firing when the fleet itself is empty -- that case has
+         its own empty state elsewhere (the non-shell #emptyCreate panel; see
+         this file's header comment), and "没有匹配的实例" would misdescribe it
+         as a search with no results. -->
+    <p v-if="!filteredInstances.length && instanceSearch.trim()" class="port-empty">没有匹配的实例</p>
   </div>
 
   <section class="port-matrix" aria-labelledby="portMatrixTitle">

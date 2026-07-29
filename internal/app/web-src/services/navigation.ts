@@ -1,4 +1,4 @@
-import { actions, showMessage } from "../bridge.ts";
+import { actions, chrome, showMessage } from "../bridge.ts";
 import { store } from "../store.ts";
 import { clearLatencyStateForInstance } from "../state.ts";
 import { profileOperationRunning } from "./profile-gates.ts";
@@ -10,11 +10,12 @@ import { sampleFleetTraffic } from "./polling.ts";
 
 /**
  * store.editDirty is the instance edit form (OverviewTab.vue); the two profile
- * flags belong to ProfileManagerView.vue. None of the three is set from this
- * module, but beforeunload and every guard below need the combined signal.
+ * flags belong to ProfileManagerView.vue; createDirty is the "新建实例" form
+ * (CreatePanel.vue). None of the four is set from this module, but
+ * beforeunload and every guard below need the combined signal.
  */
 export function hasUnsavedChanges(): boolean {
-  return store.editDirty || store.profileFormDirty || store.profileConfigDirty;
+  return store.editDirty || store.profileFormDirty || store.profileConfigDirty || store.createDirty;
 }
 
 export function confirmDiscardChanges(action: string): boolean {
@@ -34,6 +35,16 @@ export function clearActiveDetailCache(): void {
 }
 
 export function selectInstance(id: string): boolean {
+  // Mirrors the chrome.profileBusy gate every function in
+  // views/profiles/profile-navigation.ts opens with. Without it, picking an
+  // instance mid save/delete/refresh-subscription flips store.view away from
+  // "profiles" before the request resolves; operationContextMatches()
+  // requires view === "profiles" to apply the result, so the success/error
+  // message is dropped silently and (for delete) the store never learns the
+  // profile is gone until the next poll. Gating here covers every caller
+  // (SideBar.vue's rows, TopBar.vue's instance selector, the dashboard's
+  // openInstanceWorkbench()), not just one template.
+  if (chrome.profileBusy) return false;
   if (store.activeId !== id || store.view === "profiles") {
     if (!confirmDiscardChanges("切换实例")) {
       return false;

@@ -1413,8 +1413,15 @@ func TestStoreApplySubscriptionFetchForURLRollsBackOnSaveFailure(t *testing.T) {
 	breakStoreSaves(t, dir)
 
 	nextFetched := &subscriptionFetchResult{Config: defaultUserConfig, HomeURL: "https://example.com/new-home"}
-	if _, err := store.ApplySubscriptionFetchForURL(profile.ID, "https://example.com/sub", nextFetched); err == nil {
+	_, changes, err := store.ApplySubscriptionFetchForURL(profile.ID, "https://example.com/sub", nextFetched)
+	if err == nil {
 		t.Fatal("expected ApplySubscriptionFetchForURL to fail when saveLocked cannot persist instances.json")
+	}
+	// BUG 2: a rolled-back refresh must not report selection changes that
+	// were undone along with everything else -- see the matching comment at
+	// ApplySubscriptionFetchForURL's rollback branch in store.go.
+	if changes != nil {
+		t.Fatalf("changes = %#v, want nil on a rolled-back apply", changes)
 	}
 
 	gotProfile, ok := store.GetProfile(profile.ID)
@@ -1773,7 +1780,7 @@ func TestStoreReplaceProfileSubscriptionPersistsURLAndConfig(t *testing.T) {
 		HomeURL: "https://example.com/new-home",
 		Info:    &SubscriptionInfo{Total: 500},
 	}
-	updated, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/new", fetched)
+	updated, _, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/new", fetched)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1849,7 +1856,7 @@ func TestStoreReplaceProfileSubscriptionRollsBackOnSaveFailure(t *testing.T) {
 	breakStoreSaves(t, dir)
 
 	fetched := &subscriptionFetchResult{Config: subscriptionConfig, HomeURL: "https://example.com/new-home"}
-	if _, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/new", fetched); err == nil {
+	if _, _, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/new", fetched); err == nil {
 		t.Fatal("expected ReplaceProfileSubscription to fail when saveLocked cannot persist instances.json")
 	}
 

@@ -16,6 +16,7 @@ import { chrome } from "../../bridge.ts";
 import YamlCodeEditor from "./YamlCodeEditor.vue";
 import ProfileCatalog from "./ProfileCatalog.vue";
 import ProfileFormFields from "./ProfileFormFields.vue";
+import ProfileReferenceList from "./ProfileReferenceList.vue";
 import { activeProfile, hasEditor, isSubscription, references } from "./profile-context.ts";
 import {
   configEditorErrorText,
@@ -98,6 +99,7 @@ const deleteHintText = computed(() =>
           <div id="configEditorError" class="config-editor-error" :class="{ hidden: !configEditorErrorText && !editorLoadErrorText }" role="alert">{{ editorLoadErrorText || configEditorErrorText }}</div>
         </div>
         <p id="profileDeleteHint" class="profile-delete-hint">{{ deleteHintText }}</p>
+        <ProfileReferenceList v-if="references > 0" />
         <div class="profile-editor-actions">
           <button id="saveProfile" class="primary" type="button" :disabled="saveDisabled" @click="saveProfile">保存配置档</button>
           <button id="deleteProfile" class="danger" type="button" :class="{ hidden: store.profileCreating }" :disabled="deleteDisabled" @click="deleteProfile">删除配置档</button>

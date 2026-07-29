@@ -117,6 +117,12 @@ useTabPolling(isActiveTab, computed(() => selected.value?.id || ""), refreshProx
             >
               <span class="proxy-name">{{ proxy.label }}</span>
               <span v-if="proxy.source" class="proxy-source">{{ proxy.source }}</span>
+              <span
+                v-if="proxy.latencyChip"
+                :class="proxy.latencyChip.className"
+                :title="proxy.latencyChip.title"
+                :aria-label="proxy.latencyChip.title"
+              >{{ proxy.latencyChip.text }}</span>
             </button>
           </div>
         </section>

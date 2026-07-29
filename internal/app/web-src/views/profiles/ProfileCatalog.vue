@@ -2,12 +2,22 @@
 // Left-hand profile list. Replaces the pre-Vue renderProfileList().
 import { store } from "../../store.ts";
 import { chrome } from "../../bridge.ts";
-import { profileReferenceCount } from "../../state.ts";
+import { profileReferences } from "../../state.ts";
 import { selectProfile } from "./profile-navigation.ts";
 
 function referenceLabel(profileId: string): string {
-  const count = profileReferenceCount(store, profileId);
+  const count = profileReferences(store, profileId).length;
   return count > 0 ? `${count} 个实例` : "未使用";
+}
+
+// The whole row is a <button> (below), so a per-instance jump target can't
+// nest inside it -- nested interactive controls are invalid HTML and would
+// also fight the row's own click handler. A tooltip is the safe middle
+// ground: it still answers "which instances" without needing ProfileFormFields
+// .vue's editor pane, where ProfileReferenceList.vue's clickable chips live.
+function referenceNamesTitle(profileId: string): string {
+  const names = profileReferences(store, profileId).map((instance) => instance.name || instance.id);
+  return names.length ? `引用实例：${names.join("、")}` : "";
 }
 
 function isCurrent(profileId: string): boolean {
@@ -34,7 +44,7 @@ function isCurrent(profileId: string): boolean {
         @click="selectProfile(profile.id)"
       >
         <span class="profile-row-main">{{ profile.name || "未命名配置档" }}</span>
-        <span class="profile-row-meta">{{ profile.subscriptionUrl ? "订阅配置" : "手写配置" }} · {{ referenceLabel(profile.id) }}</span>
+        <span class="profile-row-meta" :title="referenceNamesTitle(profile.id)">{{ profile.subscriptionUrl ? "订阅配置" : "手写配置" }} · {{ referenceLabel(profile.id) }}</span>
         <code class="profile-row-id">{{ profile.id }}</code>
       </button>
       <p v-if="!store.profiles.length" class="profile-list-empty">还没有配置档。</p>

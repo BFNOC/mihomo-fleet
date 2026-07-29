@@ -2,7 +2,7 @@ import { store } from "../../store.ts";
 import { actions, chrome } from "../../bridge.ts";
 import type { SaveProfilePayload } from "../../bridge.ts";
 import { profileReferenceCount } from "../../state.ts";
-import type { ProfileCreateSource } from "../../state.ts";
+import type { FleetProfile, ProfileCreateSource } from "../../state.ts";
 import { canClearSavedProfileConfig } from "../../app-logic.ts";
 import {
   activeProfile,
@@ -26,6 +26,39 @@ import {
   setConfigEditorError,
 } from "./config-editor.ts";
 import { selectProfile } from "./profile-navigation.ts";
+
+// Optional field controller.go's "refresh" and URL-changing "save" responses
+// carry (store.go's SelectionReconciliation), present only when the fresh
+// subscription content dropped a node an instance had selected and the
+// backend silently re-picked a replacement -- previously a user could only
+// discover that days later by noticing a port's exit country had changed.
+// bridge.ts's saveProfile()/refreshSubscriptionProfile() are typed as
+// returning plain FleetProfile (bridge.ts is owned elsewhere, not widened
+// here), so this is read off the same response object via a cast at each
+// call site below rather than a bridge.ts change. Treated as absent-by-default
+// throughout: an older/unpatched backend simply omits the field, and
+// `describeSelectionChanges` below already no-ops on undefined/empty.
+interface SelectionReconciliation {
+  instanceId: string;
+  instanceName: string;
+  group: string;
+  vanishedProxy: string;
+  replacementGroup?: string;
+  replacementProxy?: string;
+}
+
+type ProfileWithSelectionChanges = FleetProfile & { selectionChanges?: SelectionReconciliation[] };
+
+function describeSelectionChanges(changes: SelectionReconciliation[] | undefined): string {
+  if (!changes?.length) return "";
+  const lines = changes.map((change) => {
+    const target = change.replacementProxy
+      ? `已自动切换到「${change.replacementGroup} / ${change.replacementProxy}」`
+      : "该实例已没有可用的已选节点，需要手动重新选择";
+    return `实例「${change.instanceName}」的「${change.group}」原节点「${change.vanishedProxy}」已从订阅中消失，${target}`;
+  });
+  return ` ${lines.join("；")}。`;
+}
 
 // The three profile mutations. services/profiles.ts owns the network call and
 // the mutual-exclusion gate; this module owns the pre/post-flight orchestration
@@ -75,7 +108,7 @@ export async function saveProfile(): Promise<void> {
   }
   saving.value = true;
   try {
-    const saved = await actions.saveProfile(payload);
+    const saved = await actions.saveProfile(payload) as ProfileWithSelectionChanges;
     if (!operationContextMatches(operationContext)) return;
     if (creating) advanceProfileContext();
     store.profileCreating = false;
@@ -98,7 +131,9 @@ export async function saveProfile(): Promise<void> {
     }
     actions.showMessage(creating
       ? "配置档已创建。"
-      : configMayChange ? "配置档已保存，引用它的运行中实例需要重启后生效。" : "配置档已保存。");
+      : configMayChange
+        ? `配置档已保存，引用它的运行中实例需要重启后生效。${describeSelectionChanges(saved.selectionChanges)}`
+        : "配置档已保存。");
     if (source === "subscription" && sameFormVersion && store.view === "profiles" && !store.profileCreating && store.activeProfileId === saved.id) {
       await loadProfileConfig(saved.id);
     }
@@ -165,9 +200,9 @@ export async function refreshSubscription(): Promise<void> {
   const operationContext = captureOperationContext(profile.id);
   refreshingSub.value = true;
   try {
-    const refreshed = await actions.refreshSubscriptionProfile(profile.id);
+    const refreshed = await actions.refreshSubscriptionProfile(profile.id) as ProfileWithSelectionChanges;
     if (!operationContextMatches(operationContext)) return;
-    actions.showMessage("订阅已更新。运行中的实例需要重启后使用新的缓存配置。");
+    actions.showMessage(`订阅已更新。运行中的实例需要重启后使用新的缓存配置。${describeSelectionChanges(refreshed.selectionChanges)}`);
     populateProfileForm(refreshed);
     await loadProfileConfig(refreshed.id);
   } catch (err) {

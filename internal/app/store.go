@@ -438,11 +438,11 @@ func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
 	return cloneProfile(profile), nil
 }
 
-func (s *Store) ApplySubscriptionFetch(id string, fetched *subscriptionFetchResult) (*Profile, error) {
+func (s *Store) ApplySubscriptionFetch(id string, fetched *subscriptionFetchResult) (*Profile, []SelectionReconciliation, error) {
 	return s.ApplySubscriptionFetchForURL(id, "", fetched)
 }
 
-func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *subscriptionFetchResult) (*Profile, error) {
+func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *subscriptionFetchResult) (*Profile, []SelectionReconciliation, error) {
 	// parseProfileProxyGroups only depends on fetched.Config, not on any
 	// Store state, so it is run here, before the write lock is taken. This
 	// is the single most expensive step of a subscription refresh (a full
@@ -463,28 +463,28 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 
 	profile, ok := s.profiles[id]
 	if !ok {
-		return nil, profileNotFoundError{id: id}
+		return nil, nil, profileNotFoundError{id: id}
 	}
 	if profile.SubscriptionURL == "" {
-		return nil, fmt.Errorf("profile %q is not a subscription profile", id)
+		return nil, nil, fmt.Errorf("profile %q is not a subscription profile", id)
 	}
 	if expectedURL != "" && profile.SubscriptionURL != expectedURL {
-		return nil, fmt.Errorf("profile %q subscription URL changed during update", id)
+		return nil, nil, fmt.Errorf("profile %q subscription URL changed during update", id)
 	}
 	if fetched == nil {
-		return nil, errors.New("fetched subscription is required")
+		return nil, nil, errors.New("fetched subscription is required")
 	}
 	if err := validateHomeURL(fetched.HomeURL); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	originalProfile := cloneProfile(profile)
 	previousConfig, err := os.ReadFile(profile.ConfigPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	itemSnapshots := s.snapshotProfileInstancesLocked(id)
 	if err := writeFileAtomic(profile.ConfigPath, []byte(fetched.Config), 0o600); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	configChanged := !bytes.Equal(previousConfig, []byte(fetched.Config))
 	now := time.Now().UTC()
@@ -500,17 +500,23 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	if configChanged {
 		s.markProfileConfigUpdatedLocked(id, now)
 	}
+	var changes []SelectionReconciliation
 	for _, item := range s.items {
 		if item.ProfileID == id && instanceMode(item.Mode) != InstanceModeGlobalChain {
-			reconcileInstanceSelection(item, validSelections)
+			if change := reconcileInstanceSelection(item, validSelections); change != nil {
+				changes = append(changes, *change)
+			}
 		}
 	}
 	if err := s.saveLocked(); err != nil {
 		*profile = *originalProfile
 		s.restoreInstanceSnapshotsLocked(itemSnapshots)
-		return nil, rollbackConfigFile(profile.ConfigPath, previousConfig, err)
+		// changes is discarded here (not returned) -- reconcileInstanceSelection's
+		// mutations were just rolled back above, so reporting them would
+		// describe a selection change that never actually took effect.
+		return nil, nil, rollbackConfigFile(profile.ConfigPath, previousConfig, err)
 	}
-	return cloneProfile(profile), nil
+	return cloneProfile(profile), changes, nil
 }
 
 // ReplaceProfileSubscription changes a subscription profile's URL and
@@ -530,16 +536,16 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 // (refreshProfileSubscription / the subscription scheduler) does not touch
 // the URL or reset metadata the same way, so it keeps calling
 // ApplySubscriptionFetchForURL directly.
-func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscriptionFetchResult) (*Profile, error) {
+func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscriptionFetchResult) (*Profile, []SelectionReconciliation, error) {
 	if fetched == nil {
-		return nil, errors.New("fetched subscription is required")
+		return nil, nil, errors.New("fetched subscription is required")
 	}
 	newURL = strings.TrimSpace(newURL)
 	if newURL == "" {
-		return nil, validationError{msg: "subscription URL must start with http:// or https://"}
+		return nil, nil, validationError{msg: "subscription URL must start with http:// or https://"}
 	}
 	if err := validateHomeURL(fetched.HomeURL); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// See ApplySubscriptionFetchForURL's matching comment above: the YAML
@@ -553,16 +559,16 @@ func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscript
 
 	profile, ok := s.profiles[id]
 	if !ok {
-		return nil, profileNotFoundError{id: id}
+		return nil, nil, profileNotFoundError{id: id}
 	}
 	originalProfile := cloneProfile(profile)
 	previousConfig, err := os.ReadFile(profile.ConfigPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	itemSnapshots := s.snapshotProfileInstancesLocked(id)
 	if err := writeFileAtomic(profile.ConfigPath, []byte(fetched.Config), 0o600); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	configChanged := !bytes.Equal(previousConfig, []byte(fetched.Config))
 
@@ -579,18 +585,25 @@ func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscript
 	if configChanged {
 		s.markProfileConfigUpdatedLocked(id, now)
 	}
+	var changes []SelectionReconciliation
 	for _, item := range s.items {
 		if item.ProfileID == id && instanceMode(item.Mode) != InstanceModeGlobalChain {
-			reconcileInstanceSelection(item, validSelections)
+			if change := reconcileInstanceSelection(item, validSelections); change != nil {
+				changes = append(changes, *change)
+			}
 		}
 	}
 
 	if err := s.saveLocked(); err != nil {
 		*profile = *originalProfile
 		s.restoreInstanceSnapshotsLocked(itemSnapshots)
-		return nil, rollbackConfigFile(profile.ConfigPath, previousConfig, err)
+		// changes is discarded here for the same reason as
+		// ApplySubscriptionFetchForURL above: the save failed, so
+		// restoreInstanceSnapshotsLocked just undid every selection change
+		// these summarize.
+		return nil, nil, rollbackConfigFile(profile.ConfigPath, previousConfig, err)
 	}
-	return cloneProfile(profile), nil
+	return cloneProfile(profile), changes, nil
 }
 
 func (s *Store) SetProfileUpdateError(id, message string) {
@@ -1405,16 +1418,51 @@ func profileSelectionSet(groups []ProfileProxyGroup) map[string]map[string]bool 
 	return out
 }
 
-func reconcileInstanceSelection(item *Instance, valid map[string]map[string]bool) {
+// SelectionReconciliation reports that a subscription refresh silently moved
+// an instance's active proxy selection because the node it had selected
+// (SelectedGroup/SelectedProxy) no longer exists in the refreshed content.
+// ReplacementGroup/ReplacementProxy are empty when no other selection was
+// available to take over, matching the "or that nothing did" case -- the
+// active selection was simply cleared. This never reports a group that was
+// dropped from item.SelectedProxies without also being the active selection;
+// those have no replacement concept to report (reconcileInstanceSelection
+// never re-picks for them), only the silent loss the bug report is about.
+type SelectionReconciliation struct {
+	InstanceID       string `json:"instanceId"`
+	InstanceName     string `json:"instanceName"`
+	Group            string `json:"group"`
+	VanishedProxy    string `json:"vanishedProxy"`
+	ReplacementGroup string `json:"replacementGroup,omitempty"`
+	ReplacementProxy string `json:"replacementProxy,omitempty"`
+}
+
+// reconcileInstanceSelection drops any per-group selection whose node no
+// longer exists in valid, then -- if that included the active selection --
+// re-picks a replacement from whatever per-group selections survived, sorted
+// alphabetically by group name and taking the first. The returned
+// *SelectionReconciliation is non-nil only when the active selection
+// actually changed, so a caller can tell a live exit node moved out from
+// under an instance instead of this happening silently; see the two Store
+// call sites below for where it's collected and only kept if the
+// surrounding save succeeds (a rolled-back refresh must not report changes
+// that never took effect).
+func reconcileInstanceSelection(item *Instance, valid map[string]map[string]bool) *SelectionReconciliation {
 	if item == nil || len(valid) == 0 {
-		return
+		return nil
 	}
 	for group, proxy := range item.SelectedProxies {
 		if !valid[group][proxy] {
 			delete(item.SelectedProxies, group)
 		}
 	}
+	var change *SelectionReconciliation
 	if item.SelectedGroup != "" && !valid[item.SelectedGroup][item.SelectedProxy] {
+		change = &SelectionReconciliation{
+			InstanceID:    item.ID,
+			InstanceName:  item.Name,
+			Group:         item.SelectedGroup,
+			VanishedProxy: item.SelectedProxy,
+		}
 		item.SelectedGroup = ""
 		item.SelectedProxy = ""
 		groups := make([]string, 0, len(item.SelectedProxies))
@@ -1426,12 +1474,15 @@ func reconcileInstanceSelection(item *Instance, valid map[string]map[string]bool
 			proxy := item.SelectedProxies[group]
 			item.SelectedGroup = group
 			item.SelectedProxy = proxy
+			change.ReplacementGroup = group
+			change.ReplacementProxy = proxy
 			break
 		}
 	}
 	if len(item.SelectedProxies) == 0 {
 		item.SelectedProxies = nil
 	}
+	return change
 }
 
 func (s *Store) createProfileLocked(name, config string) (*Profile, error) {

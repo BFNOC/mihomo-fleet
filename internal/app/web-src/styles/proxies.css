@@ -184,6 +184,18 @@
   border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
 }
 
+/* Per-node chips live inside .proxy-choice, which is a stretch-aligned flex
+   column -- without this they span the whole card instead of reading as a badge.
+   The hairline is not decoration: .latency-chip.good's fill is --accent-soft,
+   which is also .proxy-choice.selected's background, so on the selected node a
+   good chip would otherwise be invisible. currentColor tracks each tone's own
+   text colour, so one rule covers good/warn/bad/running. */
+.proxy-choice .latency-chip {
+  align-self: flex-start;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+}
+
 .proxy-choice.selected {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 42%, var(--line));

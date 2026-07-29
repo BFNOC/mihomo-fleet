@@ -55,6 +55,7 @@ export interface ProxyEntry {
   name: string;
   label: string;
   source: string;
+  latencyChip: ChipView | null;
 }
 
 export interface DisplayGroup {
@@ -85,6 +86,31 @@ function buildChips(instance: FleetInstance | null, groupName: string, currentNa
   });
 }
 
+// One node's own latency, as opposed to buildChips()'s group-head chip which
+// only ever shows the CURRENT node. Both read the same (instance, group,
+// proxy, "url") key -- latency.ts's runGroupUrlDelayAll() now writes it for
+// every member of the group from a single request, not just the selected
+// one, so this needs no request-shaped state of its own.
+//
+// Returns null while idle (no test has ever touched this node), rather than
+// a "--" placeholder, so a freshly loaded group renders with no chips at all
+// instead of one per node. A running or resolved test always returns a chip,
+// so "in flight", "tested with no delay", and "never tested" stay three
+// visually distinct states instead of two.
+function buildNodeLatencyChip(instance: FleetInstance | null, groupName: string, proxyName: string): ChipView | null {
+  if (!instance) return null;
+  const running = isLatencyRunning(store, instance.id, groupName, proxyName, "url");
+  const result = latencyResult(store, instance.id, groupName, proxyName, "url");
+  if (!running && !result) return null;
+  const value = formatLatencyValue(result, running);
+  return {
+    kind: "url",
+    className: `latency-chip ${latencyTone(result, running)}`,
+    text: value,
+    title: result?.error || `${latencyTitle("url")} ${value}`,
+  };
+}
+
 // Deliberately does NOT port the pre-Vue render snapshot / focus capture-restore
 // helpers -- those existed only so a full `innerHTML = ""` repaint could fake
 // unchanged-output skipping and focus preservation, and Vue's keyed v-for
@@ -112,7 +138,12 @@ export const displayGroups = computed<DisplayGroup[]>(() => {
       group,
       proxies: names.map((name) => {
         const split = splitProxyLabel(name, labelSources);
-        return { name, label: split.name, source: split.source };
+        return {
+          name,
+          label: split.name,
+          source: split.source,
+          latencyChip: buildNodeLatencyChip(instance, group.name, name),
+        };
       }),
       count: names.length,
       selectable: isSelectableProxyGroup(group),

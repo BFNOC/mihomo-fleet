@@ -25,6 +25,7 @@ import {
 } from "./profile-context.ts";
 import { setProfileCreateSource } from "./profile-navigation.ts";
 import { refreshSubscription } from "./profile-operations.ts";
+import ProfileReferenceList from "./ProfileReferenceList.vue";
 
 const profileMetaText = computed(() => {
   if (store.profileCreating) return isSubscription.value ? "创建后会下载并缓存订阅 YAML。" : "手写配置可以直接编辑 YAML。";
@@ -58,6 +59,7 @@ const subscriptionHomeUrl = computed(() => {
     </div>
     <span id="profileReferenceBadge" class="reference-badge" :class="{ 'in-use': references > 0 }">{{ referenceBadgeText }}</span>
   </div>
+  <ProfileReferenceList v-if="!store.profileCreating" />
   <div class="form-grid profile-basics">
     <label>
       <span>名称</span>

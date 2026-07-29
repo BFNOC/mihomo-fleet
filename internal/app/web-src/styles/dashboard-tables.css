@@ -322,6 +322,17 @@ body.view-dashboard .dash-conn-body {
   min-width: 0;
 }
 
+/* The global button is 34px tall (shell.css). Dropped into a connection row
+   that is ~30px in viewport-fit mode, it would set the row height for the whole
+   table and cost roughly a third of the rows on screen -- the density this table
+   exists for. Same min-height: 0 override .port-row-select uses. */
+.dash-conn-close {
+  min-height: 0;
+  padding: 1px 8px;
+  font-size: 11px;
+  box-shadow: none;
+}
+
 .dash-conns-head {
   display: flex;
   align-items: flex-start;
@@ -329,7 +340,12 @@ body.view-dashboard .dash-conn-body {
   gap: 12px;
 }
 
+/* The head is space-between with the title block on the left. Pushing the search
+   box off its own margin keeps it and the close-all button together as one
+   right-hand cluster, instead of space-between spreading three children evenly
+   and stranding the input in the middle. */
 .dash-conn-search {
+  margin-left: auto;
   width: min(280px, 45vw);
   padding: 8px 10px;
   border: 1px solid var(--line);

@@ -243,12 +243,19 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 				methodNotAllowed(w)
 				return
 			}
-			profile, err := c.refreshProfileSubscription(r.Context(), id)
+			profile, changes, err := c.refreshProfileSubscription(r.Context(), id)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			writeJSON(w, profile)
+			// selectionChanges is optional and only present when the refresh
+			// actually reassigned an instance's active selection (BUG 2) --
+			// a client that doesn't read this field sees the same response
+			// as before.
+			writeJSON(w, struct {
+				*Profile
+				SelectionChanges []SelectionReconciliation `json:"selectionChanges,omitempty"`
+			}{Profile: profile, SelectionChanges: changes})
 			return
 		case "proxies":
 			if r.Method != http.MethodGet {
@@ -339,6 +346,7 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 
 		var profile *Profile
 		var err error
+		var selectionChanges []SelectionReconciliation
 		if urlChanged {
 			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 			fetched, ferr := fetchSubscription(ctx, c.subscriptionClient, nextURL, c.subscriptionUserAgent())
@@ -354,7 +362,7 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 			// two-call PatchProfile-then-ApplySubscriptionFetchForURL
 			// sequence could partially apply and diverge on the second
 			// call's failure).
-			profile, err = c.store.ReplaceProfileSubscription(id, nextURL, fetched)
+			profile, selectionChanges, err = c.store.ReplaceProfileSubscription(id, nextURL, fetched)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -387,7 +395,14 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		writeJSON(w, profile)
+		// selectionChanges is only non-empty on the urlChanged branch above
+		// (the non-subscription PatchProfile path never reassigns a
+		// selection), and only present in the JSON at all when non-empty --
+		// see the "refresh" case above for the same optional-field contract.
+		writeJSON(w, struct {
+			*Profile
+			SelectionChanges []SelectionReconciliation `json:"selectionChanges,omitempty"`
+		}{Profile: profile, SelectionChanges: selectionChanges})
 	case http.MethodDelete:
 		// arch M2: refuse to delete a profile still referenced by an
 		// instance (409); unknown profile is 404. There is deliberately no
@@ -734,9 +749,12 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusConflict, errors.New("profile changed while configuration was being edited"))
 			return
 		}
-		if c.manager.Busy(id) && (req.MixedPort > 0 || req.ControllerPort > 0) {
-			writeError(w, http.StatusConflict, errors.New("stop the instance before changing ports"))
-			return
+		if c.manager.Busy(id) {
+			if (req.MixedPort > 0 && req.MixedPort != current.MixedPort) ||
+				(req.ControllerPort > 0 && req.ControllerPort != current.ControllerPort) {
+				writeError(w, http.StatusConflict, errors.New("stop the instance before changing ports"))
+				return
+			}
 		}
 		if c.manager.Busy(id) && req.ProxyBind != nil {
 			nextProxyBind, err := normalizeProxyBind(*req.ProxyBind)
@@ -1261,16 +1279,16 @@ func (c *Controller) subscriptionUserAgent() string {
 	return "clash-verge/v" + c.appVersion
 }
 
-func (c *Controller) refreshProfileSubscription(ctx context.Context, id string) (*Profile, error) {
+func (c *Controller) refreshProfileSubscription(ctx context.Context, id string) (*Profile, []SelectionReconciliation, error) {
 	profile, ok := c.store.GetProfile(id)
 	if !ok {
-		return nil, fmt.Errorf("profile %q not found", id)
+		return nil, nil, fmt.Errorf("profile %q not found", id)
 	}
 	if profile.SubscriptionURL == "" {
-		return nil, fmt.Errorf("profile %q is not a subscription profile", id)
+		return nil, nil, fmt.Errorf("profile %q is not a subscription profile", id)
 	}
 	if !c.beginSubscriptionUpdate(id) {
-		return nil, fmt.Errorf("profile %q subscription update is already running", id)
+		return nil, nil, fmt.Errorf("profile %q subscription update is already running", id)
 	}
 	defer c.endSubscriptionUpdate(id)
 
@@ -1279,7 +1297,7 @@ func (c *Controller) refreshProfileSubscription(ctx context.Context, id string) 
 	fetched, err := fetchSubscription(ctx, c.subscriptionClient, profile.SubscriptionURL, c.subscriptionUserAgent())
 	if err != nil {
 		c.store.SetProfileUpdateError(id, err.Error())
-		return nil, err
+		return nil, nil, err
 	}
 	return c.store.ApplySubscriptionFetchForURL(id, profile.SubscriptionURL, fetched)
 }
@@ -1343,8 +1361,18 @@ func (c *Controller) refreshDueSubscriptions(ctx context.Context) {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem }()
-			if _, err := c.refreshProfileSubscription(ctx, profileID); err != nil {
+			_, changes, err := c.refreshProfileSubscription(ctx, profileID)
+			if err != nil {
 				log.Printf("subscription update failed for profile %s: %v", profileID, err)
+				return
+			}
+			// This scheduler run has no HTTP response to attach changes to
+			// (unlike the manual-refresh and URL-change handlers below), so
+			// without this log a reassignment triggered by the background
+			// scheduler would stay exactly as silent as the bug this fixes.
+			for _, change := range changes {
+				log.Printf("subscription update for profile %s reassigned instance %s (%s) group %q: %q -> %q/%q",
+					profileID, change.InstanceID, change.InstanceName, change.Group, change.VanishedProxy, change.ReplacementGroup, change.ReplacementProxy)
 			}
 		}()
 	}

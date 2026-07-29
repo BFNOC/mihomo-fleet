@@ -163,7 +163,7 @@ func TestControllerRefreshProfileSubscriptionFailureRecordsErrorAndBacksOff(t *t
 		t.Fatal(err)
 	}
 
-	if _, err := c.refreshProfileSubscription(context.Background(), profile.ID); err == nil {
+	if _, _, err := c.refreshProfileSubscription(context.Background(), profile.ID); err == nil {
 		t.Fatal("expected refreshProfileSubscription to fail against a 500-returning server")
 	}
 

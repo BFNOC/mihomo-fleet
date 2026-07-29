@@ -1,7 +1,7 @@
 import { computed, ref } from "vue";
 import { store } from "../../store.ts";
-import { profileById, profileReferenceCount } from "../../state.ts";
-import type { FleetProfile } from "../../state.ts";
+import { profileById, profileReferences } from "../../state.ts";
+import type { FleetInstance, FleetProfile } from "../../state.ts";
 import { shouldApplyProfileOperation } from "../../app-logic.ts";
 
 // Which profile the editor is currently about, what the user has typed into it,
@@ -61,7 +61,14 @@ export const hasEditor = computed(() => store.profileCreating || Boolean(activeP
 export const isSubscription = computed(() =>
   store.profileCreating ? store.profileCreateSource === "subscription" : Boolean(activeProfile.value?.subscriptionUrl),
 );
-export const references = computed(() => (activeProfile.value ? profileReferenceCount(store, activeProfile.value.id) : 0));
+// The instances themselves, not just the count -- ProfileReferenceList.vue
+// reads this to turn "N 个实例引用" into a jump list instead of a dead-end
+// number. `references` (the count) derives from it so the two can never
+// disagree about which profile they're describing.
+export const referencingInstances = computed<FleetInstance[]>(() =>
+  activeProfile.value ? profileReferences(store, activeProfile.value.id) : [],
+);
+export const references = computed(() => referencingInstances.value.length);
 
 // ---------------------------------------------------------------------------
 // Operation-context guard

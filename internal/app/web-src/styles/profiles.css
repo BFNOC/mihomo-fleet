@@ -169,3 +169,26 @@
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
 }
+
+/* The jump list under "N 个实例引用" (ProfileReferenceList.vue). Chips wrap,
+   because a profile can be referenced by more than a row's worth of instances.
+   min-height: 0 overrides shell.css's 34px control height -- these are inline
+   labels next to a sentence, not controls in an action bar. */
+.profile-reference-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 0;
+}
+
+.profile-reference-jump button {
+  min-height: 0;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  box-shadow: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -14,7 +14,15 @@ import { requestGeo, resolveGeo } from "../../dashboard.ts";
 import type { FleetConnectionRow } from "../../dashboard.ts";
 import { countryFlag, filterConnections, formatDuration, formatRate, localAddressLabel, sortConnections } from "../../traffic.ts";
 import { formatBytes } from "../../format.ts";
-import { allConnectionRows, nowTick } from "./dashboard-data.ts";
+import {
+  allConnectionRows,
+  closeAllConnections,
+  closeConnection,
+  closingAllConnections,
+  connectionRowKey,
+  nowTick,
+  pendingCloseIds,
+} from "./dashboard-data.ts";
 
 // This table scrolls inside its own card rather than being clipped to a measured
 // row budget the way the instance table still is (use-row-budget.ts) -- "what is
@@ -88,6 +96,10 @@ function connectionRuleText(row: FleetConnectionRow): string {
 function connectionChainTitle(row: FleetConnectionRow): string {
   return row.chains.length ? [...row.chains].reverse().join(" → ") : "";
 }
+
+function isClosing(row: FleetConnectionRow): boolean {
+  return pendingCloseIds.value.has(connectionRowKey(row.instanceId, row.id));
+}
 </script>
 
 <template>
@@ -107,6 +119,11 @@ function connectionChainTitle(row: FleetConnectionRow): string {
         placeholder="搜索域名 / IP / 进程 / 规则"
         aria-label="搜索连接"
       >
+      <button
+        type="button"
+        :disabled="closingAllConnections || !allConnectionRows.length"
+        @click="closeAllConnections"
+      >{{ closingAllConnections ? "关闭中…" : "关闭全部连接" }}</button>
     </div>
     <div v-if="shownConnectionRows.length" class="dash-conn-body">
       <table class="dash-table dash-conn-table">
@@ -119,6 +136,7 @@ function connectionChainTitle(row: FleetConnectionRow): string {
             <th scope="col">↑ 当前</th>
             <th scope="col">↓ 当前</th>
             <th scope="col">时长</th>
+            <th scope="col">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -135,7 +153,7 @@ function connectionChainTitle(row: FleetConnectionRow): string {
                (colliding ids) grow tr/td/small counts every tick with no
                plateau. instanceId scopes the key back to what mihomo actually
                guarantees unique. -->
-          <tr v-for="row in shownConnectionRows" :key="`${row.instanceId}:${row.id}`">
+          <tr v-for="row in shownConnectionRows" :key="connectionRowKey(row.instanceId, row.id)">
             <td class="dash-conn-target">
               <strong>{{ targetPrimary(row) }}</strong>
               <small v-if="connectionSubtitle(row)">{{ connectionSubtitle(row) }}</small>
@@ -158,6 +176,9 @@ function connectionChainTitle(row: FleetConnectionRow): string {
             <td class="num">{{ formatRate(row.up).value }} {{ formatRate(row.up).unit }}<small>{{ formatBytes(row.upload) }}</small></td>
             <td class="num">{{ formatRate(row.down).value }} {{ formatRate(row.down).unit }}<small>{{ formatBytes(row.download) }}</small></td>
             <td class="num">{{ row.start ? formatDuration(nowTick - row.start) : "—" }}</td>
+            <td>
+              <button class="dash-conn-close" type="button" :disabled="isClosing(row)" @click="closeConnection(row)">{{ isClosing(row) ? "关闭中…" : "关闭" }}</button>
+            </td>
           </tr>
         </tbody>
       </table>

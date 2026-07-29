@@ -130,8 +130,13 @@ func TestApplySubscriptionFetchClearsRemovedSelection(t *testing.T) {
 	if _, err := store.SetSelection(item.ID, "Proxy", "US-01"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: subscriptionConfig}); err != nil {
+	if _, unchangedChanges, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: subscriptionConfig}); err != nil {
 		t.Fatal(err)
+	} else if unchangedChanges != nil {
+		// BUG 2, "survived untouched" case: US-01 is still a valid selection
+		// against the unchanged config, so reconcileInstanceSelection must not
+		// report a change for either instance.
+		t.Fatalf("changes = %#v, want nil when the selection is still valid", unchangedChanges)
 	}
 	for _, id := range []string{item.ID, second.ID} {
 		updated, ok := store.Get(id)
@@ -140,18 +145,127 @@ func TestApplySubscriptionFetchClearsRemovedSelection(t *testing.T) {
 		}
 	}
 	nextConfig := strings.Replace(subscriptionConfig, "      - US-01\n", "", 1)
-	if _, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: nextConfig}); err != nil {
+	_, changes, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: nextConfig})
+	if err != nil {
 		t.Fatal(err)
 	}
 	updated, _ := store.Get(item.ID)
 	if updated.SelectedProxy != "" || len(updated.SelectedProxies) != 0 {
 		t.Fatalf("removed selection was not cleared: %+v", updated)
 	}
+	// BUG 2, "node vanished" case: US-01 disappeared and item had no other
+	// selected group to fall back to, so the summary must report the loss
+	// with an empty replacement.
+	if len(changes) != 1 {
+		t.Fatalf("changes = %#v, want exactly one reconciliation", changes)
+	}
+	if changes[0].InstanceID != item.ID || changes[0].Group != "Proxy" || changes[0].VanishedProxy != "US-01" {
+		t.Fatalf("changes[0] = %+v, want instance %q group Proxy vanishedProxy US-01", changes[0], item.ID)
+	}
+	if changes[0].ReplacementGroup != "" || changes[0].ReplacementProxy != "" {
+		t.Fatalf("changes[0] = %+v, want no replacement (item had no other selection)", changes[0])
+	}
 	for _, id := range []string{item.ID, second.ID} {
 		updated, ok := store.Get(id)
 		if !ok || updated.ConfigUpdatedAt.IsZero() {
 			t.Fatalf("subscription refresh did not mark shared reference %s: %+v", id, updated)
 		}
+	}
+}
+
+// multiGroupSubscriptionConfig gives three independently-selectable groups
+// so TestApplySubscriptionFetchReassignsActiveSelectionAlphabetically can
+// exercise reconcileInstanceSelection's alphabetical-replacement pick
+// against more than one surviving candidate (Alpha sorts before Zulu).
+const multiGroupSubscriptionConfig = `mixed-port: 7890
+proxies:
+  - name: US-01
+    type: ss
+    server: example.com
+    port: 443
+  - name: A1
+    type: ss
+    server: a.example.com
+    port: 443
+  - name: Z1
+    type: ss
+    server: z.example.com
+    port: 443
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - US-01
+      - DIRECT
+  - name: Alpha
+    type: select
+    proxies:
+      - A1
+      - DIRECT
+  - name: Zulu
+    type: select
+    proxies:
+      - Z1
+      - DIRECT
+rules:
+  - MATCH,Proxy
+`
+
+// TestApplySubscriptionFetchReassignsActiveSelectionAlphabetically covers
+// BUG 2's alphabetical-replacement case: when the active selection's node
+// vanishes and more than one other selected group survives the refresh,
+// reconcileInstanceSelection's replacement pick must be observable in the
+// returned summary, not just inferred from the resulting instance state.
+func TestApplySubscriptionFetchReassignsActiveSelectionAlphabetically(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/sub", true, 360, &subscriptionFetchResult{Config: multiGroupSubscriptionConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Gateway", profile.ID, "", 28023, 29023)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetSelection(item.ID, "Alpha", "A1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetSelection(item.ID, "Zulu", "Z1"); err != nil {
+		t.Fatal(err)
+	}
+	// Proxy/US-01 becomes the active selection, set last as SetSelection
+	// always overwrites SelectedGroup/SelectedProxy.
+	if _, err := store.SetSelection(item.ID, "Proxy", "US-01"); err != nil {
+		t.Fatal(err)
+	}
+
+	nextConfig := strings.Replace(multiGroupSubscriptionConfig, "      - US-01\n", "", 1)
+	_, changes, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: nextConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) != 1 {
+		t.Fatalf("changes = %#v, want exactly one reconciliation", changes)
+	}
+	got := changes[0]
+	if got.InstanceID != item.ID || got.Group != "Proxy" || got.VanishedProxy != "US-01" {
+		t.Fatalf("changes[0] = %+v, want instance %q group Proxy vanishedProxy US-01", got, item.ID)
+	}
+	if got.ReplacementGroup != "Alpha" || got.ReplacementProxy != "A1" {
+		t.Fatalf("changes[0] = %+v, want replacement Alpha/A1 (alphabetically first of Alpha, Zulu)", got)
+	}
+
+	updated, ok := store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected instance to still exist")
+	}
+	if updated.SelectedGroup != "Alpha" || updated.SelectedProxy != "A1" {
+		t.Fatalf("instance selection = %q/%q, want Alpha/A1", updated.SelectedGroup, updated.SelectedProxy)
 	}
 }
 
@@ -180,7 +294,7 @@ func TestApplySubscriptionFetchKeepsGlobalChainSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextConfig := strings.Replace(subscriptionConfig, "  - MATCH,Proxy\n", "  - MATCH,DIRECT\n", 1)
-	if _, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: nextConfig}); err != nil {
+	if _, _, err := store.ApplySubscriptionFetch(profile.ID, &subscriptionFetchResult{Config: nextConfig}); err != nil {
 		t.Fatal(err)
 	}
 	updated, _ := store.Get(item.ID)

@@ -615,6 +615,93 @@ func TestHandleInstanceUpdateSamePortsReturnsBadRequest(t *testing.T) {
 	}
 }
 
+// TestHandleInstanceUpdateBusyUnchangedPortsSucceeds covers BUG 1: the busy
+// guard used to reject a save whenever MixedPort/ControllerPort were > 0 at
+// all, regardless of whether they matched the stored value -- and the
+// frontend always resends the current ports on every save, so this rejected
+// every save on a running instance (e.g. a pure rename). The guard must
+// compare against the stored ports like the ProxyBind branch below it does.
+func TestHandleInstanceUpdateBusyUnchangedPortsSucceeds(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	first := postInstanceJSON(t, c, `{"name":"First","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+
+	c.manager.mu.Lock()
+	c.manager.starting[first.ID] = true
+	c.manager.mu.Unlock()
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.starting, first.ID)
+		c.manager.mu.Unlock()
+	})
+
+	body := `{"name":"Renamed","mixedPort":28000,"controllerPort":29000}`
+	req := httptest.NewRequest(http.MethodPut, "/api/instances/"+first.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstance(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	updated, ok := c.store.Get(first.ID)
+	if !ok || updated.Name != "Renamed" {
+		t.Fatalf("instance = %+v, want name Renamed", updated)
+	}
+}
+
+// TestHandleInstanceUpdateBusyChangedPortStill409s is the flip side of
+// TestHandleInstanceUpdateBusyUnchangedPortsSucceeds: a genuine port change
+// on a busy instance must still be rejected -- the fix compares against the
+// stored ports rather than dropping the guard outright.
+func TestHandleInstanceUpdateBusyChangedPortStill409s(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	first := postInstanceJSON(t, c, `{"name":"First","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+
+	c.manager.mu.Lock()
+	c.manager.starting[first.ID] = true
+	c.manager.mu.Unlock()
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.starting, first.ID)
+		c.manager.mu.Unlock()
+	})
+
+	body := `{"mixedPort":28002}`
+	req := httptest.NewRequest(http.MethodPut, "/api/instances/"+first.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstance(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "stop the instance before changing ports") {
+		t.Fatalf("body = %q, want port-change error", rec.Body.String())
+	}
+}
+
+// TestHandleInstanceUpdateStoppedBothPortsChangeable confirms a stopped
+// instance is unaffected by the busy-guard fix: both ports remain freely
+// changeable when the instance isn't running.
+func TestHandleInstanceUpdateStoppedBothPortsChangeable(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	first := postInstanceJSON(t, c, `{"name":"First","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+
+	body := `{"mixedPort":28003,"controllerPort":29003}`
+	req := httptest.NewRequest(http.MethodPut, "/api/instances/"+first.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstance(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	updated, ok := c.store.Get(first.ID)
+	if !ok || updated.MixedPort != 28003 || updated.ControllerPort != 29003 {
+		t.Fatalf("instance = %+v, want ports 28003/29003", updated)
+	}
+}
+
 func TestHandleInstanceCloneCreatesStoppedCopy(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 	c := newBatchTestController(t)

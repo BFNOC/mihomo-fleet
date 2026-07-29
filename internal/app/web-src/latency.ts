@@ -38,6 +38,20 @@ interface LatencyTestResponse {
   timeoutMs: number;
 }
 
+// Shape of the JSON body the SAME endpoint returns when `group` is set and
+// `proxy` is omitted with kind "url" -- controller.go routes that combination
+// to mihomoGroupDelay() instead of the single-proxy path above, and echoes
+// its map[string]int verbatim as `delays`. mihomoGroupDelay
+// (internal/app/mihomo_api.go) collapses any whole-request failure to an
+// empty map rather than an error, and a per-proxy failure inside mihomo
+// itself is a missing key or a zero, never a negative number or an error
+// string -- there is no richer per-node failure signal to plumb through.
+interface GroupLatencyTestResponse {
+  delays: Record<string, number>;
+  url: string;
+  timeoutMs: number;
+}
+
 /** Options accepted by createLatencyController(); see ProxiesTab.vue for the call site. */
 export interface LatencyControllerOptions {
   state: FleetState;
@@ -156,7 +170,67 @@ export function createLatencyController({
     await runLatencyTest(selected, group.name, name, kind, options);
   }
 
+  // Writes one delay result per member of `group`, from a single request --
+  // this is the reason to route through mihomo's /group/{name}/delay
+  // (controller.go's `req.Group != "" && req.Proxy == "" && req.Kind ==
+  // "url"` branch) instead of calling runGroupLatency() once per node. Doing
+  // that instead of selecting each candidate in turn is the whole point: a
+  // selection is applied and rerouts live traffic immediately on a running
+  // instance (see selectProxy() in proxy-groups.ts), so comparing nodes by
+  // selecting them one at a time was never a safe way to just look.
+  //
+  // Every name in `group.all` is marked running and later resolved together,
+  // even ones mihomo's response omits or zeroes -- see
+  // GroupLatencyTestResponse's comment. That keeps "in flight" (the running
+  // flag), "tested, no delay" (a result with delay 0), and "never tested" (no
+  // result at all, formatLatencyValue's "--") three distinct states instead
+  // of collapsing the first two.
+  async function runGroupUrlDelayAll(group: FleetProxyGroup): Promise<void> {
+    const selected = runningInstance();
+    if (!selected) return;
+    const names = (group.all || []).filter(Boolean);
+    if (!names.length) return;
+    // All names toggle together below, so any one of them already running is
+    // proof the whole group is mid-request; matches runGroupLatency's single-
+    // flight guard just above, at group-request granularity instead of
+    // per-node.
+    if (isLatencyRunning(state, selected.id, group.name, names[0]!, "url")) return;
+    const { url, timeoutMs } = latencySettings();
+    for (const name of names) setLatencyRunning(state, selected.id, group.name, name, "url", true);
+    try {
+      const payload = await api<GroupLatencyTestResponse>(`/api/instances/${selected.id}/latency`, {
+        method: "POST",
+        body: JSON.stringify({ group: group.name, kind: "url", url, timeoutMs }),
+      });
+      if (shouldApplyResult(selected.id, undefined)) {
+        const delays = payload.delays || {};
+        for (const name of names) {
+          setLatencyResult(state, selected.id, group.name, name, "url", { delay: Number(delays[name]) || 0, error: "" });
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (shouldApplyResult(selected.id, undefined)) {
+        const localized = localizedMessage(message);
+        for (const name of names) {
+          setLatencyResult(state, selected.id, group.name, name, "url", { delay: 0, error: localized });
+        }
+      }
+      showMessage(message, "error");
+    } finally {
+      for (const name of names) setLatencyRunning(state, selected.id, group.name, name, "url", false);
+    }
+  }
+
   async function testGroupLatency(group: FleetProxyGroup, kind: LatencyKind): Promise<void> {
+    // "real" latency still needs one specific proxy -- controller.go rejects
+    // a group-only request with kind "real" outright (mihomo has no
+    // group-wide real-delay endpoint to call), so that path keeps testing
+    // only the group's current node via runGroupLatency, same as before.
+    if (kind === "url") {
+      await runGroupUrlDelayAll(group);
+      return;
+    }
     await runGroupLatency(group, kind, { notifyErrors: true });
   }
 
@@ -184,6 +258,14 @@ export function createLatencyController({
     await Promise.allSettled(workers);
   }
 
+  // Deliberately still routes every group through runGroupLatency (one
+  // request per group's CURRENT node), not runGroupUrlDelayAll, even for
+  // "url". "测速各组当前" ("test each group's current [node]") answers a
+  // different question than the per-group button now does -- "are the routes
+  // already in use still fast" across the whole fleet, not "which candidate
+  // in this one group is fastest" -- and changing its request shape here
+  // would silently invalidate that Chinese label (see ProxiesTab.vue) without
+  // this file's diff making that obvious.
   async function testAllLatency(kind: LatencyKind): Promise<void> {
     const selected = runningInstance();
     if (!selected || state.latencyBatchRunning) return;

@@ -148,6 +148,11 @@ export interface FleetState {
   profileConfigOwnerId: string;
   profileConfigDirty: boolean;
   creating: boolean;
+  // Set by CreatePanel.vue whenever a field changes, cleared whenever
+  // store.creating flips (open or close) -- mirrors editDirty/profileFormDirty
+  // so navigation.ts's hasUnsavedChanges() can warn before a half-filled
+  // "新建实例" form is discarded by a misclick.
+  createDirty: boolean;
   proxyGroups: FleetProxyGroup[];
   proxyApply: boolean;
   latencyResults: Record<string, LatencyResult>;
@@ -178,6 +183,7 @@ export function createState(): FleetState {
     profileConfigOwnerId: "",
     profileConfigDirty: false,
     creating: false,
+    createDirty: false,
     proxyGroups: [],
     proxyApply: false,
     latencyResults: {},
@@ -202,6 +208,11 @@ export function profileById(state: FleetState, id: string): FleetProfile | null 
 
 export function profileReferenceCount(state: FleetState, profileId: string): number {
   return state.instances.filter((item) => item.profileId === profileId).length;
+}
+
+/** Same filter as profileReferenceCount, but the instances themselves. */
+export function profileReferences(state: FleetState, profileId: string): FleetInstance[] {
+  return state.instances.filter((item) => item.profileId === profileId);
 }
 
 function latencyKey(instanceId: string, group: string, proxy: string, kind: LatencyKind): string {
