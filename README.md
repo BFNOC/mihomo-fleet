@@ -28,17 +28,42 @@ Python 服务。
 ./mihomo-fleet -version
 ```
 
-WebUI 源码位于 `internal/app/web-src`（模块化 ES modules）。构建产物提交到
-`internal/app/web/app.js` 与 `internal/app/web/vendor`，并由 Go 二进制嵌入。
-修改前端后使用 pnpm 重新构建和校验：
+WebUI 源码位于 `internal/app/web-src`（Vue 3 单文件组件 + Vite）。构建产物写到
+`internal/app/web/`，由 Go 的 `go:embed` 嵌入二进制。**这些产物不在 git 里**——
+只有 `internal/app/web/README.md` 被跟踪，因为 `go:embed web/*` 对空目录会编译失败。
+`scripts/build.sh` 会先构建前端再编译 Go，并检查产物确实生成了：缺少产物时 Go
+仍然能编译通过（README 满足了 `go:embed`），只是跑出来的程序没有界面。
+
+首次构建前先装依赖：
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm test:web
-pnpm verify:web
+```
+
+修改前端后的校验：
+
+```bash
+pnpm test:web                               # 纯逻辑单测
+./node_modules/.bin/vue-tsc --noEmit        # 类型检查，须 0 错误
 ```
 
 最终程序运行时仍不需要 Node.js 或 pnpm。
+
+### 与已运行的正式版并存调试
+
+`scripts/dev.sh` 用独立端口和独立数据目录起一个开发版，不影响正在运行的正式版：
+
+```bash
+./scripts/dev.sh                    # http://127.0.0.1:47891 + <repo>/.mihomo-fleet-dev
+./scripts/dev.sh --no-web           # 只改了 Go，跳过前端构建
+./scripts/dev.sh --port 47892 --data ~/fleet-dev
+```
+
+版本号会刻成 `dev-<commit>`，WebUI 顶部能直接区分开发版和正式版。数据目录必须分开：
+`instances.json` 没有进程锁，两个 fleet 指向同一目录会互相覆盖写，并抢同一组实例端口
+（脚本会直接拒绝 `--data` 指向正式版目录）。新建实例的端口从 28000/29000 起分配，
+分配前会探测端口是否空闲，所以正式版实例运行时不会被抢；但正式版实例停着的时候
+探测是通的，建议给开发版实例手动填 28100/29100 段。
 
 ## 版本和发布
 

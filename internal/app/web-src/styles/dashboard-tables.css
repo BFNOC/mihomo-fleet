@@ -263,23 +263,54 @@
 
 }
 
-/* Both tables are clipped boxes rather than scroll containers -- the row budget
-   is what keeps content inside them. */
-.dash-inst-body,
-.dash-conn-body {
+/* The instance table is a clipped box rather than a scroll container -- its row
+   budget (use-row-budget.ts) is what keeps content inside it, and the sidebar
+   lists the same instances anyway. */
+.dash-inst-body {
   min-height: 0;
   overflow: hidden;
 }
 
-/* The connections table carries more columns than fit at narrow widths
-   (target, instance, exit node + rule, country, rate, age -- all individually
+/* The connections table is the one place that scrolls inside a card. Two
+   independent reasons, one per axis:
+
+   Horizontally, it carries more columns than fit at narrow widths (target,
+   instance, exit node + rule, country, rate, age -- all individually
    load-bearing per DESIGN.md, unlike the instance table which can afford to
-   drop its duplicate columns). Truncating further would defeat the table's
-   purpose, so this scrolls horizontally instead while keeping the vertical
-   row-budget clipping the viewport-fit mode depends on. */
+   drop its duplicate columns), and truncating further would defeat the table's
+   purpose.
+
+   Vertically, a measured row budget answered "what fits" when the question is
+   "what is the fleet doing"; the connection list is the only unbounded thing on
+   the dashboard. The page still does not scroll in viewport-fit mode -- the
+   card's own box is fixed by the grid, so this overflow stays inside it. */
 .dash-conn-body {
-  overflow-x: auto;
-  overflow-y: hidden;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Scrolling under the header only works if the header stays put. border-collapse
+   drops a sticky cell's own border-bottom (the collapsed border belongs to the
+   table, not the cell, and scrolls away with it), so the rule is drawn as an
+   inset shadow instead. The background is required: without it rows show
+   through. */
+.dash-conn-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: none;
+  box-shadow: inset 0 -1px 0 var(--line);
+  background: var(--surface);
+}
+
+/* Outside viewport-fit mode the page scrolls and the card has no height of its
+   own, so `overflow: auto` above would never engage and the full list would
+   stretch the page to thousands of pixels. This is the counterpart to the
+   min-height: 760px block above; keep the two breakpoints in sync. */
+@media (max-height: 759px) {
+  .dash-conn-body {
+    max-height: 60vh;
+  }
 }
 
 body.view-dashboard .dash-inst-body,

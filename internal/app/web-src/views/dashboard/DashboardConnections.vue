@@ -14,14 +14,23 @@ import { requestGeo, resolveGeo } from "../../dashboard.ts";
 import type { FleetConnectionRow } from "../../dashboard.ts";
 import { countryFlag, filterConnections, formatDuration, formatRate, localAddressLabel, sortConnections } from "../../traffic.ts";
 import { formatBytes } from "../../format.ts";
-import { useRowBudget } from "./use-row-budget.ts";
 import { allConnectionRows, nowTick } from "./dashboard-data.ts";
 
-const { budget, bodyEl, tableEl } = useRowBudget({ initial: 6, scrollFallback: 24 });
+// This table scrolls inside its own card rather than being clipped to a measured
+// row budget the way the instance table still is (use-row-budget.ts) -- "what is
+// the fleet doing right now" is not answerable from the six rows that happen to
+// fit. The page itself still does not scroll in viewport-fit mode; the overflow
+// lives on .dash-conn-body (dashboard-tables.css).
+//
+// The cap is not about layout, it is about per-tick cost: every visible row's
+// rate and age recompute and repaint on each heartbeat, and requestGeo() fires a
+// lookup for every address it has not cached. Rows are sorted busiest-first, so
+// what a cap drops is the idle tail.
+const maxConnectionRows = 500;
 
 const searchQuery = ref("");
 const matchedConnectionRows = computed(() => sortConnections(filterConnections(allConnectionRows.value, searchQuery.value)));
-const shownConnectionRows = computed(() => matchedConnectionRows.value.slice(0, budget.value));
+const shownConnectionRows = computed(() => matchedConnectionRows.value.slice(0, maxConnectionRows));
 
 // Kicking the lookups off is a side effect, so it lives in a watchEffect rather
 // than inside a computed; only what is actually on screen gets looked up.
@@ -99,8 +108,8 @@ function connectionChainTitle(row: FleetConnectionRow): string {
         aria-label="搜索连接"
       >
     </div>
-    <div v-if="shownConnectionRows.length" ref="bodyEl" class="dash-conn-body">
-      <table ref="tableEl" class="dash-table dash-conn-table">
+    <div v-if="shownConnectionRows.length" class="dash-conn-body">
+      <table class="dash-table dash-conn-table">
         <thead>
           <tr>
             <th scope="col">目标</th>

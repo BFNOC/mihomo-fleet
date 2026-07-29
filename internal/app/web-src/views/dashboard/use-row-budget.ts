@@ -7,11 +7,6 @@ const resizeDebounceMs = 150;
 export interface RowBudgetOptions {
   /** Rows shown before the first measurement lands. */
   initial: number;
-  /**
-   * Rows shown when the window is too short for viewport-fit mode. The page
-   * scrolls anyway there, so this is "a useful slice", not "what fits".
-   */
-  scrollFallback: number;
 }
 
 export interface RowBudget {
@@ -21,15 +16,20 @@ export interface RowBudget {
 }
 
 /**
- * Measures how many rows one table may show, and keeps that number current as
- * the dashboard resizes. Each table owns its own instance -- the pre-Vue code
- * measured both from a single function, which meant the connections table and
- * the instances table could not be moved into separate components.
+ * Measures how many rows a table may show, and keeps that number current as the
+ * dashboard resizes. Written as a `useX()` factory rather than module state
+ * because the caller owns the elements being measured; the pre-Vue code measured
+ * both dashboard tables from a single function, which is what kept them from
+ * being separate components.
+ *
+ * Only the instance table uses this now -- the connection table scrolls inside
+ * its own card instead (DashboardConnections.vue, dashboard-tables.css).
  *
  * `--dash-fit` is the custom property styles.css sets to mark viewport-fit mode
- * (see DESIGN.md). Outside that mode nothing is measured at all.
+ * (see DESIGN.md). Outside that mode nothing is measured and nothing is capped:
+ * the page scrolls there, so a cut would hide rows for no gain.
  */
-export function useRowBudget({ initial, scrollFallback }: RowBudgetOptions): RowBudget {
+export function useRowBudget({ initial }: RowBudgetOptions): RowBudget {
   const budget = ref(initial);
   const bodyEl = ref<HTMLElement | null>(null);
   const tableEl = ref<HTMLTableElement | null>(null);
@@ -49,7 +49,7 @@ export function useRowBudget({ initial, scrollFallback }: RowBudgetOptions): Row
 
   function applyFit(): void {
     if (!fitModeActive()) {
-      budget.value = scrollFallback;
+      budget.value = Infinity;
       return;
     }
     const body = bodyEl.value;
@@ -88,11 +88,10 @@ export function useRowBudget({ initial, scrollFallback }: RowBudgetOptions): Row
     }
   });
 
-  // Both tables conditionally render (DashboardInstances.vue's `v-else`,
-  // DashboardConnections.vue's `v-if`) while their data is empty, so `tableEl`
-  // starts null and mount's applyFit() above hits the `!table` early return,
-  // leaving budget stuck at its initial/scrollFallback value. The table
-  // appearing later (zero connections/instances -> some) does not resize
+  // The table conditionally renders (DashboardInstances.vue's `v-else`) while
+  // its data is empty, so `tableEl` starts null and mount's applyFit() above
+  // hits the `!table` early return, leaving budget stuck at its initial value.
+  // The table appearing later (zero instances -> some) does not resize
   // #dashboardPanel -- the host's own box is fixed by the grid layout, so the
   // ResizeObserver above never fires for it either. Watching the ref itself
   // catches exactly that empty -> non-empty transition, independent of both

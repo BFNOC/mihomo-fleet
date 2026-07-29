@@ -1,5 +1,9 @@
 /.mihomo-fleet/
 /mihomo-fleet
+
+# scripts/dev.sh 的产物：与正式版并存的开发版二进制和它自己的数据目录。
+/.dev/
+/.mihomo-fleet-dev/
 /.ccg/
 /graphify-out/
 /node_modules/

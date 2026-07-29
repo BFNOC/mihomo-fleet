@@ -19,7 +19,7 @@ import {
   sampleFor,
 } from "./dashboard-data.ts";
 
-const { budget, bodyEl, tableEl } = useRowBudget({ initial: 4, scrollFallback: Number.MAX_SAFE_INTEGER });
+const { budget, bodyEl, tableEl } = useRowBudget({ initial: 4 });
 
 function instanceRates(id: string): { up: FormattedRate; down: FormattedRate } {
   const latest = seriesLatest(sampleFor(id).series);
