@@ -325,16 +325,43 @@ export interface ConnectionSortFields {
   start?: number;
 }
 
-// Busiest first: a fleet can hold thousands of connections and only the top of
-// this list ever gets rendered, so idle keepalives must not crowd out the
-// transfer someone is actually watching.
-export function sortConnections<T extends ConnectionSortFields>(rows: T[] | null | undefined): T[] {
+// "activity" is the default busiest-first ranking; the other keys are the
+// user-facing sortable columns of the connections table.
+export type ConnectionSortKey = "activity" | "up" | "down" | "duration";
+export type ConnectionSortDirection = "asc" | "desc";
+
+// Rate → bytes → recency. Shared by the default order and as the tie-breaker
+// for the column sorts, so equal-valued rows keep a stable, meaningful order.
+function compareActivity(a: ConnectionSortFields, b: ConnectionSortFields): number {
+  const rate = (b.down + b.up) - (a.down + a.up);
+  if (rate) return rate;
+  const bytes = (b.download + b.upload) - (a.download + a.upload);
+  if (bytes) return bytes;
+  return (b.start || 0) - (a.start || 0);
+}
+
+// Busiest first by default: a fleet can hold thousands of connections and only
+// the top of this list ever gets rendered, so idle keepalives must not crowd
+// out the transfer someone is actually watching. Column sorts rank by the
+// picked field only, falling back to activity on ties. A row without `start`
+// has no duration at all, so it sorts after every row that has one in both
+// directions rather than pretending to be the newest or the oldest.
+export function sortConnections<T extends ConnectionSortFields>(
+  rows: T[] | null | undefined,
+  key: ConnectionSortKey = "activity",
+  direction: ConnectionSortDirection = "desc",
+): T[] {
+  const sign = direction === "asc" ? -1 : 1;
   return [...(rows || [])].sort((a, b) => {
-    const rate = (b.down + b.up) - (a.down + a.up);
-    if (rate) return rate;
-    const bytes = (b.download + b.upload) - (a.download + a.upload);
-    if (bytes) return bytes;
-    return (b.start || 0) - (a.start || 0);
+    let primary = 0;
+    if (key === "up") primary = sign * (b.up - a.up);
+    else if (key === "down") primary = sign * (b.down - a.down);
+    else if (key === "duration") {
+      if (!a.start || !b.start) primary = (b.start ? 1 : 0) - (a.start ? 1 : 0);
+      // Older start = longer duration, so "desc" (longest first) is ascending start.
+      else primary = sign * (a.start - b.start);
+    }
+    return primary || compareActivity(a, b);
   });
 }
 

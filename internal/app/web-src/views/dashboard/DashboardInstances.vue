@@ -104,8 +104,8 @@ function onRowKeydown(event: KeyboardEvent, id: string): void {
           <tr>
             <th scope="col">实例</th>
             <th scope="col">连接</th>
-            <th scope="col">↑ 当前</th>
-            <th scope="col">↓ 当前</th>
+            <th scope="col">上传</th>
+            <th scope="col">下载</th>
             <th scope="col">近 {{ trafficWindowSeconds }} 秒</th>
           </tr>
         </thead>

@@ -305,15 +305,21 @@
   color: var(--spark-up);
 }
 
+/* Holds the 上传/下载 text label (was an ↑/↓ arrow glyph; direction is now
+   spelled out so it can't be confused with sort markers). */
 .dash-rate-icon {
   display: grid;
-  width: 30px;
+  min-width: 30px;
   height: 30px;
+  padding: 0 7px;
   place-items: center;
   border-radius: var(--radius-sm);
   background: var(--accent-soft);
   color: var(--accent-strong);
-  font-size: 15px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 .dash-live {

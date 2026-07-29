@@ -92,12 +92,12 @@ const chips = computed<DashboardChip[]>(() => [
     </div>
     <div class="dash-strip-rates">
       <div class="dash-strip-rate" data-direction="down">
-        <span class="dash-rate-icon" aria-hidden="true">↓</span>
+        <span class="dash-rate-icon">下载</span>
         <p class="dash-figure"><span class="dash-figure-value">{{ currentDown.value }}</span><span class="dash-figure-unit">{{ currentDown.unit }}</span></p>
         <small>峰值 {{ peakDown.value }} {{ peakDown.unit }}</small>
       </div>
       <div class="dash-strip-rate" data-direction="up">
-        <span class="dash-rate-icon" aria-hidden="true">↑</span>
+        <span class="dash-rate-icon">上传</span>
         <p class="dash-figure"><span class="dash-figure-value">{{ currentUp.value }}</span><span class="dash-figure-unit">{{ currentUp.unit }}</span></p>
         <small>峰值 {{ peakUp.value }} {{ peakUp.unit }}</small>
       </div>

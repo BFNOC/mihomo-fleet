@@ -79,6 +79,36 @@
   text-align: left;
 }
 
+/* Sortable header cells (connections table). The button inherits the th look
+   so sortable and plain headers read as one row; only the marker and the
+   active color distinguish them. */
+.dash-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dash-sort-btn:hover {
+  color: var(--text);
+}
+
+.dash-sort-btn.is-active {
+  color: var(--accent-strong);
+}
+
+/* Reserved width so the header doesn't shift when the ▲/▼ marker appears. */
+.dash-sort-marker {
+  display: inline-block;
+  min-width: 1em;
+  font-size: 9px;
+}
+
 .dash-table td {
   padding: 10px;
   border-bottom: 1px solid var(--line);

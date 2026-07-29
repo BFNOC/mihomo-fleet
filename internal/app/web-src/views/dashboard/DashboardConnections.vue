@@ -13,6 +13,7 @@ import { computed, ref, watchEffect } from "vue";
 import { requestGeo, resolveGeo } from "../../dashboard.ts";
 import type { FleetConnectionRow } from "../../dashboard.ts";
 import { countryFlag, filterConnections, formatDuration, formatRate, localAddressLabel, sortConnections } from "../../traffic.ts";
+import type { ConnectionSortDirection, ConnectionSortKey } from "../../traffic.ts";
 import { formatBytes } from "../../format.ts";
 import {
   allConnectionRows,
@@ -37,7 +38,41 @@ import {
 const maxConnectionRows = 500;
 
 const searchQuery = ref("");
-const matchedConnectionRows = computed(() => sortConnections(filterConnections(allConnectionRows.value, searchQuery.value)));
+
+// Column sort for 上传 / 下载 / 时长. Three states per column: first click
+// sorts descending (biggest/longest first — what "which connection is doing
+// this" actually asks), second flips ascending, third returns to the default
+// busiest-first order. `null` = default order.
+type SortableColumn = Exclude<ConnectionSortKey, "activity">;
+const sortColumn = ref<SortableColumn | null>(null);
+const sortDirection = ref<ConnectionSortDirection>("desc");
+
+function toggleSort(column: SortableColumn): void {
+  if (sortColumn.value !== column) {
+    sortColumn.value = column;
+    sortDirection.value = "desc";
+  } else if (sortDirection.value === "desc") {
+    sortDirection.value = "asc";
+  } else {
+    sortColumn.value = null;
+    sortDirection.value = "desc";
+  }
+}
+
+function ariaSort(column: SortableColumn): "ascending" | "descending" | undefined {
+  if (sortColumn.value !== column) return undefined;
+  return sortDirection.value === "asc" ? "ascending" : "descending";
+}
+
+// ▲/▼ here mean sort direction only; up/down traffic is always spelled out as
+// 上传/下载 in the header text, never drawn as an arrow.
+function sortMarker(column: SortableColumn): string {
+  if (sortColumn.value !== column) return "";
+  return sortDirection.value === "asc" ? "▲" : "▼";
+}
+
+const matchedConnectionRows = computed(() =>
+  sortConnections(filterConnections(allConnectionRows.value, searchQuery.value), sortColumn.value ?? "activity", sortDirection.value));
 const shownConnectionRows = computed(() => matchedConnectionRows.value.slice(0, maxConnectionRows));
 
 // Kicking the lookups off is a side effect, so it lives in a watchEffect rather
@@ -65,7 +100,9 @@ const connectionsNote = computed(() => {
   if (searchQuery.value.trim()) {
     return `匹配 ${matched.length} / ${all.length} 条${matched.length > shown.length ? ` · 显示前 ${shown.length}` : ""}`;
   }
-  return `共 ${all.length} 条${matched.length > shown.length ? ` · 显示最忙的 ${shown.length}` : ""}`;
+  // The cap keeps whatever order is active, so "最忙的" is only true un-sorted.
+  const capNote = sortColumn.value ? ` · 显示前 ${shown.length}` : ` · 显示最忙的 ${shown.length}`;
+  return `共 ${all.length} 条${matched.length > shown.length ? capNote : ""}`;
 });
 
 function targetPrimary(row: FleetConnectionRow): string {
@@ -133,9 +170,15 @@ function isClosing(row: FleetConnectionRow): boolean {
             <th scope="col">实例</th>
             <th scope="col">出口</th>
             <th scope="col">GEO</th>
-            <th scope="col">↑ 当前</th>
-            <th scope="col">↓ 当前</th>
-            <th scope="col">时长</th>
+            <th scope="col" :aria-sort="ariaSort('up')">
+              <button type="button" class="dash-sort-btn" :class="{ 'is-active': sortColumn === 'up' }" title="按上传速率排序" @click="toggleSort('up')">上传<span class="dash-sort-marker" aria-hidden="true">{{ sortMarker("up") }}</span></button>
+            </th>
+            <th scope="col" :aria-sort="ariaSort('down')">
+              <button type="button" class="dash-sort-btn" :class="{ 'is-active': sortColumn === 'down' }" title="按下载速率排序" @click="toggleSort('down')">下载<span class="dash-sort-marker" aria-hidden="true">{{ sortMarker("down") }}</span></button>
+            </th>
+            <th scope="col" :aria-sort="ariaSort('duration')">
+              <button type="button" class="dash-sort-btn" :class="{ 'is-active': sortColumn === 'duration' }" title="按连接时长排序" @click="toggleSort('duration')">时长<span class="dash-sort-marker" aria-hidden="true">{{ sortMarker("duration") }}</span></button>
+            </th>
             <th scope="col">操作</th>
           </tr>
         </thead>

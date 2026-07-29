@@ -31,8 +31,8 @@ function formatClock(ms: number): string {
       <span class="dash-live">{{ fleetSampleCount ? "实时" : "采样中" }}</span>
     </div>
     <p class="dash-legend">
-      <span class="dash-legend-item" data-direction="up">↑ {{ currentUp.value }} {{ currentUp.unit }}</span>
-      <span class="dash-legend-item" data-direction="down">↓ {{ currentDown.value }} {{ currentDown.unit }}</span>
+      <span class="dash-legend-item" data-direction="up">上传 {{ currentUp.value }} {{ currentUp.unit }}</span>
+      <span class="dash-legend-item" data-direction="down">下载 {{ currentDown.value }} {{ currentDown.unit }}</span>
     </p>
     <div class="dash-trend-plot">
       <DashboardSparkline :series="fleetTrafficSeries" :width="sparkWidth" :height="trendHeight" />

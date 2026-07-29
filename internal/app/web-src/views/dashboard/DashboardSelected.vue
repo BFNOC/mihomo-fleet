@@ -52,8 +52,8 @@ const selectedNote = computed(() =>
       </div>
       <ul class="dash-selected-metrics" role="list">
         <li><strong>{{ selectedSample.connections }}</strong><span>连接</span></li>
-        <li><strong>{{ selectedUp.value }} <small>{{ selectedUp.unit }}</small></strong><span>↑ 当前</span></li>
-        <li><strong>{{ selectedDown.value }} <small>{{ selectedDown.unit }}</small></strong><span>↓ 当前</span></li>
+        <li><strong>{{ selectedUp.value }} <small>{{ selectedUp.unit }}</small></strong><span>上传</span></li>
+        <li><strong>{{ selectedDown.value }} <small>{{ selectedDown.unit }}</small></strong><span>下载</span></li>
       </ul>
       <p class="dash-trend-note dash-selected-note">{{ selectedNote }}</p>
       <div class="dash-selected-spark">

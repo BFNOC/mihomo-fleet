@@ -221,6 +221,28 @@ test("connections sort by live rate first, then by cumulative bytes", () => {
   assert.deepEqual(rows.map((row) => row.id), ["idle-big", "busy", "idle-small"]);
 });
 
+test("connections sort by a single column with activity as the tie-breaker", () => {
+  const rows = [
+    { id: "a", up: 100, down: 0, upload: 0, download: 0, start: 3 },
+    { id: "b", up: 900, down: 0, upload: 0, download: 0, start: 2 },
+    { id: "tie-busy", up: 500, down: 800, upload: 0, download: 0, start: 1 },
+    { id: "tie-idle", up: 500, down: 0, upload: 0, download: 0, start: 4 },
+  ];
+  assert.deepEqual(sortConnections(rows, "up", "desc").map((row) => row.id), ["b", "tie-busy", "tie-idle", "a"]);
+  assert.deepEqual(sortConnections(rows, "up", "asc").map((row) => row.id), ["a", "tie-busy", "tie-idle", "b"]);
+  assert.deepEqual(sortConnections(rows, "down", "desc").map((row) => row.id), ["tie-busy", "b", "tie-idle", "a"]);
+});
+
+test("connections sort by duration keeps start-less rows last in both directions", () => {
+  const rows = [
+    { id: "young", up: 0, down: 0, upload: 0, download: 0, start: 900 },
+    { id: "no-start", up: 5, down: 5, upload: 0, download: 0 },
+    { id: "old", up: 0, down: 0, upload: 0, download: 0, start: 100 },
+  ];
+  assert.deepEqual(sortConnections(rows, "duration", "desc").map((row) => row.id), ["old", "young", "no-start"]);
+  assert.deepEqual(sortConnections(rows, "duration", "asc").map((row) => row.id), ["young", "old", "no-start"]);
+});
+
 test("connection filter matches host, ip, process, rule, chain and instance name", () => {
   const rows = [
     { host: "example.com", ip: "1.1.1.1", process: "curl", rule: "RuleSet", rulePayload: "gfw", chains: ["HK-01"], instanceName: "主线路" },
