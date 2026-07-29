@@ -24,15 +24,17 @@ import { activeInstance, profileReferenceCount } from "../../state.ts";
 import { defaultProxyBind, instanceModes } from "../../constants.ts";
 import { createActionGate, profileOptionLabel } from "../../app-logic.ts";
 import {
-  chainFromText,
   chainSummary,
-  chainToText,
   instanceMode,
   modeLabel,
   proxyEndpointText,
   selectionSummary,
 } from "../../format.ts";
 import { refreshInstancesList } from "./instance-refresh.ts";
+import ChainOrderField from "../shared/ChainOrderField.vue";
+import LocalProxyField from "../shared/LocalProxyField.vue";
+import ProxyBindField from "../shared/ProxyBindField.vue";
+import { useChainCandidates } from "../shared/use-chain-candidates.ts";
 
 const selected = computed(() => activeInstance(store));
 
@@ -44,9 +46,23 @@ const editMixedPort = ref("");
 const editProxyBind = ref(defaultProxyBind);
 const editControllerPort = ref("");
 const editLocalProxies = ref("");
-const editChain = ref("");
+// The chain is held as the array the PUT body sends. It used to be newline text
+// because a <textarea> could not hold anything else.
+const editChain = ref<string[]>([]);
 
 const showChainFields = computed(() => editMode.value === instanceModes.globalChain);
+
+// Declared after showChainFields on purpose: useChainCandidates() watches its
+// `active` getter with immediate: true, so it reads that computed during setup and
+// referencing it from above would hit the const's temporal dead zone.
+//
+// Gated on this tab being the visible one because the request re-reads and
+// re-parses the profile config, which can be a multi-MB subscription.
+const chainCandidates = useChainCandidates(
+  () => editProfile.value,
+  () => editLocalProxies.value,
+  () => showChainFields.value && store.activeTab === "overview",
+);
 
 function formHasFocus(): boolean {
   return Boolean(editFormEl.value && editFormEl.value.contains(document.activeElement));
@@ -80,7 +96,7 @@ watch(
       editProxyBind.value = instance.proxyBind || defaultProxyBind;
       editControllerPort.value = String(instance.controllerPort);
       editLocalProxies.value = instance.localProxies || "";
-      editChain.value = chainToText(instance.chain);
+      editChain.value = Array.isArray(instance.chain) ? [...instance.chain] : [];
     }
   },
   { immediate: true },
@@ -115,7 +131,7 @@ async function saveBasics(): Promise<void> {
         controllerPort: Number(editControllerPort.value),
         mode: editMode.value,
         localProxies: editMode.value === instanceModes.globalChain ? editLocalProxies.value : "",
-        chain: editMode.value === instanceModes.globalChain ? chainFromText(editChain.value) : [],
+        chain: editMode.value === instanceModes.globalChain ? [...editChain.value] : [],
       }),
     });
     if (store.editInstanceId === instance.id && store.editVersion === editVersion) {
@@ -198,24 +214,29 @@ const overviewSelection = computed(() => (selected.value ? selectionSummary(sele
           <span>混合端口</span>
           <input id="editMixedPort" type="number" min="1" max="65535" v-model="editMixedPort" @input="markDirty">
         </label>
-        <label>
+        <div class="stacked">
           <span>代理绑定地址</span>
-          <input id="editProxyBind" placeholder="127.0.0.1" v-model="editProxyBind" @input="markDirty">
-        </label>
+          <ProxyBindField v-model="editProxyBind" input-id="editProxyBind" @dirty="markDirty" />
+        </div>
         <label>
           <span>控制端口</span>
           <input id="editControllerPort" type="number" min="1" max="65535" v-model="editControllerPort" @input="markDirty">
         </label>
       </div>
       <div id="editChainFields" class="chain-fields" :class="{ hidden: !showChainFields }">
-        <label class="stacked">
+        <div class="stacked">
           <span>本地节点 YAML</span>
-          <textarea id="editLocalProxies" class="compact-code" spellcheck="false" wrap="off" v-model="editLocalProxies" @input="markDirty"></textarea>
-        </label>
-        <label class="stacked">
+          <LocalProxyField
+            v-model="editLocalProxies"
+            :candidates="chainCandidates.state"
+            host-id="editLocalProxies"
+            @dirty="markDirty"
+          />
+        </div>
+        <div class="stacked">
           <span>链路顺序</span>
-          <textarea id="editChain" class="compact-code" spellcheck="false" wrap="off" v-model="editChain" @input="markDirty"></textarea>
-        </label>
+          <ChainOrderField v-model="editChain" :candidates="chainCandidates.state" @dirty="markDirty" />
+        </div>
       </div>
       <button id="saveBasics" type="button" :disabled="!selected || saving" @click="saveBasics">保存基础信息</button>
     </section>

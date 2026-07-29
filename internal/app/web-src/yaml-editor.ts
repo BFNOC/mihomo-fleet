@@ -49,6 +49,13 @@ export interface YamlEditorHandle {
   focusSearch(): void;
   focus(): void;
   getVersion(): number;
+  /**
+   * Re-measures the editor's geometry. Needed when the editor's container was
+   * `display: none` at a moment CodeMirror measured it (the instance form's chain
+   * fields are class-toggled, not unmounted), which leaves it convinced it is zero
+   * pixels tall until something forces a remeasure.
+   */
+  requestMeasure(): void;
   destroy(): void;
 }
 
@@ -119,6 +126,9 @@ export function createYamlEditor(host: Element, options: YamlEditorOptions = {})
     },
     getVersion() {
       return version;
+    },
+    requestMeasure() {
+      view.requestMeasure();
     },
     destroy() {
       view.destroy();

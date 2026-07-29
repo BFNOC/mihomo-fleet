@@ -27,10 +27,13 @@ import { computed, reactive, ref, watch } from "vue";
 import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
 import { defaultProxyBind, instanceModes } from "../../constants.ts";
-import { chainFromText } from "../../format.ts";
 import { profileReferenceCount } from "../../state.ts";
 import type { FleetProfile } from "../../state.ts";
 import { profileOptionLabel } from "../../app-logic.ts";
+import ChainOrderField from "../shared/ChainOrderField.vue";
+import LocalProxyField from "../shared/LocalProxyField.vue";
+import ProxyBindField from "../shared/ProxyBindField.vue";
+import { useChainCandidates } from "../shared/use-chain-candidates.ts";
 
 // Shape of the payload createInstanceFromForm() (pre-Vue app.ts) builds
 // and POSTs to /api/instances. Today that function reads these fields
@@ -69,7 +72,9 @@ interface CreateFormState {
   proxyBind: string;
   controllerPort: string;
   localProxies: string;
-  chain: string;
+  // The chain is the array the payload sends, not text: it used to be a
+  // newline-delimited <textarea> that chainFromText() had to reparse.
+  chain: string[];
 }
 
 const mixedPortPlaceholder = ref("自动");
@@ -88,7 +93,7 @@ const form = reactive<CreateFormState>({
   proxyBind: defaultProxyBind,
   controllerPort: "",
   localProxies: "",
-  chain: "",
+  chain: [],
 });
 
 // Mirrors updateCreateProfileControls()'s hasProfiles-derived disables
@@ -102,6 +107,18 @@ const hasProfiles = computed(() => store.profiles.length > 0);
 // reset watcher below), matching the original, which never cleared these
 // fields on a mode change either.
 const isChainMode = computed(() => form.mode === instanceModes.globalChain);
+
+// Declared *after* isChainMode on purpose: useChainCandidates() watches its
+// `active` getter with immediate: true, so it reads that computed during setup --
+// referencing it from above would hit the const's temporal dead zone and throw.
+//
+// Gated on the panel being open and in chain mode because the request re-reads and
+// re-parses the selected profile's config, which can be a multi-MB subscription.
+const chainCandidates = useChainCandidates(
+  () => form.profileId,
+  () => form.localProxies,
+  () => store.creating && isChainMode.value,
+);
 
 // Mirrors the pre-Vue renderProfileOptions(), as consumed for the create
 // select specifically. The options list itself is
@@ -168,7 +185,7 @@ watch(
     form.proxyBind = defaultProxyBind;
     form.controllerPort = "";
     form.localProxies = "";
-    form.chain = "";
+    form.chain = [];
     mixedPortPlaceholder.value = "自动";
     controllerPortPlaceholder.value = "自动";
     void loadSuggestedPorts();
@@ -202,7 +219,7 @@ async function submit(): Promise<void> {
       controllerPort: Number(form.controllerPort) || 0,
       mode: form.mode,
       localProxies: isChainMode.value ? form.localProxies : "",
-      chain: isChainMode.value ? chainFromText(form.chain) : [],
+      chain: isChainMode.value ? [...form.chain] : [],
     };
     await actions.createInstance(payload);
   } finally {
@@ -258,24 +275,29 @@ function cancel(): void {
       <span>混合端口</span>
       <input id="createMixedPort" v-model="form.mixedPort" type="number" min="1" max="65535" :placeholder="mixedPortPlaceholder" @input="markCreateDirty">
     </label>
-    <label>
+    <div class="stacked">
       <span>代理绑定地址</span>
-      <input id="createProxyBind" v-model="form.proxyBind" placeholder="127.0.0.1" @input="markCreateDirty">
-    </label>
+      <ProxyBindField v-model="form.proxyBind" input-id="createProxyBind" @dirty="markCreateDirty" />
+    </div>
     <label>
       <span>控制端口</span>
       <input id="createControllerPort" v-model="form.controllerPort" type="number" min="1" max="65535" :placeholder="controllerPortPlaceholder" @input="markCreateDirty">
     </label>
   </div>
   <div id="createChainFields" class="chain-fields" :class="{ hidden: !isChainMode }">
-    <label class="stacked">
+    <div class="stacked">
       <span>本地节点 YAML</span>
-      <textarea id="createLocalProxies" v-model="form.localProxies" class="compact-code" spellcheck="false" wrap="off" placeholder="- name: local-hop" @input="markCreateDirty"></textarea>
-    </label>
-    <label class="stacked">
+      <LocalProxyField
+        v-model="form.localProxies"
+        :candidates="chainCandidates.state"
+        host-id="createLocalProxies"
+        @dirty="markCreateDirty"
+      />
+    </div>
+    <div class="stacked">
       <span>链路顺序</span>
-      <textarea id="createChain" v-model="form.chain" class="compact-code" spellcheck="false" wrap="off" placeholder="local-hop&#10;节点选择" @input="markCreateDirty"></textarea>
-    </label>
+      <ChainOrderField v-model="form.chain" :candidates="chainCandidates.state" @dirty="markCreateDirty" />
+    </div>
   </div>
   <div class="actions">
     <button id="createSubmit" class="primary" type="button" :disabled="submitting || !hasProfiles" @click="submit">创建</button>

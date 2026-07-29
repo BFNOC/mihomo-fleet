@@ -1,0 +1,234 @@
+/*
+ * Picker fields: the chip lists, inline pickers and generated-node form that
+ * replaced the three raw inputs in the instance forms (代理绑定地址, 链路顺序,
+ * 本地节点 YAML). Sits next to workbench.css because it dresses the same forms;
+ * `.code.code-inline` deliberately carries two classes so it outranks editor.css's
+ * `.code` height regardless of which file is imported first.
+ */
+.picker-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.field-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.field-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.field-chips.readback .field-chip {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.chip-remove,
+.chip-add,
+.link-button {
+  padding: 2px 6px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.chip-add,
+.link-button {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.chip-remove:hover:not(:disabled),
+.chip-add:hover,
+.link-button:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+}
+
+.chip-remove:disabled,
+.link-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.picker-list {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.picker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.picker-address {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.picker-kind,
+.chain-kind {
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.picker-iface {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.field-inline {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.field-inline > input,
+.field-inline > select {
+  min-width: 0;
+  flex: 1;
+}
+
+.field-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.field-note.error {
+  color: var(--danger);
+}
+
+.field-note.warn {
+  color: var(--warn-text);
+}
+
+.chain-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chain-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+}
+
+.chain-index {
+  width: 18px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.chain-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.chain-move {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.chain-move button {
+  padding: 1px 6px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.chain-move button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.chain-move button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.inline-editor {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.code.code-inline {
+  height: 220px;
+  min-height: 0;
+}
+
+.node-form {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.node-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.node-form-actions {
+  display: flex;
+  gap: 8px;
+}

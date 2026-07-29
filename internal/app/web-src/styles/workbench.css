@@ -323,9 +323,13 @@ label,
   align-items: end;
 }
 
+/* One column, not the 1fr/0.7fr pair these fields used as textareas. Inside the
+   edit form's half of `.split` that pair left the YAML editor 256px wide at a
+   1440px viewport -- narrower than a wrapped `server:` line -- and the chain
+   picker's rows are short enough that stacking costs nothing. */
 .chain-fields {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin: 12px 0;
 }
