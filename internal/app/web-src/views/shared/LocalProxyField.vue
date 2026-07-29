@@ -38,8 +38,8 @@ function onInsert(yaml: string): void {
 <template>
   <div class="picker-field">
     <div class="field-toolbar">
-      <button type="button" class="link-button" :aria-expanded="formOpen" @click="formOpen = !formOpen">
-        {{ formOpen ? "收起表单" : "＋ 添加本地节点" }}
+      <button type="button" class="link-button" aria-haspopup="dialog" @click="formOpen = true">
+        ＋ 添加本地节点
       </button>
     </div>
 

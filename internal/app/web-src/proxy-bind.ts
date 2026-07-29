@@ -158,6 +158,60 @@ export function validateBindAddress(value: string): string {
 }
 
 /**
+ * One interface's addresses, arranged for the picker dialog: `primary` renders
+ * as visible checkbox rows, `moreV6` collapses behind a per-group "还有 N 个
+ * IPv6" toggle, `linkLocal` hides behind the dialog-wide 链路本地 toggle.
+ */
+export interface BindAddressGroup {
+  iface: string;
+  kind: string;
+  primary: BindAddressOption[];
+  moreV6: BindAddressOption[];
+  linkLocal: BindAddressOption[];
+}
+
+/**
+ * Groups the flat /api/system/bind-addresses list by interface for the picker
+ * dialog. Group order is first appearance in the backend list, which is already
+ * kind-sorted (loopback, private, public, linkLocal), so loopback interfaces
+ * lead and link-local-only stragglers trail.
+ *
+ * IPv4 shows directly; IPv6 collapses into `moreV6` unless the interface has no
+ * IPv4 at all, in which case its first IPv6 is promoted so the group is not an
+ * empty header over a "还有 N 个" toggle. A currently selected address is always
+ * promoted to `primary` regardless of family or kind -- a checked box must never
+ * sit behind a collapsed toggle where unchecking it needs a hunt.
+ *
+ * The wildcard entry is excluded: it has no interface and the dialog renders it
+ * as its own fixed row.
+ */
+export function groupBindAddresses(
+  options: readonly BindAddressOption[],
+  selected: readonly string[],
+): BindAddressGroup[] {
+  const byIface = new Map<string, BindAddressGroup>();
+  for (const option of options) {
+    if (option.kind === "wildcard") continue;
+    const iface = option.interface || "";
+    let group = byIface.get(iface);
+    if (!group) {
+      group = { iface, kind: option.kind, primary: [], moreV6: [], linkLocal: [] };
+      byIface.set(iface, group);
+    }
+    if (bindListIncludes(selected, option.address)) group.primary.push(option);
+    else if (option.kind === "linkLocal") group.linkLocal.push(option);
+    else if (option.address.includes(":")) group.moreV6.push(option);
+    else group.primary.push(option);
+  }
+  for (const group of byIface.values()) {
+    if (!group.primary.length && group.moreV6.length) {
+      group.primary.push(group.moreV6.shift() as BindAddressOption);
+    }
+  }
+  return [...byIface.values()];
+}
+
+/**
  * What the instance will actually listen on, for the preview line under the
  * field. Mirrors coalesceProxyBindAddresses(): once 0.0.0.0 is in the list every
  * other IPv4 address is redundant, and showing them anyway makes the user think

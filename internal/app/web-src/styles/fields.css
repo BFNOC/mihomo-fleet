@@ -76,35 +76,102 @@
   opacity: 0.45;
 }
 
-.picker-list {
-  display: grid;
-  gap: 6px;
-  padding: 10px;
+/*
+ * Shared chrome for the field dialogs (BindAddressDialog, LocalProxyForm). A
+ * native <dialog> in the top layer: it gets the full viewport width budget
+ * instead of the form column's, which is what lets every address render on a
+ * single unwrapped line and the node form breathe.
+ */
+.field-dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 0;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
   background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-card);
 }
 
-.picker-head {
+.field-dialog::backdrop {
+  background: rgba(28, 36, 33, 0.35);
+}
+
+.field-dialog-frame {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(72vh, 640px);
+}
+
+.field-dialog-head,
+.field-dialog-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
 }
 
-.picker-row {
+.field-dialog-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.field-dialog-foot {
+  border-top: 1px solid var(--line);
+}
+
+.field-dialog-title {
+  font-weight: 600;
+}
+
+.field-dialog-scroll {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 12px;
+  padding: 12px 16px;
+  overflow-y: auto;
+}
+
+.bind-group {
+  display: grid;
+  gap: 2px;
+}
+
+.bind-group-head {
+  display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
-.picker-address {
+.bind-iface {
   font-family: var(--mono);
+  font-weight: 600;
+}
+
+.bind-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 0;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.bind-address {
+  min-width: 0;
+  font-family: var(--mono);
+  /* Fallback for viewports narrower than the shortest dialog width; addresses
+     normally fit one line, which is the point of the dialog. */
   overflow-wrap: anywhere;
 }
 
-.picker-kind,
+.bind-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.bind-kind,
 .chain-kind {
   padding: 1px 6px;
   border-radius: var(--radius-xs);
@@ -114,9 +181,9 @@
   white-space: nowrap;
 }
 
-.picker-iface {
-  color: var(--muted);
-  font-size: 11.5px;
+.bind-more {
+  justify-self: start;
+  padding: 2px 0;
 }
 
 .field-inline {
@@ -211,15 +278,6 @@
 .code.code-inline {
   height: 220px;
   min-height: 0;
-}
-
-.node-form {
-  display: grid;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--panel);
 }
 
 .node-form-grid {
