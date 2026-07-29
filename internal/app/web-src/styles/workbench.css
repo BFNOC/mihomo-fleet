@@ -280,6 +280,9 @@ label,
 .stacked {
   display: grid;
   gap: 6px;
+  /* Grid's default stretch tears a label from its control whenever a taller
+     sibling shares the row (混合端口 next to 代理绑定地址); pack to the top. */
+  align-content: start;
 }
 
 .segmented {
