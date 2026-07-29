@@ -42,6 +42,15 @@ export const instanceModes = {
   rule: "rule",
   globalChain: "global-chain",
 } as const;
+
+// The two proxy-group names internal/app/config.go generates for global-chain
+// mode (globalChainSelectGroupName / globalChainRelayGroupName). The chain may
+// reference the select group and must never reference the relay group, so the
+// chain picker needs both names -- and they were previously spelled inline in
+// format.ts and a CreatePanel placeholder, where a backend rename would have
+// left them silently wrong.
+export const chainSelectGroupName: string = "节点选择";
+export const chainRelayGroupName: string = "代理链";
 export type InstanceMode = (typeof instanceModes)[keyof typeof instanceModes];
 
 // Mirrors the Status values the Go controller ever assigns to an

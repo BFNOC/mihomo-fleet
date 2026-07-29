@@ -151,10 +151,16 @@ func (c *Controller) Shutdown(ctx context.Context) {
 
 func (c *Controller) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system", c.handleSystem)
+	mux.HandleFunc("/api/system/bind-addresses", c.handleBindAddresses)
 	mux.HandleFunc("/api/profiles", c.handleProfiles)
 	mux.HandleFunc("/api/profiles/", c.handleProfile)
 	mux.HandleFunc("/api/ports/suggest", c.handlePortSuggest)
 	mux.HandleFunc("/api/instances", c.handleInstances)
+	// This literal pattern is more specific than "/api/instances/" below, so
+	// net/http.ServeMux prefers it -- POST /api/instances/chain-candidates
+	// never reaches handleInstance's id/action routing. See
+	// TestRouteChainCandidatesPrecedesInstanceRoute.
+	mux.HandleFunc("/api/instances/chain-candidates", c.handleChainCandidates)
 	mux.HandleFunc("/api/instances/", c.handleInstance)
 	mux.HandleFunc("/api/mihomo/", c.handleMihomoProxy)
 	mux.HandleFunc("/api/geoip", c.handleGeoIP)

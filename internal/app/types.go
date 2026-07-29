@@ -138,3 +138,30 @@ type SystemStatus struct {
 	MihomoSource string `json:"mihomoSource"`
 	Version      string `json:"version,omitempty"`
 }
+
+// BindAddressOption is one entry GET /api/system/bind-addresses returns: an
+// address the web UI's proxyBind picker may offer, alongside the kind of
+// address it is and -- for anything but the synthetic wildcard entry --
+// which interface it came from. See hostBindAddresses (bind_addresses.go).
+type BindAddressOption struct {
+	Address   string `json:"address"`
+	Kind      string `json:"kind"`
+	Interface string `json:"interface,omitempty"`
+}
+
+// ChainCandidate is one name POST /api/instances/chain-candidates offers the
+// web UI's global-chain "chain" picker. See chainCandidates
+// (chain_candidates.go).
+type ChainCandidate struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+// ChainCandidatesResult is POST /api/instances/chain-candidates' response
+// body.
+type ChainCandidatesResult struct {
+	Candidates    []ChainCandidate `json:"candidates"`
+	ProviderNames []string         `json:"providerNames,omitempty"`
+	LocalError    string           `json:"localError,omitempty"`
+	Truncated     bool             `json:"truncated,omitempty"`
+}
