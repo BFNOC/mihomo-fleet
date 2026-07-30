@@ -59,6 +59,11 @@ export function describeGeoFile(file: FleetGeoFileStatus): string {
   return file.updateAvailable ? "有更新" : "已是最新";
 }
 
+/** Source path display for a geodata file. */
+export function geoSourcePath(file: FleetGeoFileStatus): string {
+  return file.sourcePath || "";
+}
+
 /** Whether the geodata 更新 button should be disabled: nothing to do (every file either up to date or unverifiable), or a request is already in flight. */
 export function geoApplyDisabled(status: FleetGeoUpdateStatus, busy: boolean): boolean {
   if (busy) return true;

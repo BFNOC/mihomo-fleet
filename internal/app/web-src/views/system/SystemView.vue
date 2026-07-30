@@ -27,6 +27,7 @@ import {
   describeGeoResult,
   geoApplyDisabled,
   geoFileLabel,
+  geoSourcePath,
   geoSummaryText,
 } from "./system-update.ts";
 import BackupSection from "./BackupSection.vue";
@@ -145,8 +146,12 @@ watch(
       <p>{{ geoSummaryText(geoStatus) }}</p>
       <ul class="system-geo-list">
         <li v-for="file in geoStatus.files" :key="file.name">
-          <span class="system-geo-name">{{ geoFileLabel(file.name) }}</span>
-          <span class="system-geo-note">{{ describeGeoFile(file) }}</span>
+          <div class="system-geo-info">
+            <span class="system-geo-name">{{ geoFileLabel(file.name) }}</span>
+            <span class="system-geo-note">{{ describeGeoFile(file) }}</span>
+          </div>
+          <span v-if="geoSourcePath(file)" class="system-geo-path" :title="geoSourcePath(file)">{{ geoSourcePath(file) }}</span>
+          <span v-else class="system-geo-path system-geo-path--missing">未找到</span>
         </li>
       </ul>
       <div class="system-actions">
@@ -203,13 +208,19 @@ watch(
 
 .system-geo-list li {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 4px;
   padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   font-size: 13px;
+}
+
+.system-geo-info {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .system-geo-name {
@@ -219,5 +230,16 @@ watch(
 .system-geo-note {
   color: var(--muted);
   font-size: 12.5px;
+}
+
+.system-geo-path {
+  font-size: 11.5px;
+  font-family: var(--mono, monospace);
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.system-geo-path--missing {
+  color: var(--danger, #c00);
 }
 </style>

@@ -27,6 +27,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,23 +53,22 @@ var geoAssetMap = []struct {
 	{upstream: "GeoLite2-ASN.mmdb", canonical: "ASN.mmdb"},
 }
 
-// geoDataDir is the data-dir "geo/" directory geo_update.go downloads into.
-// geodataSourceDirs() (geodata.go) already checks filepath.Join(dataDir,
-// "geo") FIRST among every instance's geodata source candidates, so a file
-// landing here is picked up by the next prepareGeodata call (next instance
-// start, or the next time an already-running instance's geodata is
-// (re-)staged) with no further wiring needed.
+// geoDataDir is the data-dir "geo/" subdirectory that serves as the
+// default download destination when no existing copy is found elsewhere.
+// geodataSourceDirs() (geodata.go) lists it FIRST among every instance's
+// geodata source candidates, so it wins over exe-dir/cwd copies.
 func (c *Controller) geoDataDir() string {
 	return filepath.Join(c.opts.DataDir, "geo")
 }
 
 // GeoUpdateStatus reports, per canonical geodata file: whether it is
-// currently present in the data-dir geo/ directory, whether
+// currently present in any geodata source directory (dataDir/geo, exe dir,
+// cwd, mihomo dir — same search as runtime staging), whether
 // meta-rules-dat's latest release publishes a checksum for it, and whether
-// that checksum differs from (or the file is simply missing versus) the
-// locally-installed copy. Never returns an error for a single file's own
-// resolution problem -- see CheckError, populated only for a release-wide
-// failure (couldn't reach the API at all).
+// that checksum differs from the locally-installed copy. SourcePath
+// records the resolved path when present. Never returns an error for a
+// single file's resolution problem -- see CheckError, populated only for
+// a release-wide failure (couldn't reach the API at all).
 func (c *Controller) GeoUpdateStatus(ctx context.Context) GeoUpdateStatus {
 	release, err := fetchGitHubRelease(ctx, c.updateClient, geoReleaseAPI)
 	if err != nil {
@@ -76,11 +76,16 @@ func (c *Controller) GeoUpdateStatus(ctx context.Context) GeoUpdateStatus {
 	}
 
 	geoDir := c.geoDataDir()
+	sourceDirs := c.manager.geodataSourceDirs()
 	status := GeoUpdateStatus{Files: make([]GeoFileStatus, 0, len(geoAssetMap))}
 	for _, mapping := range geoAssetMap {
 		file := GeoFileStatus{Name: mapping.canonical}
-		localSHA, statErr := sha256File(filepath.Join(geoDir, mapping.canonical))
+		localPath := resolveLocalGeoFile(geoDir, sourceDirs, mapping.canonical)
+		localSHA, statErr := sha256File(localPath)
 		file.Present = statErr == nil
+		if file.Present {
+			file.SourcePath = localPath
+		}
 
 		checksum, err := resolveChecksum(ctx, c.updateClient, release.Assets, mapping.upstream)
 		switch {
@@ -119,44 +124,76 @@ func (c *Controller) ApplyGeoUpdate(ctx context.Context) (GeoUpdateResult, error
 		return GeoUpdateResult{}, fmt.Errorf("create geo data directory: %w", err)
 	}
 
+	sourceDirs := c.manager.geodataSourceDirs()
 	result := GeoUpdateResult{}
 	for _, mapping := range geoAssetMap {
 		asset := findAssetByName(release.Assets, mapping.upstream)
 		if asset == nil {
-			continue // this upstream file isn't published this release -- nothing to do, not an error
+			continue
 		}
 
-		// MANDATORY, before any byte of the actual file is downloaded: no
-		// checksum, no download. Same ordering as core_update.go's
-		// ApplyCoreUpdate.
 		checksum, err := resolveChecksum(ctx, c.updateClient, release.Assets, mapping.upstream)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: refusing unverified update: %v", mapping.canonical, err))
 			continue
 		}
 
-		downloadPath, err := downloadToFile(ctx, c.updateClient, asset.BrowserDownloadURL, geoDir, maxDownloadBytes)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: download failed: %v", mapping.canonical, err))
-			continue
-		}
-		if err := verifyChecksum(downloadPath, checksum); err != nil {
-			_ = os.Remove(downloadPath)
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: aborted, nothing was changed: %v", mapping.canonical, err))
+		target := resolveLocalGeoFile(geoDir, sourceDirs, mapping.canonical)
+		if localSHA, err := sha256File(target); err == nil && strings.EqualFold(localSHA, checksum) {
 			continue
 		}
 
-		// Geodata assets are published uncompressed (confirmed against the
-		// real release: geoip.dat/geosite.dat/country.mmdb/
-		// GeoLite2-ASN.mmdb carry no .gz/.zip extension and are the final
-		// content directly) -- no decompression step, straight to the swap.
-		target := filepath.Join(geoDir, mapping.canonical)
-		if err := atomicSwap(downloadPath, target, false); err != nil {
-			_ = os.Remove(downloadPath)
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: install failed: %v", mapping.canonical, err))
-			continue
+		if err := geoDownloadAndInstall(ctx, c.updateClient, asset.BrowserDownloadURL, target, checksum); err != nil {
+			// H1: if target dir is read-only (e.g. exe in /usr/local/bin),
+			// fall back to geoDir which is always writable.
+			fallback := filepath.Join(geoDir, mapping.canonical)
+			if fallback != target {
+				if err2 := geoDownloadAndInstall(ctx, c.updateClient, asset.BrowserDownloadURL, fallback, checksum); err2 != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("%s: %v (fallback: %v)", mapping.canonical, err, err2))
+					continue
+				}
+			} else {
+				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", mapping.canonical, err))
+				continue
+			}
 		}
 		result.Updated = append(result.Updated, mapping.canonical)
 	}
 	return result, nil
+}
+
+func geoDownloadAndInstall(ctx context.Context, client *http.Client, url, target, checksum string) error {
+	targetDir := filepath.Dir(target)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("prepare directory: %w", err)
+	}
+	downloadPath, err := downloadToFile(ctx, client, url, targetDir, maxDownloadBytes)
+	if err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+	if err := verifyChecksum(downloadPath, checksum); err != nil {
+		_ = os.Remove(downloadPath)
+		return fmt.Errorf("checksum mismatch: %w", err)
+	}
+	if err := atomicSwap(downloadPath, target, false); err != nil {
+		_ = os.Remove(downloadPath)
+		return fmt.Errorf("install: %w", err)
+	}
+	return nil
+}
+
+func resolveLocalGeoFile(geoDir string, sourceDirs []string, canonical string) string {
+	primary := filepath.Join(geoDir, canonical)
+	if info, err := os.Stat(primary); err == nil && !info.IsDir() {
+		return primary
+	}
+	for _, g := range geodataFiles {
+		if g.canonical == canonical {
+			if found := findGeodataSource(sourceDirs, g.aliases); found != "" {
+				return found
+			}
+			break
+		}
+	}
+	return primary
 }

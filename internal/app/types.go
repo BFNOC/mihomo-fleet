@@ -231,6 +231,7 @@ type CoreUpdateResult struct {
 type GeoFileStatus struct {
 	Name              string `json:"name"`
 	Present           bool   `json:"present"`
+	SourcePath        string `json:"sourcePath,omitempty"`
 	ChecksumAvailable bool   `json:"checksumAvailable"`
 	UpdateAvailable   bool   `json:"updateAvailable"`
 }

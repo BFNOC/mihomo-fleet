@@ -134,6 +134,7 @@ export interface FleetCoreUpdateResult {
 export interface FleetGeoFileStatus {
   name: string;
   present: boolean;
+  sourcePath?: string;
   checksumAvailable: boolean;
   updateAvailable: boolean;
 }
