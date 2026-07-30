@@ -7,8 +7,13 @@ import {
   describeCoreStatus,
   describeGeoFile,
   describeGeoResult,
+  formatBytes,
+  formatGeoProgress,
+  formatSpeed,
   geoApplyDisabled,
+  geoFileDescription,
   geoFileLabel,
+  geoProgressPercent,
   geoSummaryText,
 } from "./views/system/system-update.ts";
 import type { FleetCoreUpdateStatus, FleetGeoFileStatus, FleetGeoUpdateStatus } from "./state.ts";
@@ -95,4 +100,57 @@ test("describeGeoResult reports updated files, errors, or a no-op", () => {
   assert.match(describeGeoResult(["GeoIP.dat", "GeoSite.dat"], undefined), /GeoSite 规则库/);
   assert.match(describeGeoResult(undefined, ["ASN.mmdb: refusing unverified update"]), /ASN\.mmdb/);
   assert.equal(describeGeoResult(undefined, undefined), "没有文件需要更新。");
+});
+
+test("geoFileDescription maps known canonical names and falls back to empty for unknown ones", () => {
+  assert.equal(geoFileDescription("GeoIP.dat"), "mihomo 规则引擎 GEOIP 匹配");
+  assert.equal(geoFileDescription("GeoSite.dat"), "mihomo 规则引擎 GEOSITE 匹配");
+  assert.equal(geoFileDescription("Country.mmdb"), "连接列表国家代码解析");
+  assert.equal(geoFileDescription("ASN.mmdb"), "mihomo 规则引擎 IP-ASN 匹配");
+  assert.equal(geoFileDescription("Something.new"), "");
+});
+
+test("formatBytes renders whole bytes with no decimal and larger units with one", () => {
+  assert.equal(formatBytes(0), "0 B");
+  assert.equal(formatBytes(-5), "0 B");
+  assert.equal(formatBytes(512), "512 B");
+  assert.equal(formatBytes(1024), "1.0 KB");
+  assert.equal(formatBytes(1536), "1.5 KB");
+  assert.equal(formatBytes(1_258_291), "1.2 MB");
+  assert.equal(formatBytes(6 * 1024 * 1024), "6.0 MB");
+  assert.equal(formatBytes(2 * 1024 * 1024 * 1024), "2.0 GB");
+});
+
+test("formatSpeed reuses formatBytes and appends /s", () => {
+  assert.equal(formatSpeed(0), "0 B/s");
+  assert.equal(formatSpeed(1_048_576), "1.0 MB/s");
+  assert.equal(formatSpeed(345 * 1024), "345.0 KB/s");
+});
+
+test("geoProgressPercent clamps to 0-100 and treats an unknown total as 0", () => {
+  assert.equal(geoProgressPercent(50, 100), 50);
+  assert.equal(geoProgressPercent(100, 100), 100);
+  assert.equal(geoProgressPercent(150, 100), 100);
+  assert.equal(geoProgressPercent(10, 0), 0);
+});
+
+test("formatGeoProgress summarizes file, position, size, and speed on one line", () => {
+  const line = formatGeoProgress({
+    file: "GeoSite.dat",
+    downloaded: 4_400_000,
+    totalSize: 6_600_000,
+    speed: 1_100_000,
+    index: 1,
+    total: 4,
+  });
+  assert.match(line, /GeoSite 规则库/);
+  assert.match(line, /\(2\/4\)|（2\/4）/);
+  assert.match(line, /4\.2 MB \/ 6\.3 MB/);
+  assert.match(line, /1\.0 MB\/s/);
+});
+
+test("formatGeoProgress omits the '/ total' size half when totalSize is unknown", () => {
+  const line = formatGeoProgress({ file: "ASN.mmdb", downloaded: 1024, totalSize: 0, speed: 0, index: 0, total: 4 });
+  assert.match(line, /1\.0 KB/);
+  assert.doesNotMatch(line, / \/ /);
 });

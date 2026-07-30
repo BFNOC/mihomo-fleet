@@ -114,19 +114,75 @@ func (c *Controller) GeoUpdateStatus(ctx context.Context) GeoUpdateStatus {
 // GeoUpdateStatus's per-file shape. ApplyGeoUpdate itself only returns a
 // non-nil error when the release list could not be fetched at all, so there
 // is nothing to iterate.
+//
+// This is now a thin wrapper around ApplyGeoUpdateSSE (docs/
+// geo-update-enhancements.md P1): the download/verify/install sequence
+// lives in exactly one place, and ApplyGeoUpdate just collects that stream's
+// terminal "complete" event into the GeoUpdateResult shape callers already
+// depend on (both the Go test suite and, historically, the JSON POST
+// response) instead of duplicating the loop.
 func (c *Controller) ApplyGeoUpdate(ctx context.Context) (GeoUpdateResult, error) {
+	var result GeoUpdateResult
+	err := c.ApplyGeoUpdateSSE(ctx, nil, func(evt GeoDownloadEvent) {
+		if evt.Event == "complete" {
+			result = GeoUpdateResult{Updated: evt.Updated, Errors: evt.Errors}
+		}
+	})
+	return result, err
+}
+
+// ApplyGeoUpdateSSE performs the same download/verify/install sequence as
+// ApplyGeoUpdate, but reports progress as a sequence of GeoDownloadEvent
+// values via onEvent instead of only returning a single result at the end
+// (docs/geo-update-enhancements.md P1). onEvent is invoked synchronously
+// from this goroutine, in strict per-file "start" -> zero or more
+// "progress" -> "done" order, followed by exactly one final "complete"
+// event once every file in geoAssetMap has been considered; the caller
+// (controller.go's streamGeoUpdate) turns each call into one SSE frame.
+//
+// A file already up to date locally is reported as "done"/"skipped"
+// without a "start"/"progress" pair, since no download happens for it. A
+// file the current release simply does not publish (see
+// TestGeoUpdateStatusHandlesUnpublishedFile) produces no event at all,
+// matching ApplyGeoUpdate's pre-SSE behavior of silently leaving it out of
+// both Updated and Errors.
+//
+// Like ApplyGeoUpdate, this only returns a non-nil error when the release
+// list itself could not be fetched -- in that case no per-file events and
+// no "complete" event are ever sent, since there is nothing to iterate;
+// streamGeoUpdate is responsible for surfacing that error to the client
+// itself.
+//
+// downloadClient is P2's hook (docs/geo-update-enhancements.md, section 3):
+// when nil, every request -- the GitHub API call above included -- goes
+// through c.updateClient exactly as before. When non-nil (built by
+// proxyClientForInstance from a caller-selected running instance),
+// downloadClient is used ONLY for the actual asset downloads
+// (geoDownloadAndInstall below); the release-metadata and checksum-sidecar
+// requests (fetchGitHubRelease/resolveChecksum) always stay on
+// c.updateClient. Routing the small, latency-sensitive metadata calls
+// through an extra local hop would only add a point of failure for no
+// bandwidth benefit -- it's the multi-megabyte asset bodies a slow direct
+// path actually struggles with.
+func (c *Controller) ApplyGeoUpdateSSE(ctx context.Context, downloadClient *http.Client, onEvent func(GeoDownloadEvent)) error {
 	release, err := fetchGitHubRelease(ctx, c.updateClient, geoReleaseAPI)
 	if err != nil {
-		return GeoUpdateResult{}, fmt.Errorf("check latest geodata release: %w", err)
+		return fmt.Errorf("check latest geodata release: %w", err)
 	}
 	geoDir := c.geoDataDir()
 	if err := os.MkdirAll(geoDir, 0o755); err != nil {
-		return GeoUpdateResult{}, fmt.Errorf("create geo data directory: %w", err)
+		return fmt.Errorf("create geo data directory: %w", err)
+	}
+
+	client := downloadClient
+	if client == nil {
+		client = c.updateClient
 	}
 
 	sourceDirs := c.manager.geodataSourceDirs()
-	result := GeoUpdateResult{}
-	for _, mapping := range geoAssetMap {
+	total := len(geoAssetMap)
+	var updated, errs []string
+	for index, mapping := range geoAssetMap {
 		asset := findAssetByName(release.Assets, mapping.upstream)
 		if asset == nil {
 			continue
@@ -134,40 +190,57 @@ func (c *Controller) ApplyGeoUpdate(ctx context.Context) (GeoUpdateResult, error
 
 		checksum, err := resolveChecksum(ctx, c.updateClient, release.Assets, mapping.upstream)
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: refusing unverified update: %v", mapping.canonical, err))
+			msg := fmt.Sprintf("%s: refusing unverified update: %v", mapping.canonical, err)
+			errs = append(errs, msg)
+			onEvent(GeoDownloadEvent{Event: "done", File: mapping.canonical, Index: index, Total: total, Result: "error", Message: msg})
 			continue
 		}
 
 		target := resolveLocalGeoFile(geoDir, sourceDirs, mapping.canonical)
 		if localSHA, err := sha256File(target); err == nil && strings.EqualFold(localSHA, checksum) {
+			onEvent(GeoDownloadEvent{Event: "done", File: mapping.canonical, Index: index, Total: total, Result: "skipped"})
 			continue
 		}
 
-		if err := geoDownloadAndInstall(ctx, c.updateClient, asset.BrowserDownloadURL, target, checksum); err != nil {
+		onEvent(GeoDownloadEvent{Event: "start", File: mapping.canonical, Index: index, Total: total})
+		onProgress := func(downloaded, totalSize, bytesPerSec int64) {
+			onEvent(GeoDownloadEvent{
+				Event: "progress", File: mapping.canonical, Index: index, Total: total,
+				Downloaded: downloaded, TotalSize: totalSize, Speed: bytesPerSec,
+			})
+		}
+
+		if err := geoDownloadAndInstall(ctx, client, asset.BrowserDownloadURL, target, checksum, onProgress); err != nil {
 			// H1: if target dir is read-only (e.g. exe in /usr/local/bin),
 			// fall back to geoDir which is always writable.
 			fallback := filepath.Join(geoDir, mapping.canonical)
 			if fallback != target {
-				if err2 := geoDownloadAndInstall(ctx, c.updateClient, asset.BrowserDownloadURL, fallback, checksum); err2 != nil {
-					result.Errors = append(result.Errors, fmt.Sprintf("%s: %v (fallback: %v)", mapping.canonical, err, err2))
+				if err2 := geoDownloadAndInstall(ctx, client, asset.BrowserDownloadURL, fallback, checksum, onProgress); err2 != nil {
+					msg := fmt.Sprintf("%s: %v (fallback: %v)", mapping.canonical, err, err2)
+					errs = append(errs, msg)
+					onEvent(GeoDownloadEvent{Event: "done", File: mapping.canonical, Index: index, Total: total, Result: "error", Message: msg})
 					continue
 				}
 			} else {
-				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", mapping.canonical, err))
+				msg := fmt.Sprintf("%s: %v", mapping.canonical, err)
+				errs = append(errs, msg)
+				onEvent(GeoDownloadEvent{Event: "done", File: mapping.canonical, Index: index, Total: total, Result: "error", Message: msg})
 				continue
 			}
 		}
-		result.Updated = append(result.Updated, mapping.canonical)
+		updated = append(updated, mapping.canonical)
+		onEvent(GeoDownloadEvent{Event: "done", File: mapping.canonical, Index: index, Total: total, Result: "updated"})
 	}
-	return result, nil
+	onEvent(GeoDownloadEvent{Event: "complete", Updated: updated, Errors: errs})
+	return nil
 }
 
-func geoDownloadAndInstall(ctx context.Context, client *http.Client, url, target, checksum string) error {
+func geoDownloadAndInstall(ctx context.Context, client *http.Client, url, target, checksum string, onProgress func(downloaded, totalSize, bytesPerSec int64)) error {
 	targetDir := filepath.Dir(target)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("prepare directory: %w", err)
 	}
-	downloadPath, err := downloadToFile(ctx, client, url, targetDir, maxDownloadBytes)
+	downloadPath, err := downloadToFile(ctx, client, url, targetDir, maxDownloadBytes, onProgress)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}

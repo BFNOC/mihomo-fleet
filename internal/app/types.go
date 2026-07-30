@@ -242,14 +242,62 @@ type GeoUpdateStatus struct {
 	CheckError string          `json:"checkError,omitempty"`
 }
 
-// GeoUpdateResult is POST /api/system/geo-update's response: the canonical
-// names actually installed/updated, and a human-readable message per file
-// that was skipped or failed (a partial failure -- e.g. one file's checksum
+// GeoUpdateResult is ApplyGeoUpdate's return value: the canonical names
+// actually installed/updated, and a human-readable message per file that
+// was skipped or failed (a partial failure -- e.g. one file's checksum
 // unavailable -- never blocks the others, so this is additive information,
-// not an error by itself).
+// not an error by itself). No longer serialized directly as an HTTP
+// response body -- POST /api/system/geo-update now streams Server-Sent
+// Events instead (docs/geo-update-enhancements.md P1, GeoDownloadEvent
+// below), whose terminal "complete" event carries the same Updated/Errors
+// pair. This type still exists as ApplyGeoUpdate's own return shape (used
+// directly by geo_update_test.go) and as the value ApplyGeoUpdate itself
+// extracts from ApplyGeoUpdateSSE's stream.
 type GeoUpdateResult struct {
 	Updated []string `json:"updated,omitempty"`
 	Errors  []string `json:"errors,omitempty"`
+}
+
+// GeoDownloadEvent is one Server-Sent Event frame POST /api/system/geo-update
+// streams (docs/geo-update-enhancements.md P1), written by controller.go's
+// streamGeoUpdate as "event: <Event>\ndata: <json of this struct>\n\n" and
+// produced by geo_update.go's ApplyGeoUpdateSSE. Event distinguishes the
+// frame's shape (only the fields relevant to that Event are populated --
+// the rest are zero/omitted):
+//
+//   - "start": a file's download is beginning. File/Index/Total set.
+//   - "progress": a download is in flight. File/Index/Total plus
+//     Downloaded/TotalSize/Speed set. TotalSize is 0 when the upstream
+//     response carried no Content-Length.
+//   - "done": one file finished, one way or another. File/Index/Total plus
+//     Result ("updated"/"skipped"/"error") set; Message set only when
+//     Result is "error".
+//   - "complete": the whole update finished. Updated/Errors set, mirroring
+//     GeoUpdateResult -- this is the terminal frame of the stream.
+type GeoDownloadEvent struct {
+	Event      string   `json:"event"`
+	File       string   `json:"file,omitempty"`
+	Index      int      `json:"index"`
+	Total      int      `json:"total,omitempty"`
+	Downloaded int64    `json:"downloaded"`
+	TotalSize  int64    `json:"totalSize,omitempty"`
+	Speed      int64    `json:"speed,omitempty"`
+	Result     string   `json:"result,omitempty"`
+	Message    string   `json:"message,omitempty"`
+	Updated    []string `json:"updated,omitempty"`
+	Errors     []string `json:"errors,omitempty"`
+}
+
+// ProxyInstanceOption is one entry in GET /api/system/proxy-instances' list
+// (P2, docs/geo-update-enhancements.md section 3): the minimal shape the
+// frontend's download-source dropdown needs to label an option and, once
+// chosen, send back as ApplyGeoUpdateSSE's proxyInstanceId. Deliberately not
+// the full InstanceView -- this endpoint's only job is picking an eligible
+// (running) proxy instance, not describing it.
+type ProxyInstanceOption struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	MixedPort int    `json:"mixedPort"`
 }
 
 // FleetBundleVersion is FleetBundle's current schema version (feature #7,

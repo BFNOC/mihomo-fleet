@@ -2,10 +2,11 @@ import { API_SECRET_STORAGE_KEY } from "./constants.ts";
 import type {
   FleetCoreUpdateResult,
   FleetCoreUpdateStatus,
-  FleetGeoUpdateResult,
+  FleetGeoDownloadEvent,
   FleetGeoUpdateStatus,
   FleetImportResult,
   FleetInstance,
+  FleetProxyInstance,
 } from "./state.ts";
 
 // Shape of the JSON error body the Go controller always sends alongside a
@@ -159,8 +160,111 @@ export async function fetchGeoUpdateStatus(): Promise<FleetGeoUpdateStatus> {
   return api<FleetGeoUpdateStatus>("/api/system/geo-update");
 }
 
-export async function applyGeoUpdate(): Promise<FleetGeoUpdateResult> {
-  return api<FleetGeoUpdateResult>("/api/system/geo-update", { method: "POST" });
+// fetchProxyInstances lists the running instances eligible to proxy a
+// core/geodata download through (docs/geo-update-enhancements.md P2) --
+// backs the update panel's download-source dropdown.
+export async function fetchProxyInstances(): Promise<FleetProxyInstance[]> {
+  const res = await api<{ instances: FleetProxyInstance[] }>("/api/system/proxy-instances");
+  return res.instances;
+}
+
+// applyGeoUpdateSSE streams POST /api/system/geo-update's download progress
+// (docs/geo-update-enhancements.md P1). EventSource cannot be used here --
+// it is GET-only, and this endpoint is a POST that also single-flights
+// concurrent updates -- so the response's ReadableStream is read and SSE
+// frames ("event: <type>\ndata: <json>\n\n") are parsed by hand instead. A
+// non-2xx response (409 single-flight conflict, 401 missing/invalid token,
+// 400 an unknown/stopped proxyInstanceId) never reaches the SSE body at all
+// -- handleGeoUpdate/streamGeoUpdate (controller.go) only switch
+// Content-Type to text/event-stream after resolving proxyInstanceId (if any)
+// and acquiring the update lock -- so those cases are parsed as the same
+// plain JSON error body every other api() call already expects, via
+// buildApiError.
+//
+// Auth note: this bypasses api()'s 401 → requestApiToken() prompt/retry flow
+// because the response switches to text/event-stream after the lock check --
+// by the time a 401 could happen, the response format is already committed.
+// In practice the status poll (fetchGeoUpdateStatus, which goes through
+// api()) runs first on panel open and prompts for the token there.
+//
+// proxyInstanceId is P2's addition (docs/geo-update-enhancements.md section
+// 3): when supplied, sent as the POST body so the backend routes the actual
+// asset downloads through that managed instance's mixed-port instead of
+// dialing GitHub/its CDN directly. Omitted (the historical, still-default
+// behavior) means direct.
+//
+// SSE parser assumptions (coupled to controller.go's emitter, not the full
+// SSE spec): frames use LF-only line endings (not CRLF), data is always a
+// single-line JSON object (no multi-line data: fields), and every successful
+// stream ends with a "complete" event.
+export async function applyGeoUpdateSSE(
+  onEvent: (event: FleetGeoDownloadEvent) => void,
+  proxyInstanceId?: string,
+): Promise<void> {
+  const token = localStorage.getItem(API_SECRET_STORAGE_KEY) || "";
+  const headers: Record<string, string> = { "X-Mihomo-Fleet": "1" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let body: string | undefined;
+  if (proxyInstanceId) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify({ proxyInstanceId });
+  }
+
+  const res = await fetchOrThrowNetworkError("/api/system/geo-update", { method: "POST", headers, body });
+  if (!res.ok) throw await buildApiError(res);
+  if (!res.body) throw new Error("服务器未返回下载进度流。");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let sawComplete = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() || "";
+      for (const frame of frames) {
+        const event = parseSSEFrame(frame);
+        if (event) {
+          if (event.event === "complete") sawComplete = true;
+          onEvent(event);
+        }
+      }
+    }
+    buffer += decoder.decode();
+    const trailing = parseSSEFrame(buffer);
+    if (trailing) {
+      if (trailing.event === "complete") sawComplete = true;
+      onEvent(trailing);
+    }
+  } catch {
+    throw new Error("下载进度流连接中断。");
+  }
+  if (!sawComplete) throw new Error("下载进度流意外中断。");
+}
+
+// parseSSEFrame reads one "event: <type>\ndata: <json>" block (already
+// split on the blank-line frame separator by the caller). The `data:`
+// line's JSON already carries its own `event` field (GeoDownloadEvent.Event
+// on the Go side), so the `event:` line is only used as a fallback for the
+// theoretical case that field came back empty -- both are read, per this
+// module's SSE-parsing contract, rather than trusting just one.
+function parseSSEFrame(frame: string): FleetGeoDownloadEvent | null {
+  let eventLine = "";
+  let data = "";
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event:")) eventLine = line.slice(6).trim();
+    else if (line.startsWith("data:")) data += line.slice(5).trim();
+  }
+  if (!data) return null;
+  try {
+    const parsed = JSON.parse(data) as FleetGeoDownloadEvent;
+    return parsed.event ? parsed : { ...parsed, event: eventLine as FleetGeoDownloadEvent["event"] };
+  } catch {
+    return null;
+  }
 }
 
 // Fleet backup / migration (feature #7, docs/feature-roadmap-post-1.3.md #7):

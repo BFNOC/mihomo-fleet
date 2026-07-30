@@ -145,8 +145,24 @@ export interface FleetGeoUpdateStatus {
   checkError?: string;
 }
 
-/** Mirrors internal/app/types.go's GeoUpdateResult. */
-export interface FleetGeoUpdateResult {
+/**
+ * Mirrors internal/app/types.go's GeoDownloadEvent -- one Server-Sent Event
+ * frame POST /api/system/geo-update streams (docs/geo-update-enhancements.md
+ * P1). `event` distinguishes the frame's shape; only the fields relevant to
+ * that event are ever populated by the backend (the rest arrive undefined,
+ * same as any other `omitempty` Go field). See that Go struct's doc comment
+ * for what each event carries.
+ */
+export interface FleetGeoDownloadEvent {
+  event: "start" | "progress" | "done" | "complete";
+  file?: string;
+  index?: number;
+  total?: number;
+  downloaded?: number;
+  totalSize?: number;
+  speed?: number;
+  result?: string;
+  message?: string;
   updated?: string[];
   errors?: string[];
 }
@@ -171,6 +187,18 @@ export interface FleetImportItemResult {
 export interface FleetImportResult {
   profiles: FleetImportItemResult[];
   instances: FleetImportItemResult[];
+}
+
+/**
+ * Mirrors internal/app/types.go's ProxyInstanceOption (GET
+ * /api/system/proxy-instances, docs/geo-update-enhancements.md P2): the
+ * running instances eligible to proxy a core/geodata download through,
+ * shown in the update panel's download-source dropdown.
+ */
+export interface FleetProxyInstance {
+  id: string;
+  name: string;
+  mixedPort: number;
 }
 
 /** A single group/proxy/kind latency measurement, keyed by latencyKey(). */

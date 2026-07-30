@@ -397,7 +397,7 @@ func (c *Controller) ApplyCoreUpdate(ctx context.Context) (CoreUpdateResult, err
 	}
 
 	targetDir := filepath.Dir(c.mihomoPath)
-	downloadPath, err := downloadToFile(ctx, c.updateClient, asset.BrowserDownloadURL, targetDir, maxDownloadBytes)
+	downloadPath, err := downloadToFile(ctx, c.updateClient, asset.BrowserDownloadURL, targetDir, maxDownloadBytes, nil)
 	if err != nil {
 		return CoreUpdateResult{}, fmt.Errorf("download %s: %w", assetName, err)
 	}

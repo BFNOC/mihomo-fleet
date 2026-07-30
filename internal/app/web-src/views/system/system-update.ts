@@ -52,6 +52,26 @@ export function geoFileLabel(name: string): string {
   return geoFileLabels[name] || name;
 }
 
+const geoFileDescriptions: Record<string, string> = {
+  "GeoIP.dat": "mihomo 规则引擎 GEOIP 匹配",
+  "GeoSite.dat": "mihomo 规则引擎 GEOSITE 匹配",
+  "Country.mmdb": "连接列表国家代码解析",
+  "ASN.mmdb": "mihomo 规则引擎 IP-ASN 匹配",
+};
+
+/**
+ * Usage description for one geodata file's canonical name, shown as a small
+ * note under its status line (docs/geo-update-enhancements.md #1/P3):
+ * GeoIP.dat/GeoSite.dat/ASN.mmdb are staged for the mihomo *instances'* own
+ * rule engine and mihomo-fleet itself never reads them, so without this
+ * note their purpose is not obvious from a panel that otherwise only shows
+ * present/updatable status. Empty string for anything this table doesn't
+ * recognize.
+ */
+export function geoFileDescription(name: string): string {
+  return geoFileDescriptions[name] || "";
+}
+
 /** One geodata file row's status text. */
 export function describeGeoFile(file: FleetGeoFileStatus): string {
   if (!file.present) return file.checksumAvailable ? "本地缺失，可下载" : "本地缺失，且上游未发布校验和";
@@ -85,4 +105,57 @@ export function describeGeoResult(updated: string[] | undefined, errors: string[
   if (errors && errors.length) parts.push(errors.join("；"));
   if (!parts.length) parts.push("没有文件需要更新。");
   return parts.join(" ");
+}
+
+// --- Download progress (docs/geo-update-enhancements.md P1) --------------
+
+const byteUnits = ["B", "KB", "MB", "GB"];
+
+/**
+ * Human-readable byte count, e.g. formatBytes(1_234_567) -> "1.2 MB". Whole
+ * bytes render with no decimal (matches how a byte count is normally read);
+ * every larger unit keeps one decimal place. Caps at GB -- nothing this app
+ * downloads (geodata files, the mihomo core binary) approaches that size,
+ * but capping avoids an ever-growing unit list for a stray huge value
+ * rather than silently mis-rendering one.
+ */
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  let value = n;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < byteUnits.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${byteUnits[unitIndex]}`;
+}
+
+/** Human-readable transfer speed, e.g. formatSpeed(1_048_576) -> "1.0 MB/s". */
+export function formatSpeed(bytesPerSec: number): string {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return "0 B/s";
+  return `${formatBytes(bytesPerSec)}/s`;
+}
+
+/**
+ * 0-100 download percentage for the progress bar's width. totalSize <= 0
+ * (Content-Length was not available) returns 0 rather than dividing by
+ * zero -- SystemView.vue still shows the downloaded/speed text in that
+ * case, just an empty bar instead of a guessed fill.
+ */
+export function geoProgressPercent(downloaded: number, totalSize: number): number {
+  if (totalSize <= 0) return 0;
+  return Math.min(100, Math.max(0, (downloaded / totalSize) * 100));
+}
+
+/** One-line summary of a geodata download's current progress, e.g. "GeoSite.dat（2/4） 4.2 MB / 6.3 MB  1.1 MB/s". Used for the SSE progress event's accessible text; SystemView.vue's visual layout renders the same fields across a compact multi-line block instead. */
+export function formatGeoProgress(p: {
+  file: string;
+  downloaded: number;
+  totalSize: number;
+  speed: number;
+  index: number;
+  total: number;
+}): string {
+  const sizePart = p.totalSize > 0 ? `${formatBytes(p.downloaded)} / ${formatBytes(p.totalSize)}` : formatBytes(p.downloaded);
+  return `${geoFileLabel(p.file)}（${p.index + 1}/${p.total}） ${sizePart}  ${formatSpeed(p.speed)}`;
 }

@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // errChecksumUnavailable is returned by checksum resolution when the
@@ -94,13 +95,67 @@ func fetchBytes(ctx context.Context, client *http.Client, rawURL string, maxByte
 	return data, nil
 }
 
+// progressReportInterval bounds how often progressReader invokes its
+// callback. 200ms keeps controller.go's SSE geodata-update stream from
+// turning a single multi-second download into a firehose of near-identical
+// events, while still feeling live to a human watching a progress bar.
+const progressReportInterval = 200 * time.Millisecond
+
+// progressReader wraps an io.Reader, invoking onProgress with the
+// cumulative bytes read so far, totalSize (as given by the caller --
+// typically an HTTP response's Content-Length, 0 when unknown), and the
+// average download speed in bytes/sec measured from when the reader was
+// created. onProgress fires at most once per progressReportInterval, PLUS
+// exactly once more on the terminal Read that returns a non-nil error (EOF
+// or otherwise), so the last event a caller observes always reflects the
+// true final byte count rather than whatever fell inside the last interval.
+type progressReader struct {
+	reader     io.Reader
+	onProgress func(downloaded, totalSize, bytesPerSec int64)
+	totalSize  int64
+	downloaded int64
+	start      time.Time
+	lastReport time.Time
+}
+
+func newProgressReader(r io.Reader, totalSize int64, onProgress func(downloaded, totalSize, bytesPerSec int64)) *progressReader {
+	now := time.Now()
+	return &progressReader{reader: r, onProgress: onProgress, totalSize: totalSize, start: now, lastReport: now}
+}
+
+func (p *progressReader) Read(buf []byte) (int, error) {
+	n, err := p.reader.Read(buf)
+	if n > 0 {
+		p.downloaded += int64(n)
+	}
+	if n > 0 || err != nil {
+		now := time.Now()
+		if err != nil || now.Sub(p.lastReport) >= progressReportInterval {
+			p.lastReport = now
+			var bps int64
+			if elapsed := now.Sub(p.start).Seconds(); elapsed > 0 {
+				bps = int64(float64(p.downloaded) / elapsed)
+			}
+			p.onProgress(p.downloaded, p.totalSize, bps)
+		}
+	}
+	return n, err
+}
+
 // downloadToFile GETs url through client and streams the response body into
 // a new temp file created in dir (so a later os.Rename onto a target in the
 // same dir is a same-filesystem, near-atomic rename), capped at maxBytes.
 // Returns the temp file's path; the caller owns removing it once it is no
 // longer needed (whether because it was renamed into place by atomicSwap,
 // or because a later verification/extraction step failed).
-func downloadToFile(ctx context.Context, client *http.Client, rawURL string, dir string, maxBytes int64) (string, error) {
+//
+// onProgress, when non-nil, is wrapped around the response body via
+// progressReader so the caller gets periodic downloaded/totalSize/speed
+// callbacks (docs/geo-update-enhancements.md P1). Passing nil (every
+// pre-existing caller until that feature) skips the wrapping entirely --
+// no progressReader allocation, no extra time.Now() calls per chunk --
+// so behavior and cost are identical to before this parameter existed.
+func downloadToFile(ctx context.Context, client *http.Client, rawURL string, dir string, maxBytes int64, onProgress func(downloaded, totalSize, bytesPerSec int64)) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("parse URL: %w", err)
@@ -137,7 +192,15 @@ func downloadToFile(ctx context.Context, client *http.Client, rawURL string, dir
 		}
 	}()
 
-	limited := io.LimitReader(res.Body, maxBytes+1)
+	var body io.Reader = res.Body
+	if onProgress != nil {
+		totalSize := res.ContentLength
+		if totalSize < 0 {
+			totalSize = 0
+		}
+		body = newProgressReader(res.Body, totalSize, onProgress)
+	}
+	limited := io.LimitReader(body, maxBytes+1)
 	written, err := io.Copy(tmp, limited)
 	if err != nil {
 		_ = tmp.Close()

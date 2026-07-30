@@ -133,6 +133,7 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   // right after it stops, while it is still transitioning through the
   // backend's not-running state.
   [/^instance "(.+)" is not running$/, (match) => `实例 ${match[1]} 未在运行，请等待其停止完成或重新启动。`],
+  [/^instance "(.+)" is not running \(status: (.+)\)$/, (match) => `实例 ${match[1]} 未在运行（当前状态：${match[2]}），无法用于代理下载。`],
   [/^instance "(.+)" did not stop starting in time$/, (match) => `实例 ${match[1]} 未能在限定时间内停止启动，请稍后重试。`],
   [/^stop instance before delete: (.+)$/, (match) => `删除前请先停止实例：${match[1]}`],
   [/^mixed proxy port (\d+) is unavailable$/, (match) => `混合端口 ${match[1]} 不可用。`],

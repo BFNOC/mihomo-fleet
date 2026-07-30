@@ -5,13 +5,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 func writeTestFile(t *testing.T, path string, content []byte, perm os.FileMode) {
@@ -118,6 +122,153 @@ func TestParseChecksumSidecar(t *testing.T) {
 	}
 	if _, err := parseChecksumSidecar([]byte("not-a-hex-digest\n")); err != errChecksumUnavailable {
 		t.Fatalf("malformed sidecar = %v, want errChecksumUnavailable", err)
+	}
+}
+
+// stepReader hands back one fixed chunk per Read call, then io.EOF -- lets
+// a test control exactly when each Read happens (and how long it sleeps in
+// between) without depending on how a real network reader happens to chunk
+// its data.
+type stepReader struct {
+	chunks [][]byte
+	i      int
+}
+
+func (r *stepReader) Read(buf []byte) (int, error) {
+	if r.i >= len(r.chunks) {
+		return 0, io.EOF
+	}
+	n := copy(buf, r.chunks[r.i])
+	r.i++
+	return n, nil
+}
+
+// TestProgressReaderReportsPeriodicallyAndOnFinalRead covers progressReader
+// directly: a report within the same progressReportInterval window is
+// suppressed, a report is emitted once that interval has elapsed, and the
+// terminal EOF read always forces one last report reflecting the true
+// cumulative total even if the interval has not elapsed since the previous
+// report.
+func TestProgressReaderReportsPeriodicallyAndOnFinalRead(t *testing.T) {
+	src := &stepReader{chunks: [][]byte{[]byte("aaaaa"), []byte("bb"), []byte("ccc")}} // 5, 2, 3 bytes
+	type report struct{ downloaded, totalSize, speed int64 }
+	var reports []report
+	pr := newProgressReader(src, 42, func(downloaded, totalSize, bytesPerSec int64) {
+		reports = append(reports, report{downloaded, totalSize, bytesPerSec})
+	})
+	buf := make([]byte, 16)
+
+	// First read, immediately after construction: well under
+	// progressReportInterval, so no report yet.
+	if n, err := pr.Read(buf); n != 5 || err != nil {
+		t.Fatalf("first Read = (%d, %v), want (5, nil)", n, err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("reports after first Read = %d, want 0 (interval not elapsed)", len(reports))
+	}
+
+	// Wait past the interval, then read again: must report now, with the
+	// CUMULATIVE total (5+2=7), not just the latest chunk's size.
+	time.Sleep(progressReportInterval + 30*time.Millisecond)
+	if n, err := pr.Read(buf); n != 2 || err != nil {
+		t.Fatalf("second Read = (%d, %v), want (2, nil)", n, err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("reports after second Read = %d, want 1 (interval elapsed)", len(reports))
+	}
+	if reports[0].downloaded != 7 {
+		t.Fatalf("reports[0].downloaded = %d, want 7", reports[0].downloaded)
+	}
+	if reports[0].totalSize != 42 {
+		t.Fatalf("reports[0].totalSize = %d, want 42 (passed through from caller)", reports[0].totalSize)
+	}
+	if reports[0].speed <= 0 {
+		t.Fatalf("reports[0].speed = %d, want > 0", reports[0].speed)
+	}
+
+	// Read the final chunk immediately (no sleep): interval has not
+	// elapsed since the last report, so still no new report.
+	if n, err := pr.Read(buf); n != 3 || err != nil {
+		t.Fatalf("third Read = (%d, %v), want (3, nil)", n, err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("reports after third Read = %d, want still 1 (interval not elapsed)", len(reports))
+	}
+
+	// Terminal EOF read: forces one final report with the true total (10),
+	// regardless of interval timing.
+	if n, err := pr.Read(buf); n != 0 || err != io.EOF {
+		t.Fatalf("fourth Read = (%d, %v), want (0, io.EOF)", n, err)
+	}
+	if len(reports) != 2 {
+		t.Fatalf("reports after EOF Read = %d, want 2 (terminal report forced)", len(reports))
+	}
+	if reports[1].downloaded != 10 {
+		t.Fatalf("final report downloaded = %d, want 10 (true total)", reports[1].downloaded)
+	}
+}
+
+// TestDownloadToFileReportsProgressAndFinalTotals covers downloadToFile's
+// onProgress wiring end to end: totalSize comes from the response's
+// Content-Length, and the last callback observed reflects the fully
+// downloaded file, not a partial read.
+func TestDownloadToFileReportsProgressAndFinalTotals(t *testing.T) {
+	withUpdateTargetAllowed(t)
+	const body = "0123456789abcdef"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	var calls int
+	var lastDownloaded, lastTotalSize int64
+	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, maxDownloadBytes, func(downloaded, totalSize, bytesPerSec int64) {
+		calls++
+		lastDownloaded = downloaded
+		lastTotalSize = totalSize
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+
+	if calls == 0 {
+		t.Fatal("onProgress was never called")
+	}
+	if lastDownloaded != int64(len(body)) {
+		t.Fatalf("final reported downloaded = %d, want %d", lastDownloaded, len(body))
+	}
+	if lastTotalSize != int64(len(body)) {
+		t.Fatalf("final reported totalSize = %d, want %d (from Content-Length)", lastTotalSize, len(body))
+	}
+}
+
+// TestDownloadToFileNilProgressSkipsWrapping covers the "nil onProgress
+// behaves exactly as before" contract: downloadToFile must still succeed
+// and write the full content when no callback is supplied at all.
+func TestDownloadToFileNilProgressSkipsWrapping(t *testing.T) {
+	withUpdateTargetAllowed(t)
+	const body = "no progress callback here"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, maxDownloadBytes, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != body {
+		t.Fatalf("downloaded content = %q, want %q", got, body)
 	}
 }
 
