@@ -69,9 +69,30 @@ func (c *Controller) handleMihomoProxy(w http.ResponseWriter, r *http.Request) {
 	// whose ControllerPort had since been reused by an unrelated local
 	// process would receive that process, not mihomo, complete with the
 	// instance's controller secret in the Authorization header. Busy
-	// (running or still starting) is the same guard the PUT handlers above
-	// use to decide whether an instance's runtime state can be trusted.
-	if !c.manager.Busy(id) {
+	// (running or still starting) is too loose a guard for this specific
+	// path: while an instance is only "starting", its controller port may
+	// not be listening yet at all, or the exact same reused-port hazard
+	// above could still be squatting on it during that preparation window --
+	// so this requires a *confirmed* running process (state, not Busy)
+	// before ever forwarding a request at it (finding #3, code review). The
+	// PUT handlers in instance_handler.go still use Busy on purpose, since
+	// blocking an edit for the whole starting window is the guard they
+	// actually want.
+	//
+	// This narrows the window but cannot close it: the process can exit at any
+	// instant, including between this check and the proxy's own dial below, or
+	// after a successful dial. No check-then-connect sequence is atomic
+	// against the port being freed and re-bound, so no lock fixes this. What
+	// IS closed here is the far wider window where a *known-stopped*
+	// instance's port was forwarded to unconditionally.
+	//
+	// The residual is a consequence of addressing instances by localhost TCP
+	// port, not of anything mihomo forces: it also supports
+	// external-controller-unix / external-controller-pipe (see config.go's
+	// strip list), whose per-process, never-reused addresses would remove the
+	// reused-port hazard entirely. That migration is deliberately deferred --
+	// see docs/known-limitations.md for the full assessment and plan.
+	if c.manager.state(id) == nil {
 		writeError(w, http.StatusConflict, fmt.Errorf("instance %q is not running", id))
 		return
 	}

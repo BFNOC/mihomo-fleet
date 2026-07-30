@@ -275,6 +275,37 @@ func (s *Store) Get(id string) (*Instance, bool) {
 	return cloneInstance(item), true
 }
 
+// ExportSnapshot returns every profile, every instance, and every profile's
+// config.yaml content (keyed by profile ID), all read under a single
+// s.mu.RLock hold -- unlike ExportBundle's previous separate ListProfiles/
+// ReadProfileConfig/List calls, which left a window for a concurrent
+// Create/Patch/Delete to land between them and produce an inconsistent
+// bundle (finding #4, code review). Config files are read from disk while
+// still holding the lock so a profile's metadata and its config content are
+// always the same instant's view, matching the point-in-time guarantee the
+// rest of this snapshot already gives instances/profiles.
+func (s *Store) ExportSnapshot() (profiles []*Profile, instances []*Instance, configs map[string]string, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	profiles = make([]*Profile, 0, len(s.profiles))
+	configs = make(map[string]string, len(s.profiles))
+	for _, profile := range s.profiles {
+		profiles = append(profiles, cloneProfile(profile))
+		raw, readErr := os.ReadFile(profile.ConfigPath)
+		if readErr != nil {
+			return nil, nil, nil, fmt.Errorf("read profile %q config: %w", profile.Name, readErr)
+		}
+		configs[profile.ID] = string(raw)
+	}
+
+	instances = make([]*Instance, 0, len(s.items))
+	for _, item := range s.items {
+		instances = append(instances, cloneInstance(item))
+	}
+	return profiles, instances, configs, nil
+}
+
 func (s *Store) CreateProfile(name, config string) (*Profile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

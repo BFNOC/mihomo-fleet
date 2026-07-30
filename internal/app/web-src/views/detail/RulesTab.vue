@@ -34,6 +34,10 @@ async function refreshRules(): Promise<void> {
   // and bail so line-84's "启动实例后读取" copy renders -- same running-gate as
   // proxy-groups.ts's refreshProxies().
   if (instance.status !== "running") {
+    // Invalidate any request already in flight from before the stop -- its
+    // isStale() check reads requestSeq, so bumping it here means that
+    // response can no longer pass and overwrite the clear below.
+    ++requestSeq;
     rules.value = [];
     loadError.value = "";
     rulesLoading.value = false;

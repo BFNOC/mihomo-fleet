@@ -20,8 +20,18 @@ import (
 // so the bundle's field order -- and therefore ImportBundle's creation order
 // on the other end -- is deterministic rather than following store's
 // internal map iteration order.
+//
+// The read itself goes through Store.ExportSnapshot, which takes a single
+// s.mu.RLock for the whole profiles+instances+configs read -- this used to
+// call ListProfiles/ReadProfileConfig (once per profile)/List as separate,
+// independently-locked calls, leaving a window for a concurrent
+// Create/Patch/Delete to land midway through and produce an inconsistent
+// bundle (finding #4, code review).
 func ExportBundle(store *Store) (*FleetBundle, error) {
-	profiles := store.ListProfiles()
+	profiles, instances, configs, err := store.ExportSnapshot()
+	if err != nil {
+		return nil, fmt.Errorf("export: %w", err)
+	}
 	sort.Slice(profiles, func(i, j int) bool {
 		return profiles[i].CreatedAt.Before(profiles[j].CreatedAt)
 	})
@@ -31,21 +41,16 @@ func ExportBundle(store *Store) (*FleetBundle, error) {
 		Profiles:   make([]BundleProfile, 0, len(profiles)),
 	}
 	for _, profile := range profiles {
-		config, err := store.ReadProfileConfig(profile.ID)
-		if err != nil {
-			return nil, fmt.Errorf("export profile %q: %w", profile.Name, err)
-		}
 		bundle.Profiles = append(bundle.Profiles, BundleProfile{
 			ID:                    profile.ID,
 			Name:                  profile.Name,
-			Config:                config,
+			Config:                configs[profile.ID],
 			SubscriptionURL:       profile.SubscriptionURL,
 			AutoUpdate:            profile.AutoUpdate,
 			UpdateIntervalMinutes: profile.UpdateIntervalMinutes,
 		})
 	}
 
-	instances := store.List()
 	sort.Slice(instances, func(i, j int) bool {
 		return instances[i].CreatedAt.Before(instances[j].CreatedAt)
 	})
@@ -214,8 +219,16 @@ func createBundle(store *Store, bundle *FleetBundle) (*ImportResult, error) {
 
 	var createdProfileIDs []string
 	var createdInstanceIDs []string
-	rollback := func() {
-		rollbackImport(store, createdInstanceIDs, createdProfileIDs)
+	// rollback merges cause (the failure that triggered the rollback) with
+	// any error rollbackImport itself hits while cleaning up -- previously
+	// rollbackImport's failures were only logged server-side and the caller
+	// only ever saw cause, silently hiding an incomplete cleanup from the
+	// operator (finding #5, code review).
+	rollback := func(cause error) error {
+		if rollbackErr := rollbackImport(store, createdInstanceIDs, createdProfileIDs); rollbackErr != nil {
+			return errors.Join(cause, rollbackErr)
+		}
+		return cause
 	}
 
 	profileIDMap := make(map[string]string, len(bundle.Profiles))
@@ -230,8 +243,7 @@ func createBundle(store *Store, bundle *FleetBundle) (*ImportResult, error) {
 
 		profile, err := store.CreateProfile(dedupedName, bp.Config)
 		if err != nil {
-			rollback()
-			return nil, fmt.Errorf("create profile %q: %w", name, err)
+			return nil, rollback(fmt.Errorf("create profile %q: %w", name, err))
 		}
 		createdProfileIDs = append(createdProfileIDs, profile.ID)
 		profileIDMap[bp.ID] = profile.ID
@@ -245,8 +257,7 @@ func createBundle(store *Store, bundle *FleetBundle) (*ImportResult, error) {
 				AutoUpdate:            &autoUpdate,
 				UpdateIntervalMinutes: &interval,
 			}); err != nil {
-				rollback()
-				return nil, fmt.Errorf("set subscription metadata for profile %q: %w", name, err)
+				return nil, rollback(fmt.Errorf("set subscription metadata for profile %q: %w", name, err))
 			}
 		}
 
@@ -283,8 +294,7 @@ func createBundle(store *Store, bundle *FleetBundle) (*ImportResult, error) {
 		}
 		item, reallocated, err := createImportedInstance(store, opts)
 		if err != nil {
-			rollback()
-			return nil, fmt.Errorf("create instance %q: %w", name, err)
+			return nil, rollback(fmt.Errorf("create instance %q: %w", name, err))
 		}
 		createdInstanceIDs = append(createdInstanceIDs, item.ID)
 
@@ -333,20 +343,27 @@ func createImportedInstance(store *Store, opts createInstanceOptions) (*Instance
 // (reverse creation order), then profiles (also reverse order) -- by the
 // time every created instance is gone, every created profile is guaranteed
 // unreferenced, exactly what DeleteProfile requires. Both Delete/
-// DeleteProfile calls are best-effort: a failure here means the store's own
-// save already failed once for this record, so there is nothing more
-// meaningful to do than log it and move on to the rest of the rollback.
-func rollbackImport(store *Store, instanceIDs, profileIDs []string) {
+// DeleteProfile calls are logged individually as they happen (as before) and
+// also collected into the returned error (errors.Join), so a caller that
+// merges this into the original failure (createBundle's rollback closure)
+// can tell the operator cleanup was incomplete instead of only the server
+// log knowing (finding #5, code review). A nil return means every created
+// record was successfully removed.
+func rollbackImport(store *Store, instanceIDs, profileIDs []string) error {
+	var errs []error
 	for i := len(instanceIDs) - 1; i >= 0; i-- {
 		if err := store.Delete(instanceIDs[i]); err != nil {
 			log.Printf("import rollback: delete instance %s failed: %v", instanceIDs[i], err)
+			errs = append(errs, fmt.Errorf("rollback: delete instance %s: %w", instanceIDs[i], err))
 		}
 	}
 	for i := len(profileIDs) - 1; i >= 0; i-- {
 		if err := store.DeleteProfile(profileIDs[i]); err != nil {
 			log.Printf("import rollback: delete profile %s failed: %v", profileIDs[i], err)
+			errs = append(errs, fmt.Errorf("rollback: delete profile %s: %w", profileIDs[i], err))
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // dedupName returns name unchanged if it isn't in taken; otherwise appends

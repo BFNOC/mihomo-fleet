@@ -20,6 +20,10 @@ const exportError = ref("");
 const importing = ref(false);
 const importError = ref("");
 const importSummary = ref<string[]>([]);
+// Set only when the import itself succeeded but the follow-up list refresh
+// did not -- see onFileChange. Kept separate from importError so the failed
+// half is never rendered in the styling that means "the import failed".
+const importNote = ref("");
 const fileInput = ref<HTMLInputElement | null>(null);
 
 async function onExport(): Promise<void> {
@@ -58,19 +62,29 @@ async function onFileChange(event: Event): Promise<void> {
 
   importing.value = true;
   importError.value = "";
+  importNote.value = "";
   importSummary.value = [];
   try {
     const text = await file.text();
     const result = await importBundle(text);
     importSummary.value = summarizeImportResult(result);
-    // The import just created profiles/instances behind the store's back;
-    // pull the fresh lists so the rest of the UI (instance switcher, profile
-    // manager) reflects them immediately instead of waiting for the next poll.
-    await refresh({ forceInstances: true });
   } catch (err) {
     importError.value = localizedMessage(err instanceof Error ? err.message : String(err));
-  } finally {
     importing.value = false;
+    return;
+  }
+  importing.value = false;
+
+  // The import above already succeeded (importSummary is set); this only
+  // pulls the fresh instance/profile lists so the rest of the UI (instance
+  // switcher, profile manager) reflects them immediately instead of waiting
+  // for the next poll. refresh() never throws -- it reports its own failure
+  // through the shared error banner and returns false -- so the outcome is
+  // read from the return value, not a catch. On failure the banner alone
+  // would read as "the import failed", so this says explicitly that it did
+  // not; without that the user retries and creates duplicate data.
+  if (!(await refresh({ forceInstances: true }))) {
+    importNote.value = "导入已成功，上方的错误提示来自随后的列表刷新，请手动刷新页面查看导入结果。";
   }
 }
 </script>
@@ -83,6 +97,7 @@ async function onFileChange(event: Event): Promise<void> {
   </div>
   <p v-if="exportError" class="message error">{{ exportError }}</p>
   <p v-if="importError" class="message error">{{ importError }}</p>
+  <p v-if="importNote" class="message warning">{{ importNote }}</p>
   <ul v-if="importSummary.length" class="backup-summary">
     <li v-for="(line, index) in importSummary" :key="index">{{ line }}</li>
   </ul>

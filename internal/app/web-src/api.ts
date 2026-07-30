@@ -241,6 +241,22 @@ export async function applyGeoUpdateSSE(
     }
   } catch {
     throw new Error("下载进度流连接中断。");
+  } finally {
+    // Releases the reader (and the underlying connection/server-side
+    // single-flight lock) whether the loop finished cleanly, threw, or
+    // onEvent itself threw partway through. Both calls are needed and in
+    // this order: cancel() closes the stream but leaves it locked, and
+    // releaseLock() is what actually unlocks it. cancel() returns a Promise
+    // that can reject on an already-closed stream (the normal-completion
+    // path), so it is awaited with a catch rather than left floating --
+    // otherwise that rejection escapes as an unhandled Promise rejection
+    // that no caller's try/catch can see.
+    await reader.cancel().catch(() => {});
+    try {
+      reader.releaseLock();
+    } catch {
+      /* already released */
+    }
   }
   if (!sawComplete) throw new Error("下载进度流意外中断。");
 }

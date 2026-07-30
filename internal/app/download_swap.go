@@ -210,6 +210,15 @@ func downloadToFile(ctx context.Context, client *http.Client, rawURL string, dir
 		_ = tmp.Close()
 		return "", fmt.Errorf("download exceeds %d byte limit", maxBytes)
 	}
+	// Flush the downloaded content to durable storage before it is ever
+	// considered for atomicSwap's rename -- without this, the data could
+	// still be sitting in the page cache when a power loss hits, leaving the
+	// eventual rename target pointing at a file the OS never actually
+	// persisted (finding #6, code review).
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
@@ -422,6 +431,20 @@ func atomicSwap(newPath, targetPath string, executable bool) error {
 		}
 	}
 
+	// fsync newPath's contents BEFORE it is renamed into place, and AFTER the
+	// chmod above so the mode change is part of what gets flushed rather than
+	// dirty metadata left behind the synced data. Doing this here rather than
+	// in each producer is what makes the guarantee unconditional: downloadToFile
+	// syncs its own temp file, but the core-update path then decompresses that
+	// into a SECOND temp file (copyLimitedToTemp) and installs THAT -- syncing
+	// only the producer left the file actually being installed unsynced. Every
+	// caller reaches this function, so this is the one place covering all of
+	// them. A failure is fatal: silently installing content that may not
+	// survive a power loss is the exact outcome this exists to prevent.
+	if err := syncFile(newPath); err != nil {
+		return fmt.Errorf("flush new file to disk: %w", err)
+	}
+
 	bakPath := targetPath + ".bak"
 	_ = os.Remove(bakPath) // best-effort; a stale .bak from a previous swap is expected to be replaced
 
@@ -456,5 +479,40 @@ func atomicSwap(newPath, targetPath string, executable bool) error {
 		}
 		return fmt.Errorf("install new file failed, rolled back to previous version: %w", err)
 	}
+
+	// fsync the parent directory so the rename above is durable against a
+	// power loss shortly after this call returns -- POSIX rename durability
+	// requires fsync-ing the containing directory's own metadata, not just
+	// the renamed file itself. Deliberately best-effort, unlike the newPath
+	// sync at the top: Windows cannot open a directory as a file at all
+	// (os.Open fails outright) and several filesystems reject Sync on a
+	// directory handle with EINVAL, so a hard failure here would break the
+	// update path on those platforms for a guarantee they cannot provide
+	// either way. The file contents are already durable at this point; only
+	// the directory entry's ordering is at stake.
+	if dir, err := os.Open(filepath.Dir(targetPath)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
 	return nil
+}
+
+// syncFile opens path and flushes its contents to stable storage.
+//
+// Opened O_RDWR, not os.Open's O_RDONLY, because that is a hard requirement on
+// Windows: Go implements File.Sync there as FlushFileBuffers, which the Win32
+// API only accepts on a handle carrying GENERIC_WRITE and otherwise fails with
+// ERROR_ACCESS_DENIED. A read-only handle here would make every core/geodata
+// atomicSwap fail on Windows while passing every test on Linux, where fsync(2)
+// on a read-only descriptor is perfectly legal.
+func syncFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }

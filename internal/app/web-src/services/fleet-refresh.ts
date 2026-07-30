@@ -42,8 +42,20 @@ let refreshSeq = 0;
 // success right after a fresh (non-poll) message never touches it.
 let lastPollErrorText = "";
 
-/** Re-pulls system + profiles + instances into the store. */
-export async function refresh(options: RefreshOptions = {}): Promise<void> {
+/**
+ * Re-pulls system + profiles + instances into the store.
+ *
+ * Never throws: a network failure is reported through the shared error banner
+ * and reflected in the returned boolean instead, so a periodic poll failing
+ * cannot reject into a caller that has no meaningful recovery.
+ *
+ * Returns false ONLY when this call actually failed to refresh and said so in
+ * the banner. Being superseded by a newer refresh returns true: that newer
+ * call owns writing the store and reporting its own outcome. BackupSection.vue
+ * reads this to decide whether to warn that the list did not refresh, and a
+ * newer refresh already being in flight is not something to warn about.
+ */
+export async function refresh(options: RefreshOptions = {}): Promise<boolean> {
   const seq = ++refreshSeq;
   try {
     const [system, profiles, list] = await Promise.all([
@@ -51,7 +63,13 @@ export async function refresh(options: RefreshOptions = {}): Promise<void> {
       api<{ profiles?: FleetProfile[] }>("/api/profiles"),
       api<{ instances?: FleetInstance[] }>("/api/instances"),
     ]);
-    if (seq !== refreshSeq) return;
+    // Superseded by a newer refresh: that call now owns writing the store and
+    // reporting its own outcome, so this reports success rather than failure.
+    // The distinction matters to BackupSection.vue, whose only use of the
+    // return value is deciding whether to warn "the list did not refresh" --
+    // a newer refresh being in flight is precisely the case where that warning
+    // would be a false positive.
+    if (seq !== refreshSeq) return true;
     store.system = system;
     // See RefreshOptions.periodic's doc: only the periodic poll skips this
     // while a profile operation is in flight, so it cannot race that
@@ -85,10 +103,15 @@ export async function refresh(options: RefreshOptions = {}): Promise<void> {
       showMessage("");
     }
     lastPollErrorText = "";
+    return true;
   } catch (err) {
-    if (seq !== refreshSeq) return;
+    // Same reasoning as the superseded check in the try block above: a newer
+    // refresh owns the outcome, and this stale call's failure is not the one
+    // to report -- it never wrote the store and never shows a banner either.
+    if (seq !== refreshSeq) return true;
     const message = err instanceof Error ? err.message : String(err);
     showMessage(message, "error");
     lastPollErrorText = message;
+    return false;
   }
 }

@@ -70,7 +70,14 @@ registerActions({
   cancelCreate,
   saveProfile,
   deleteProfile,
-  refreshFleet: refresh,
+  // refresh() returns whether the store was actually updated; the action
+  // table's callers (profile-operations.ts) only await it for ordering and
+  // have no branch for the failed case, so the result is dropped here rather
+  // than widening bridge.ts's contract for a value nothing reads.
+  // BackupSection.vue, which does branch on it, imports refresh() directly.
+  refreshFleet: async (options?: { forceInstances?: boolean }) => {
+    await refresh(options);
+  },
   refreshSubscriptionProfile,
   fetchProfileConfig,
 });

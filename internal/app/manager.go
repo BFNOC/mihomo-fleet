@@ -142,6 +142,21 @@ var backoffSleep = sleepWithContext
 // concurrency review, fix #4's related nit).
 var errAlreadyRunning = errors.New("instance already running or starting")
 
+// errWatchdogUserStopped is startContext's internal signal that the crash
+// watchdog's own relaunch (runScheduledRestart, resetWatchdog=false) found
+// id stamped user-stopped while re-checking under m.mu, atomically with the
+// starting-state transition a few lines below. This closes the race where a
+// user's Stop lands between runScheduledRestart's own post-sleep userStopped
+// check (which happens before startContext is even called) and this
+// function actually acquiring m.mu: without this second check, that Stop
+// would see no running process and no pending backoff to cancel (both
+// already cleared by the time it runs) and report success, while the
+// watchdog goes on to launch the process anyway (code review finding #1).
+// Only runScheduledRestart's caller path ever produces or consumes this;
+// every other startContext caller passes resetWatchdog=true and never sees
+// it.
+var errWatchdogUserStopped = errors.New("instance was stopped; auto-restart aborted")
+
 // Watchdog tunables. Package-level vars, not consts, so tests can shrink
 // them (mirroring util.go's isPortFree / store_test.go's withPortFree
 // pattern) instead of a real test run waiting out up to 30s of backoff or a
@@ -182,6 +197,48 @@ type Manager struct {
 	// by dropWatchdog once the instance itself is deleted -- mirroring
 	// logs's lifecycle (arch L7 / conc L-1).
 	watchdogs map[string]*watchdogState
+	// lifecycle serializes a single instance's start/stop/reload against each
+	// other -- one *sync.Mutex per instance id, never one lock for the whole
+	// Manager, so unrelated instances never block on each other. Without
+	// this, ReloadContext could capture ps := m.state(id), re-verify
+	// m.procs[id] == ps under m.mu.RLock(), release that lock, and only then
+	// do the actual work (writeRuntimeConfig, prepareGeodata,
+	// reloadMihomoConfig): a concurrent StopContext, or a Restart's Stop then
+	// Start, could land in the window between the re-check and that work,
+	// leaving the runtime config written for a process that already exited
+	// and reloadMihomoConfig's reload command (with this instance's
+	// controller secret) sent to a controller port that may by then belong
+	// to an unrelated process that grabbed the freed port. A one-shot
+	// pointer re-check cannot close that window; only holding this mutex
+	// across the whole check-then-work sequence, mutually exclusive with the
+	// lifecycle transitions themselves, can.
+	//
+	// Not every caller holds it for its entire function body: startContext
+	// and StopContext each have a short early phase that deliberately runs
+	// without it. startContext's is only the initial store reads used for
+	// validation and the m.mu-protected registration of m.starting/m.starts/
+	// m.reservedPorts -- it acquires this lock immediately after that
+	// registration, before writeRuntimeConfig/testConfig, then re-reads
+	// item/profile under the lock so config generation, the config test, and
+	// the eventual cmd.Start() all use one snapshot that no concurrent
+	// ReloadContext (which holds this same lock for its whole body) can
+	// replace out from under them -- without this, a watchdog relaunch could
+	// write+test snapshot A, block on this lock while a ReloadContext
+	// overwrote the same file with snapshot B, and then exec against B
+	// having only ever tested A. StopContext's early phase resolves which
+	// processState a Stop targets, including cancelling a same-id in-flight
+	// start via the pre-existing startCtx/cancelAndAwaitStart mechanism --
+	// that path never waits on this lock, so a Stop can still interrupt a
+	// start that is blocked waiting for it, or already holding it (see each
+	// function's own doc comment for the details). See lifecycleLock and its
+	// callers.
+	//
+	// Entries are never removed: unlike watchdogs above, dropWatchdog
+	// deliberately leaves m.lifecycle[id] in place (see its own comment for
+	// why a delete here would be unsafe). The retained cost is one
+	// zero-value sync.Mutex and one map entry per instance id this process
+	// has ever touched, bounded by real instance creations.
+	lifecycle map[string]*sync.Mutex
 	// coreUpdating is armed for the duration of an in-flight mihomo core
 	// binary swap (core_update.go's ApplyCoreUpdate, via
 	// BeginCoreUpdate/EndCoreUpdate) and checked by startContext, so a
@@ -211,6 +268,7 @@ func NewManager(store *Store, mihomoPath string) *Manager {
 		logs:          make(map[string]*logBuffer),
 		deleting:      make(map[string]bool),
 		watchdogs:     make(map[string]*watchdogState),
+		lifecycle:     make(map[string]*sync.Mutex),
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -405,6 +463,25 @@ func viewFor(item *Instance, profile *Profile, status string, pid int) InstanceV
 	return view
 }
 
+// lifecycleLock returns (creating on first use) the *sync.Mutex that
+// serializes id's start/stop/reload transitions against each other -- see
+// the lifecycle field's doc comment for why this exists. It takes m.mu only
+// for the map access itself and never while holding the returned mutex:
+// m.mu must never be held while acquiring a lifecycle mutex, since callers
+// (startContext, StopContext, ReloadContext) go on to acquire m.mu
+// themselves while holding it -- the only order this codebase allows is
+// lifecycle -> m.mu, never the reverse.
+func (m *Manager) lifecycleLock(id string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mu := m.lifecycle[id]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		m.lifecycle[id] = mu
+	}
+	return mu
+}
+
 func (m *Manager) Start(id string) error {
 	return m.StartContext(context.Background(), id)
 }
@@ -441,10 +518,15 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		return fmt.Errorf("profile %q not found", item.ProfileID)
 	}
 
-	// startCtx lets a concurrent StopContext cancel this in-flight start. It is
-	// never wired into the launched mihomo process itself (exec.Command, not
-	// exec.CommandContext) so cancelling it after a successful cmd.Start() does
-	// not kill the running instance.
+	// startCtx lets a concurrent StopContext cancel this in-flight start
+	// without needing to wait for the lifecycle lock acquired further down:
+	// StopContext's cancelAndAwaitStart path (see its own doc comment)
+	// cancels startCtx and waits on attempt.done directly, never on this
+	// call's lifecycle lock, so a Stop racing a start that is blocked waiting
+	// for -- or already holding -- that lock can still interrupt it promptly.
+	// It is never wired into the launched mihomo process itself
+	// (exec.Command, not exec.CommandContext) so cancelling it after a
+	// successful cmd.Start() does not kill the running instance.
 	startCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -468,6 +550,15 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		// consecutive-restart counter a fresh start -- see startContext's own
 		// doc comment and resetWatchdogLocked's.
 		m.resetWatchdogLocked(id)
+	} else if wd := m.watchdogs[id]; wd != nil && wd.userStopped {
+		// The watchdog's own relaunch (runScheduledRestart): re-check
+		// userStopped here, atomically with the starting-state transition
+		// below, so a Stop that lands between runScheduledRestart's own
+		// (earlier, unlocked-in-between) check and this call can never lose
+		// the race -- see errWatchdogUserStopped's doc comment (finding #1,
+		// code review).
+		m.mu.Unlock()
+		return errWatchdogUserStopped
 	}
 	// reservedPorts 只覆盖启动准备窗口；已运行实例仍由持久化端口唯一性和系统 bind 结果兜底。
 	if owner := m.reservedPorts[item.ControllerPort]; owner != "" && owner != id {
@@ -490,21 +581,89 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 	m.reservedPorts[item.ControllerPort] = id
 	m.reservedPorts[item.MixedPort] = id
 	m.mu.Unlock()
+	// Captured before the cleanup defer below is installed. The defer's
+	// closure captures variables, not the values they held at defer time --
+	// and item is reassigned further down (once the lifecycle lock is held)
+	// when this call re-reads the store. If the defer read
+	// item.ControllerPort/item.MixedPort directly, a reassigned item would
+	// silently change which ports it un-reserves on cleanup. Using these
+	// dedicated locals instead keeps the defer tied to the ports actually
+	// reserved above, regardless of what item later becomes.
+	reservedController := item.ControllerPort
+	reservedMixed := item.MixedPort
 	defer func() {
 		m.mu.Lock()
 		delete(m.starting, id)
 		if m.starts[id] == attempt {
 			delete(m.starts, id)
 		}
-		if m.reservedPorts[item.ControllerPort] == id {
-			delete(m.reservedPorts, item.ControllerPort)
+		if m.reservedPorts[reservedController] == id {
+			delete(m.reservedPorts, reservedController)
 		}
-		if m.reservedPorts[item.MixedPort] == id {
-			delete(m.reservedPorts, item.MixedPort)
+		if m.reservedPorts[reservedMixed] == id {
+			delete(m.reservedPorts, reservedMixed)
 		}
 		m.mu.Unlock()
 		close(attempt.done)
 	}()
+
+	// Acquire the lifecycle lock now -- right after the attempt is
+	// registered above (so a concurrent StopContext can still find and
+	// cancel it via cancelAndAwaitStart/startCtx while this call sits queued
+	// on the lock; see startCtx's doc comment) but before any config
+	// generation below. Taking it here, rather than right before
+	// cmd.Start() as this used to do, is what closes the race that let a
+	// concurrent ReloadContext (which holds this same lock for its entire
+	// body, and writes the same runtime config file) overwrite the config
+	// this call had just tested, in the window between the test and the
+	// launch -- mihomo would then exec against a config nobody tested. See
+	// the lifecycle field's doc comment.
+	lock := m.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// A concurrent Stop may have cancelled this attempt, or a concurrent
+	// Delete/edit/ReloadContext may have changed the world, while this call
+	// waited for the lock above (ReloadContext holds it for its whole body).
+	// Re-validate everything the preparation phase below depends on against
+	// a fresh snapshot, and re-read item/profile themselves, so config
+	// generation, the config test, and the eventual launch all use one
+	// snapshot that no concurrent Reload can replace out from under them.
+	if err := startCtx.Err(); err != nil {
+		return err
+	}
+	if m.isDeleting(id) {
+		return fmt.Errorf("instance %q is being deleted", id)
+	}
+	// Stamped BEFORE the store re-read below, not after it and not after
+	// cmd.Start(). ps.started is what decorateStatus compares ConfigUpdatedAt
+	// against to decide PendingRestart, so anything committed after this
+	// instant must compare as newer. Reading the store first would leave every
+	// edit landing between the read and the stamp looking already-applied
+	// while the config generated below predates it -- silent drift with no UI
+	// signal. Stamping first can only err the safe way (a redundant
+	// "restart pending" hint), which is the same trade ReloadContext's
+	// reloadStart makes; see markReloaded.
+	startedAt := time.Now().UTC()
+
+	item, ok = m.store.Get(id)
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+	profile, ok = m.store.GetProfile(item.ProfileID)
+	if !ok {
+		return fmt.Errorf("profile %q not found", item.ProfileID)
+	}
+	// Defensive, not an expected path: the PUT handler's Busy guard already
+	// rejects port edits while m.starting[id] is set, so item's ports should
+	// be unable to change while this call sits blocked above. Guard anyway
+	// rather than silently launching against ports that differ from the
+	// ones reserved in m.reservedPorts (and that the cleanup defer above
+	// will un-reserve).
+	if item.ControllerPort != reservedController || item.MixedPort != reservedMixed {
+		return fmt.Errorf("instance %q ports changed while starting", id)
+	}
+
 	if m.mihomoPath == "" {
 		err := errors.New("mihomo binary not found. Install mihomo or start with -mihomo /path/to/mihomo")
 		m.store.SetError(id, err.Error())
@@ -568,6 +727,7 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		m.log(id).Add("start aborted: " + err.Error())
 		return err
 	}
+
 	m.store.SetError(id, "")
 
 	cmd := exec.Command(m.mihomoPath, "-d", filepath.Dir(item.RuntimeConfigPath), "-f", item.RuntimeConfigPath)
@@ -589,7 +749,7 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 	buf := m.log(id)
 	ps := &processState{
 		cmd:     cmd,
-		started: time.Now().UTC(),
+		started: startedAt,
 		logs:    buf,
 		done:    make(chan struct{}),
 		// Snapshot exactly the values writeRuntimeConfig just generated the
@@ -666,19 +826,75 @@ func (m *Manager) StopContext(ctx context.Context, id string) error {
 	// cancel even though the watchdog is about to relaunch it moments later.
 	m.markUserStopped(id)
 
+	// Resolving ps -- including the cancelAndAwaitStart branch, which
+	// cancels and waits (bounded, up to 15s) on an in-flight startContext
+	// preparation window -- deliberately happens before the lifecycle lock
+	// below is acquired. startContext itself only takes that lock for its
+	// own late, process-registering phase (see its doc comment), precisely
+	// so this cancellation path is never stuck queued behind a whole
+	// in-flight start it is trying to cancel.
 	ps := m.state(id)
 	if ps == nil {
 		settled, err := m.cancelAndAwaitStart(ctx, id)
 		if err != nil {
 			return err
 		}
-		if settled == nil {
-			// Nothing was starting, or the start aborted before it ever
-			// registered a process: nothing to stop.
-			return nil
-		}
 		ps = settled
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Nothing running, nothing starting, and no such instance: return before
+	// lifecycleLock so an id the store has never heard of never allocates an
+	// m.lifecycle entry. Nothing removes those entries (see dropWatchdog for
+	// why removal is unsafe), so without this gate a stop/delete loop over
+	// invalid ids grows the map without bound -- the same shape as the
+	// watchdogs leak markUserStopped already guards against. When ps is
+	// non-nil there IS a live process to stop regardless of what the store
+	// says, so the gate deliberately only covers the no-process case.
+	if ps == nil {
+		if _, ok := m.store.Get(id); !ok {
+			return nil
+		}
+	}
+
+	// Serialize the rest of this call -- including the "nothing to stop"
+	// return just below -- against a concurrent startContext (a fresh
+	// registration for this id) or ReloadContext for the same id; see the
+	// lifecycle field's doc comment.
+	//
+	// The nothing-to-stop case must take this lock too, not return early
+	// above it. The DELETE handler brackets store.Delete and the instance
+	// directory removal with a Stop, and a process that crashed a moment
+	// earlier leaves nothing for that Stop to find -- so returning before the
+	// lock let the delete run while a ReloadContext holding the lock was
+	// still mid-flight, whose prepareGeodata then re-created the very
+	// directory the delete had just removed (an orphaned instance dir with
+	// no store record). Taking the lock makes the delete wait for that reload
+	// to finish instead.
+	//
+	// Safe to hold across the wait on ps.done further down: that channel is
+	// closed by startContext's wait goroutine, which runs independently and
+	// never itself needs this lock (only the maybeAutoRestart call it makes
+	// afterward can lead back into startContext, on yet another goroutine),
+	// so holding this lock here cannot block on anything that in turn needs
+	// it. cancelAndAwaitStart above deliberately runs BEFORE the lock for the
+	// same reason -- it must be able to interrupt an in-flight start that is
+	// itself holding this lock.
+	lock := m.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if ps == nil {
+		// Nothing was running, and nothing was starting (or the start aborted
+		// before it ever registered a process).
+		return nil
+	}
+
+	// Re-check after the wait: acquiring the lock above can block for as long
+	// as a concurrent reload or start takes, and a caller whose deadline
+	// expired in that window must not still go on to signal the process.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -796,6 +1012,26 @@ func (m *Manager) cancelPendingRestartLocked(id string) {
 func (m *Manager) markUserStopped(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Don't allocate a watchdogs entry for an id the store has no instance
+	// for: dropWatchdog only ever runs for an instance the store actually
+	// had (via the DELETE handler), so an entry created here for an unknown
+	// id would never be cleaned up, and repeated Stop calls against
+	// invalid/already-deleted ids would grow m.watchdogs without bound
+	// (finding #7, code review).
+	//
+	// The check runs INSIDE m.mu, not before acquiring it: a delete
+	// concurrent with this call can otherwise complete entirely -- including
+	// its dropWatchdog and EndDelete -- between an outside-the-lock check and
+	// the watchdogFor below, re-creating exactly the orphaned entry the check
+	// exists to prevent. m.deleting is checked alongside it for the narrower
+	// case of a delete still in flight, whose store row may not be gone yet.
+	//
+	// Lock ordering m.mu -> store.mu is safe and cannot deadlock: Store holds
+	// no reference to Manager and never calls back into it, so the reverse
+	// order does not exist anywhere in this package.
+	if _, ok := m.store.Get(id); !ok || m.deleting[id] {
+		return
+	}
 	wd := m.watchdogFor(id)
 	wd.userStopped = true
 	m.cancelPendingRestartLocked(id)
@@ -833,6 +1069,19 @@ func (m *Manager) dropWatchdog(id string) {
 	defer m.mu.Unlock()
 	m.cancelPendingRestartLocked(id)
 	delete(m.watchdogs, id)
+	// m.lifecycle[id] is deliberately NOT deleted here, unlike watchdogs above.
+	// lifecycleLock returns the mutex POINTER and the caller locks it after
+	// m.mu has been released, so a delete here has a window in which one
+	// goroutine holds the old mutex (fetched, not yet locked) while a later
+	// caller for the same id gets a freshly-created second mutex from
+	// lifecycleLock -- two "mutually exclusive" sections running at once for
+	// one instance, which is exactly the guarantee this lock exists to make.
+	// Reference counting would close that, but the thing being retained is a
+	// zero-value sync.Mutex plus one map entry per instance id this process
+	// has ever touched -- entries are only ever created for ids that passed an
+	// existence check, so this is bounded by real instance creations, not by
+	// anything a caller can drive with invalid ids (see markUserStopped for
+	// the case where that distinction mattered).
 }
 
 // maybeAutoRestart is called from the exit goroutine of every process this
@@ -1030,6 +1279,14 @@ func (m *Manager) runScheduledRestart(id string, wd *watchdogState, ctx context.
 			m.log(id).Add("auto-restart skipped: instance is already running")
 			return
 		}
+		if errors.Is(err, errWatchdogUserStopped) {
+			// A Stop landed between this function's own userStopped check
+			// above and startContext's atomic re-check under m.mu (finding
+			// #1, code review) -- treat exactly like the stopped path above:
+			// no crash evidence, no relaunch.
+			m.log(id).Add("auto-restart aborted: instance was stopped")
+			return
+		}
 		// Feed the failure back through scheduleRestart so it consumes a
 		// consecutive-restart attempt and eventually reaches the give-up
 		// path/message, instead of silently going quiet with backoff budget
@@ -1182,6 +1439,26 @@ func (m *Manager) ReloadContext(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Serializes this whole check-then-work sequence against a concurrent
+	// startContext or StopContext for the same id -- see the lifecycle
+	// field's doc comment for the bug this closes: without it, the
+	// m.procs[id] == ps re-check below and the actual work that follows
+	// (writeRuntimeConfig, prepareGeodata, reloadMihomoConfig) are two
+	// separate critical sections with a gap between them, and a Stop or
+	// Restart landing in that gap makes the re-check meaningless.
+	lock := m.lifecycleLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Re-check after the wait: acquiring the lock above can block for as long
+	// as a concurrent start or stop takes, and a caller whose deadline expired
+	// in that window must not still go on to rewrite the runtime config and
+	// push it into the process.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Captured before any store read below -- see this function's doc comment
 	// and markReloaded's for why this, not time.Now() after the reload
 	// succeeds, is what gets stamped onto ps.started.
@@ -1208,6 +1485,39 @@ func (m *Manager) ReloadContext(ctx context.Context, id string) error {
 	}
 	if item.ControllerPort != ps.controllerPort || item.MixedPort != ps.mixedPort || instanceProxyBind(item.ProxyBind) != ps.proxyBind {
 		return errReloadNetworkChanged
+	}
+
+	// Re-verify id's process hasn't been swapped out from under this call.
+	// The lifecycle lock held above is what actually closes the window a
+	// concurrent StopContext or Restart (Stop then Start) could otherwise
+	// land in between this check and the work below (finding #2, code
+	// review) -- neither can run for this id until this call returns. What
+	// remains here is a cheap correctness assertion against a process that
+	// exited on its own (a crash): that path never goes through StopContext
+	// and so never takes the lifecycle lock, and can clear m.procs[id]
+	// (and let a watchdog relaunch replace it) at any moment, lock or no
+	// lock.
+	//
+	// The crash path cannot be brought under this lock: StopContext holds it
+	// while waiting on ps.done, which only the exit goroutine closes, so
+	// making that goroutine take the lock deadlocks Stop outright. Two
+	// consequences are accepted rather than papered over:
+	//
+	//   - A watchdog relaunch's own writeRuntimeConfig can interleave with the
+	//     one below. Both go through writeFileAtomic (config.go) and both
+	//     derive their bytes from the same stored item+profile, so the loser's
+	//     temp file is simply discarded -- no torn or blended config is
+	//     reachable, only a redundant write.
+	//   - reloadMihomoConfig below may reach a controller port whose process
+	//     died a moment ago. That is the same check-then-connect residual
+	//     handleMihomoProxy documents (mihomo_proxy.go): no locking makes the
+	//     send atomic with the liveness check while instances are addressed by
+	//     a reusable localhost TCP port. See docs/known-limitations.md.
+	m.mu.RLock()
+	current := m.procs[id]
+	m.mu.RUnlock()
+	if current != ps {
+		return fmt.Errorf("instance %q is not running", id)
 	}
 
 	buf := m.log(id)
