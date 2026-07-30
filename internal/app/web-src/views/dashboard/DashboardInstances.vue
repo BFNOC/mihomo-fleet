@@ -48,6 +48,16 @@ function instanceStatusSuffix(item: FleetInstance): string {
   return item.pendingRestart ? " · 待重启" : "";
 }
 
+// Crash-watchdog evidence (#2), kept compact for this row: just the restart
+// count. The full reason (format.ts's restartEvidenceText) already has two
+// homes that fit a longer string better -- instanceErrorSuffix below (once
+// isBad, LastError itself already carries the crash reason) and
+// OverviewTab.vue's dedicated row -- so repeating it here would only widen
+// the row without adding anything the operator can't already see there.
+function instanceRestartSuffix(item: FleetInstance): string {
+  return item.restartCount ? ` · 已重启 ${item.restartCount} 次` : "";
+}
+
 // Backend errors arrive as raw English (e.g. "signal: terminated"); route
 // through localizedMessage the same way InstanceDetail.vue's metaText does so
 // the row and the detail view never disagree on wording. 48 chars is a row
@@ -123,7 +133,7 @@ function onRowKeydown(event: KeyboardEvent, id: string): void {
               <span class="dash-check-dot" :class="instanceDotClass(item)" aria-hidden="true"></span>
               <span>
                 <strong>{{ item.name }}</strong>
-                <small :class="statusClass(item.status)">{{ statusText(item.status) }}{{ instanceStatusSuffix(item) }}{{ instanceErrorSuffix(item) }}</small>
+                <small :class="statusClass(item.status)">{{ statusText(item.status) }}{{ instanceStatusSuffix(item) }}{{ instanceRestartSuffix(item) }}{{ instanceErrorSuffix(item) }}</small>
               </span>
             </td>
             <td class="num">{{ sampleFor(item.id).connections }}</td>

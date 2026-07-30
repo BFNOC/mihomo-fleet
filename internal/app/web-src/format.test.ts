@@ -8,6 +8,7 @@ import {
   formatBytes,
   proxyEndpointText,
   proxyPort,
+  restartEvidenceText,
   selectionSummary,
   shortMihomoVersion,
   splitProxyLabel,
@@ -60,6 +61,27 @@ test("localized batch and error messages stay stable", () => {
     formatBatchMessage("start-all", { total: 2, success: 1, failed: 1, errors: [{ name: "a", error: "method not allowed" }] }),
     "批量启动完成：成功 1/2，失败 1。 a: 请求方法不允许。",
   );
+});
+
+test("restartEvidenceText reports nothing for a never-crashed instance", () => {
+  assert.equal(restartEvidenceText({}), "");
+  assert.equal(restartEvidenceText({ restartCount: 0, lastExitReason: "" }), "");
+});
+
+test("restartEvidenceText combines restart count and localized last-exit reason", () => {
+  assert.equal(
+    restartEvidenceText({ restartCount: 2, lastExitReason: "", lastExitAt: "" }),
+    "已自动重启 2 次",
+  );
+  const text = restartEvidenceText({
+    restartCount: 3,
+    lastExitReason: "signal: terminated",
+    lastExitAt: "2026-07-30T00:00:00Z",
+  });
+  assert.ok(text.startsWith("已自动重启 3 次 · 最近异常退出：signal: terminated（"), text);
+  // A pure exit-reason-only case (no restartCount yet, e.g. an exhausted
+  // watchdog that gave up) still reports the reason.
+  assert.ok(restartEvidenceText({ restartCount: 0, lastExitReason: "exit status 1" }).includes("exit status 1"));
 });
 
 test("mihomo version keeps only the build number from the banner", () => {

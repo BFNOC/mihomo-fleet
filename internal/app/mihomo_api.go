@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -66,6 +67,66 @@ func putMihomoProxy(ctx context.Context, item *Instance, group, proxy string) er
 			return fmt.Errorf("mihomo returned %s", res.Status)
 		}
 		return fmt.Errorf("mihomo returned %s: %s", res.Status, bytes.TrimSpace(body))
+	}
+	return nil
+}
+
+// reloadMihomoConfig asks item's running mihomo controller to reload its
+// runtime config from disk in place, via mihomo's PUT /configs contract --
+// confirmed against MetaCubeX/mihomo's hub/route/configs.go (updateConfigs)
+// and hub/executor/executor.go (ApplyConfig):
+//
+//   - Body is {"path": "<absolute file path>"}. mihomo rejects a relative
+//     path outright (filepath.IsAbs check) and separately requires it to
+//     resolve inside the home directory mihomo itself was launched with
+//     (-d, constant/path.go's IsSafePath) -- item.RuntimeConfigPath sits
+//     exactly inside that directory, but Instance may store it as a relative
+//     path (e.g. the default "-data .mihomo-fleet" flag builds every path
+//     from a relative dataDir), so this always resolves it with filepath.Abs
+//     first rather than trusting the stored string's shape.
+//   - No "force" query parameter is ever sent (force defaults to false).
+//     ApplyConfig(cfg, force) applies proxies/rules/DNS unconditionally
+//     either way; force only gates whether listener sockets (ports/binds)
+//     get torn down and recreated. Manager.ReloadContext already refuses to
+//     call this at all when the controller/mixed port or proxy bind changed,
+//     so there is never a listener change to force through here -- passing
+//     force=true would just add an unnecessary listener teardown/recreate
+//     (and a real chance of dropping the exact connections this feature
+//     exists to avoid dropping) to a request that never touches listeners.
+//   - PATCH /configs (mihomo's other /configs verb) is a different,
+//     narrower endpoint -- it patches a handful of in-memory fields
+//     (port, socks-port, mixed-port, tun, ...) without reloading from a
+//     file, which is not what regenerating and applying a whole runtime
+//     config needs.
+func reloadMihomoConfig(ctx context.Context, item *Instance) error {
+	absPath, err := filepath.Abs(item.RuntimeConfigPath)
+	if err != nil {
+		return err
+	}
+	endpoint := "http://127.0.0.1:" + strconv.Itoa(item.ControllerPort) + "/configs"
+	body, err := json.Marshal(map[string]string{"path": absPath})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+item.Secret)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := mihomoAPIClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		if len(respBody) == 0 {
+			return fmt.Errorf("mihomo returned %s", res.Status)
+		}
+		return fmt.Errorf("mihomo returned %s: %s", res.Status, bytes.TrimSpace(respBody))
 	}
 	return nil
 }

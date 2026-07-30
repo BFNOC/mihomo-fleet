@@ -68,6 +68,29 @@ export function formatSubscriptionInfo(
   return parts.join(" · ") || "暂无订阅元数据";
 }
 
+/**
+ * Crash-watchdog evidence: how many times auto-restart has relaunched this
+ * instance, and (if any) what its most recent unexpected exit looked like.
+ * Mirrors internal/app/manager.go's InstanceView.RestartCount/
+ * LastExitReason/LastExitAt. Returns "" when there is nothing to report.
+ * Gated on lastExitReason (a plain string, which collapses under Go's
+ * `omitempty`) rather than lastExitAt (a time.Time, which does not -- see
+ * FleetInstance's doc comment in state.ts) so a never-crashed instance never
+ * renders a stray zero-value date.
+ */
+export function restartEvidenceText(
+  item: Pick<FleetInstance, "restartCount" | "lastExitReason" | "lastExitAt">,
+): string {
+  if (!item.restartCount && !item.lastExitReason) return "";
+  const parts: string[] = [];
+  if (item.restartCount) parts.push(`已自动重启 ${item.restartCount} 次`);
+  if (item.lastExitReason) {
+    const when = item.lastExitAt ? new Date(item.lastExitAt).toLocaleString() : "";
+    parts.push(`最近异常退出：${localizedMessage(item.lastExitReason)}${when ? `（${when}）` : ""}`);
+  }
+  return parts.join(" · ");
+}
+
 export function isHttpUrl(value: string | null | undefined): boolean {
   return /^https?:\/\//i.test(String(value || "").trim());
 }

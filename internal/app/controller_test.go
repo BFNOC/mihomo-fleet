@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAllowedHostStrictLoopback(t *testing.T) {
@@ -537,6 +538,35 @@ func TestHandleInstancesCreateReportsPortConflict(t *testing.T) {
 	postInstanceJSON(t, c, `{"name":"Conflict","mixedPort":28000,"controllerPort":29001}`, http.StatusConflict)
 }
 
+// TestHandleInstancesCreateAcceptsAutoRestart covers #2's create-payload
+// plumbing: autoRestart flows from the POST body through
+// Store.CreateWithOptions into both the persisted Instance and the view.
+func TestHandleInstancesCreateAcceptsAutoRestart(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+
+	view := postInstanceJSON(t, c, `{"name":"Watchdog","autoRestart":true}`, http.StatusCreated)
+	if !view.AutoRestart {
+		t.Fatal("expected view.AutoRestart to be true")
+	}
+	stored, ok := c.store.Get(view.ID)
+	if !ok || !stored.AutoRestart {
+		t.Fatalf("stored instance = %+v, want AutoRestart true", stored)
+	}
+}
+
+// TestHandleInstancesCreateDefaultsAutoRestartFalse confirms the flag is
+// opt-in: omitting it from the create payload must not enable it.
+func TestHandleInstancesCreateDefaultsAutoRestartFalse(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+
+	view := postInstanceJSON(t, c, `{"name":"NoWatchdog"}`, http.StatusCreated)
+	if view.AutoRestart {
+		t.Fatal("expected view.AutoRestart to default to false")
+	}
+}
+
 func TestHandleInstanceUpdateReportsPortConflict(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 	c := newBatchTestController(t)
@@ -702,6 +732,92 @@ func TestHandleInstanceUpdateStoppedBothPortsChangeable(t *testing.T) {
 	}
 }
 
+// TestHandleInstanceUpdateTogglesAutoRestartWithoutFlaggingPendingRestart
+// covers #2's update-payload plumbing (PUT .../instances/{id}): autoRestart
+// persists via Store.UpdateWithOptions's *bool patch field, and -- since it
+// is a fleet-controller behavior flag, not part of the generated mihomo
+// runtime config -- toggling it alone must never bump ConfigUpdatedAt (the
+// field decorateStatus uses to derive PendingRestart) nor flip
+// InstanceView.PendingRestart itself for a currently-running instance. The
+// fake processState (mirrors TestHandleMihomoProxyForwardsWhileRunningAndCachesProxy's
+// pattern) makes the instance report status "running" without a real child
+// process, so decorateStatus's PendingRestart branch is actually exercised
+// -- asserting PendingRestart on a stopped instance would pass trivially
+// regardless of this bug, since that branch never runs at all then.
+func TestHandleInstanceUpdateTogglesAutoRestartWithoutFlaggingPendingRestart(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	first := postInstanceJSON(t, c, `{"name":"First","mixedPort":28000,"controllerPort":29000}`, http.StatusCreated)
+	before, ok := c.store.Get(first.ID)
+	if !ok {
+		t.Fatal("expected the created instance to exist")
+	}
+
+	c.manager.mu.Lock()
+	c.manager.procs[first.ID] = &processState{cmd: &exec.Cmd{}, logs: newLogBuffer(1000), done: make(chan struct{}), started: time.Now().UTC()}
+	c.manager.mu.Unlock()
+	// This fake processState has no real child process behind it, so it must
+	// be removed before newBatchTestController's own t.Cleanup calls
+	// c.Shutdown; t.Cleanup runs LIFO, so registering this after that one
+	// means it runs first.
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.procs, first.ID)
+		c.manager.mu.Unlock()
+	})
+
+	body := `{"autoRestart":true}`
+	req := httptest.NewRequest(http.MethodPut, "/api/instances/"+first.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleInstance(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	var view InstanceView
+	if err := json.NewDecoder(rec.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.AutoRestart {
+		t.Fatal("expected view.AutoRestart to be true after the PUT")
+	}
+	if view.Status != "running" {
+		t.Fatalf("view.Status = %q, want running (the fake processState should make this instance report running)", view.Status)
+	}
+	if view.PendingRestart {
+		t.Fatal("expected view.PendingRestart to stay false after toggling AutoRestart on a running instance")
+	}
+	updated, ok := c.store.Get(first.ID)
+	if !ok || !updated.AutoRestart {
+		t.Fatalf("stored instance = %+v, want AutoRestart true", updated)
+	}
+	if !updated.ConfigUpdatedAt.Equal(before.ConfigUpdatedAt) {
+		t.Fatalf("ConfigUpdatedAt changed from %v to %v: toggling AutoRestart must not affect PendingRestart", before.ConfigUpdatedAt, updated.ConfigUpdatedAt)
+	}
+
+	// Toggling back off must also persist (proves the *bool patch field
+	// distinguishes "explicit false" from "not sent", not just "not sent")
+	// and must likewise leave PendingRestart false.
+	body = `{"autoRestart":false}`
+	req = httptest.NewRequest(http.MethodPut, "/api/instances/"+first.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	c.handleInstance(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	if view.PendingRestart {
+		t.Fatal("expected view.PendingRestart to stay false after toggling AutoRestart back off")
+	}
+	updated, ok = c.store.Get(first.ID)
+	if !ok || updated.AutoRestart {
+		t.Fatalf("stored instance = %+v, want AutoRestart false after toggling back off", updated)
+	}
+}
+
 func TestHandleInstanceCloneCreatesStoppedCopy(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 	c := newBatchTestController(t)
@@ -861,6 +977,291 @@ func TestHandleMihomoProxyForwardsWhileRunningAndCachesProxy(t *testing.T) {
 	c.mihomoProxiesMu.Unlock()
 	if !ok || cached == nil {
 		t.Fatal("expected a cached ReverseProxy for the instance's controller port")
+	}
+}
+
+// TestHandleReloadRejectsNotRunningInstance covers feature #4's scope limit:
+// reload only ever applies to an already-live process, mirroring
+// TestHandleMihomoProxyRejectsNotRunningInstance's guard for the generic
+// mihomo passthrough above.
+func TestHandleReloadRejectsNotRunningInstance(t *testing.T) {
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Stopped")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/reload", nil)
+	rec := httptest.NewRecorder()
+	c.handleReload(rec, req, item.ID)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != `instance "`+item.ID+`" is not running` {
+		t.Fatalf("error = %q", payload.Error)
+	}
+}
+
+func TestHandleReloadRejectsUnknownInstance(t *testing.T) {
+	c := newBatchTestController(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/missing/reload", nil)
+	rec := httptest.NewRecorder()
+	c.handleReload(rec, req, "missing")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleReloadRejectsNonPostMethod(t *testing.T) {
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Method")
+	req := httptest.NewRequest(http.MethodGet, "/api/instances/"+item.ID+"/reload", nil)
+	rec := httptest.NewRecorder()
+	c.handleReload(rec, req, item.ID)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleReloadAppliesRunningInstance covers the happy path: a running
+// instance whose processState-tracked controllerPort/mixedPort/proxyBind
+// still match what the store currently holds (ReloadContext's port/bind
+// eligibility check, manager.go) regenerates its runtime config via the same
+// writeRuntimeConfig call StartContext itself uses, then pushes it to mihomo
+// via PUT /configs (reloadMihomoConfig, mihomo_api.go) -- mirrors
+// TestHandleMihomoProxyForwardsWhileRunningAndCachesProxy's fixture shape for
+// simulating a running instance without a real mihomo process.
+func TestHandleReloadAppliesRunningInstance(t *testing.T) {
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Running")
+
+	var gotMethod, gotPath string
+	var gotBody map[string]string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if got := r.Header.Get("Authorization"); got != "Bearer "+item.Secret {
+			t.Errorf("Authorization = %q, want Bearer %s", got, item.Secret)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	target := testMihomoItem(t, upstream.URL)
+	c.store.mu.Lock()
+	c.store.items[item.ID].ControllerPort = target.ControllerPort
+	c.store.mu.Unlock()
+
+	c.manager.mu.Lock()
+	c.manager.procs[item.ID] = &processState{
+		cmd:            &exec.Cmd{},
+		logs:           newLogBuffer(1000),
+		done:           make(chan struct{}),
+		controllerPort: target.ControllerPort,
+		mixedPort:      item.MixedPort,
+		proxyBind:      instanceProxyBind(item.ProxyBind),
+	}
+	c.manager.mu.Unlock()
+	// Same reasoning as TestHandleMihomoProxyForwardsWhileRunningAndCachesProxy:
+	// this fake processState has no real child process, so it must be removed
+	// before newBatchTestController's own t.Cleanup calls c.Shutdown.
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.procs, item.ID)
+		c.manager.mu.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/reload", nil)
+	rec := httptest.NewRecorder()
+	c.handleReload(rec, req, item.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+	if gotMethod != http.MethodPut {
+		t.Fatalf("upstream method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/configs" {
+		t.Fatalf("upstream path = %q, want /configs", gotPath)
+	}
+	updated, ok := c.store.Get(item.ID)
+	if !ok {
+		t.Fatal("expected instance to still exist")
+	}
+	wantPath, err := filepath.Abs(updated.RuntimeConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBody["path"] != wantPath {
+		t.Fatalf("reload body path = %q, want absolute %q", gotBody["path"], wantPath)
+	}
+}
+
+// TestHandleReloadRejectsPortChange covers the safety scope limit
+// (docs/feature-roadmap-post-1.3.md's #4 risk note): a mixed-port/
+// controller-port/proxy-bind change is exactly the class of pending edit
+// reload must refuse rather than silently apply, since mihomo would have to
+// rebind a listener live to actually pick it up. No upstream mihomo server is
+// set up here -- ReloadContext must refuse before ever making the network
+// call.
+func TestHandleReloadRejectsPortChange(t *testing.T) {
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "PortChanged")
+
+	c.manager.mu.Lock()
+	c.manager.procs[item.ID] = &processState{
+		cmd:  &exec.Cmd{},
+		logs: newLogBuffer(1000),
+		done: make(chan struct{}),
+		// mixedPort deliberately does not match item.MixedPort: simulates the
+		// store's MixedPort having been edited after the process launched.
+		controllerPort: item.ControllerPort,
+		mixedPort:      item.MixedPort + 1,
+		proxyBind:      instanceProxyBind(item.ProxyBind),
+	}
+	c.manager.mu.Unlock()
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.procs, item.ID)
+		c.manager.mu.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/reload", nil)
+	rec := httptest.NewRecorder()
+	c.handleReload(rec, req, item.ID)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error != errReloadNetworkChanged.Error() {
+		t.Fatalf("error = %q, want %q", payload.Error, errReloadNetworkChanged.Error())
+	}
+}
+
+// TestHandleReloadClearsPendingRestartOnSuccess pins the #4 acceptance
+// criterion (docs/feature-roadmap-post-1.3.md): a successful reload clears
+// PendingRestart. item.ConfigUpdatedAt is set after the fake process's
+// started time (so PendingRestart reads true beforehand, sanity-checked
+// below) and stays untouched during the reload -- the ordinary case, not the
+// race the next test covers.
+func TestHandleReloadClearsPendingRestartOnSuccess(t *testing.T) {
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Running")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	target := testMihomoItem(t, upstream.URL)
+
+	c.store.mu.Lock()
+	c.store.items[item.ID].ControllerPort = target.ControllerPort
+	c.store.items[item.ID].ConfigUpdatedAt = time.Now().UTC()
+	c.store.mu.Unlock()
+
+	c.manager.mu.Lock()
+	c.manager.procs[item.ID] = &processState{
+		cmd:            &exec.Cmd{},
+		started:        time.Now().UTC().Add(-time.Hour),
+		logs:           newLogBuffer(1000),
+		done:           make(chan struct{}),
+		controllerPort: target.ControllerPort,
+		mixedPort:      item.MixedPort,
+		proxyBind:      instanceProxyBind(item.ProxyBind),
+	}
+	c.manager.mu.Unlock()
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.procs, item.ID)
+		c.manager.mu.Unlock()
+	})
+
+	if before, ok := c.manager.View(item.ID); !ok || !before.PendingRestart {
+		t.Fatalf("expected PendingRestart true before reload, got %+v (ok=%v)", before, ok)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/reload", nil)
+	rec := httptest.NewRecorder()
+	c.handleReload(rec, req, item.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	after, ok := c.manager.View(item.ID)
+	if !ok {
+		t.Fatal("expected instance to still exist")
+	}
+	if after.PendingRestart {
+		t.Fatal("expected PendingRestart to clear after a successful reload")
+	}
+}
+
+// TestHandleReloadKeepsPendingRestartForEditDuringReload pins the
+// lost-update fix: markReloaded stamps the process's tracked started time
+// with reloadStart -- captured before ReloadContext ever reads the store --
+// not a timestamp taken after the reload finishes. A config-affecting store
+// mutation landing in the window between that snapshot and reloadMihomoConfig
+// returning (simulated here by mutating ConfigUpdatedAt from inside the
+// upstream handler, mid-request -- standing in for e.g. the subscription
+// auto-update scheduler ticking concurrently) must not be silently marked
+// "applied": PendingRestart must still read true afterward even though the
+// reload itself reports success, since the edit may not be reflected in the
+// bytes this reload actually pushed.
+func TestHandleReloadKeepsPendingRestartForEditDuringReload(t *testing.T) {
+	c := newBatchTestController(t)
+	item := createTestInstance(t, c, "Running")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.store.mu.Lock()
+		c.store.items[item.ID].ConfigUpdatedAt = time.Now().UTC()
+		c.store.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	target := testMihomoItem(t, upstream.URL)
+
+	c.store.mu.Lock()
+	c.store.items[item.ID].ControllerPort = target.ControllerPort
+	c.store.mu.Unlock()
+
+	c.manager.mu.Lock()
+	c.manager.procs[item.ID] = &processState{
+		cmd:            &exec.Cmd{},
+		started:        time.Now().UTC().Add(-time.Hour),
+		logs:           newLogBuffer(1000),
+		done:           make(chan struct{}),
+		controllerPort: target.ControllerPort,
+		mixedPort:      item.MixedPort,
+		proxyBind:      instanceProxyBind(item.ProxyBind),
+	}
+	c.manager.mu.Unlock()
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.procs, item.ID)
+		c.manager.mu.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+item.ID+"/reload", nil)
+	rec := httptest.NewRecorder()
+	c.handleReload(rec, req, item.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	after, ok := c.manager.View(item.ID)
+	if !ok {
+		t.Fatal("expected instance to still exist")
+	}
+	if !after.PendingRestart {
+		t.Fatal("expected PendingRestart to stay true: the edit landed after reloadStart was captured, so it is not necessarily reflected in the bytes actually pushed")
 	}
 }
 

@@ -14,7 +14,7 @@ import { computed, nextTick, ref } from "vue";
 import type { ComponentPublicInstance } from "vue";
 import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
-import { api } from "../../api.ts";
+import { api, reloadInstance } from "../../api.ts";
 import { activeInstance, clearLatencyStateForInstance } from "../../state.ts";
 import type { FleetInstance, FleetTab } from "../../state.ts";
 import { proxyPortLabel } from "../../format.ts";
@@ -23,6 +23,7 @@ import { refreshInstancesList } from "./instance-refresh.ts";
 import OverviewTab from "./OverviewTab.vue";
 import ProxiesTab from "./ProxiesTab.vue";
 import LogsTab from "./LogsTab.vue";
+import RulesTab from "./RulesTab.vue";
 
 const selected = computed(() => activeInstance(store));
 
@@ -43,12 +44,12 @@ const showPendingRestart = computed(
   () => Boolean(selected.value?.pendingRestart === true && selected.value?.status === "running"),
 );
 
-// Per-component in-flight tracking for the four action buttons below, so a
+// Per-component in-flight tracking for the action buttons below, so a
 // double-click can't fire two POSTs/DELETEs for the same action before the
 // first one's response (and the follow-up refreshInstancesList()) lands.
 // This is local UI state, not FleetState -- nothing outside this component
 // needs to know a button is mid-click.
-const pendingActions = ref<Set<"start" | "stop" | "restart" | "delete">>(new Set());
+const pendingActions = ref<Set<"start" | "stop" | "restart" | "reload" | "delete">>(new Set());
 
 const startDisabled = computed(() => {
   const instance = selected.value;
@@ -66,6 +67,7 @@ const stopDisabled = computed(
 const restartDisabled = computed(() => store.bulkRunning || pendingActions.value.has("restart"));
 const deleteDisabled = computed(() => store.bulkRunning || pendingActions.value.has("delete"));
 const cloneDisabled = computed(() => store.bulkRunning || store.cloneRunning || !selected.value);
+const reloadDisabled = computed(() => store.bulkRunning || !showPendingRestart.value || pendingActions.value.has("reload"));
 
 interface TabDef {
   id: FleetTab;
@@ -75,6 +77,7 @@ interface TabDef {
 const tabs: TabDef[] = [
   { id: "overview", label: "概览" },
   { id: "proxies", label: "节点" },
+  { id: "rules", label: "规则" },
   { id: "logs", label: "日志" },
 ];
 
@@ -103,16 +106,23 @@ function onTabListKeydown(event: KeyboardEvent): void {
   void nextTick(() => tabButtonRefs.value[next.id]?.focus());
 }
 
-// Mirrors runAction() (pre-Vue app.ts), reused by the start/stop/restart
-// buttons below. The original called the module-wide refresh() (system +
-// profiles + instances); this narrows to just the instances list -- see
-// instance-refresh.ts for why that is enough here.
-async function runInstanceAction(action: "start" | "stop" | "restart", success: string): Promise<void> {
+// Mirrors runAction() (pre-Vue app.ts), reused by the start/stop/restart/
+// reload buttons below; narrowed to an instances-only refetch afterward (see
+// instance-refresh.ts). "reload" alone routes through api.ts's
+// reloadInstance() instead of the generic POST below -- the backend rejects
+// it (409) when the pending edit changed a port or the proxy bind address
+// (feature #4's scope limit), which surfaces here as a plain error message
+// pointing at "重启" rather than an automatic restart.
+async function runInstanceAction(action: "start" | "stop" | "restart" | "reload", success: string): Promise<void> {
   const instance = selected.value;
   if (!instance || pendingActions.value.has(action)) return;
   pendingActions.value.add(action);
   try {
-    await api(`/api/instances/${instance.id}/${action}`, { method: "POST" });
+    if (action === "reload") {
+      await reloadInstance(instance.id);
+    } else {
+      await api(`/api/instances/${instance.id}/${action}`, { method: "POST" });
+    }
     actions.showMessage(success);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -237,6 +247,14 @@ async function deleteInstance(): Promise<void> {
           :disabled="restartDisabled"
           @click="runInstanceAction('restart', '已请求重启。')"
         >重启</button>
+        <button
+          v-if="showPendingRestart"
+          id="reloadBtn"
+          type="button"
+          :disabled="reloadDisabled"
+          title="尝试在不重启进程的情况下应用新配置；涉及端口或代理绑定变更时会失败，请改为重启"
+          @click="runInstanceAction('reload', '已热重载配置。')"
+        >热重载</button>
         <button id="deleteBtn" class="danger" type="button" :disabled="deleteDisabled" @click="deleteInstance">删除</button>
       </div>
     </div>
@@ -271,6 +289,9 @@ async function deleteInstance(): Promise<void> {
     </div>
     <div id="tab-proxies" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-proxies" tabindex="-1" v-show="store.activeTab === 'proxies'">
       <ProxiesTab />
+    </div>
+    <div id="tab-rules" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-rules" tabindex="-1" v-show="store.activeTab === 'rules'">
+      <RulesTab />
     </div>
     <div id="tab-logs" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-logs" tabindex="-1" v-show="store.activeTab === 'logs'">
       <LogsTab />

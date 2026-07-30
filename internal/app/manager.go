@@ -19,6 +19,35 @@ type processState struct {
 	started time.Time
 	logs    *logBuffer
 	done    chan struct{} // closed by the wait goroutine once cmd.Wait() returns and procs[id] is cleared
+
+	// controllerPort/mixedPort/proxyBind snapshot the exact values item's
+	// runtime config was generated with when this process was launched (or
+	// last successfully hot-reloaded -- see Manager.ReloadContext, which never
+	// touches these three since it refuses to run at all when they would
+	// change). ReloadContext compares them against item's *current* stored
+	// values to decide whether a pending edit only touches proxies/rules
+	// (safe to push live) or would also change what mihomo listens on (not
+	// safe -- see errReloadNetworkChanged). Immutable after StartContext sets
+	// them, so -- unlike started below -- reading them straight off the
+	// pointer returned by state()/instanceRuntime() needs no extra copying.
+	controllerPort int
+	mixedPort      int
+	proxyBind      string
+
+	// stopRequested marks that this exact process was asked to exit by
+	// StopContext -- a direct Stop, the Stop half of Restart (Stop then
+	// Start), or the Stop that brackets BeginDelete/store.Delete -- before
+	// its wait goroutine (StartContext's `go func() { cmd.Wait() ... }()`)
+	// observed cmd.Wait() return. It is the crash watchdog's gating signal
+	// for "the user asked for this exit": maybeAutoRestart only ever
+	// schedules a relaunch when this is false. Set once, under m.mu, by
+	// StopContext right before it signals the process (covering both the
+	// process-already-running case and the race where a start that raced
+	// against a concurrent Stop still wins and registers one, per
+	// cancelAndAwaitStart) -- never cleared once set, since a fresh
+	// StartContext call always creates a brand-new processState rather than
+	// reusing this one.
+	stopRequested bool
 }
 
 // startAttempt tracks an in-flight StartContext call so a concurrent Stop/Delete
@@ -27,6 +56,102 @@ type startAttempt struct {
 	cancel context.CancelFunc
 	done   chan struct{} // closed when the StartContext call that owns it returns
 }
+
+// watchdogState holds the crash watchdog's per-instance bookkeeping
+// (manager.go's #2 feature). It is keyed independently of processState in
+// Manager.watchdogs because it must outlive any single process: a crash
+// replaces processState with nil (and a later relaunch creates a brand-new
+// one), but RestartCount/LastExitReason/LastExitAt need to stay visible on
+// the view across that replacement, and consecutive/cancelPending need to
+// keep tracking the instance across however many relaunches its backoff
+// sequence spans.
+type watchdogState struct {
+	// restartCount is a lifetime total of successful auto-restarts for this
+	// instance (InstanceView.RestartCount) -- runtime evidence, per
+	// PRODUCT.md's "explicit runtime evidence... should drive the UI"
+	// principle. Unlike consecutive below, a manual Start/Restart never
+	// resets it: it is a history of what the watchdog has done, not a
+	// live gauge of backoff eligibility.
+	restartCount int
+	// consecutive counts crash+relaunch attempts since the last time this
+	// instance either (a) was manually started/restarted (resetWatchdogLocked,
+	// called from startContext) or (b) stayed up longer than
+	// watchdogHealthyAfter after an auto-restart (watchHealthyRun). It drives
+	// both the exponential backoff delay (watchdogBackoffDelay) and the
+	// watchdogMaxRestarts give-up cap.
+	consecutive    int
+	lastExitReason string
+	lastExitAt     time.Time
+	// cancelPending cancels the context a currently-sleeping backoff timer
+	// (runScheduledRestart) is waiting on. Non-nil only while a relaunch is
+	// actually pending; StopContext (via markUserStopped) and
+	// resetWatchdogLocked both call it (via cancelPendingRestartLocked) so a
+	// user Stop or manual Start always wins a race against a scheduled
+	// auto-restart, never the other way around. Ownership of this field is
+	// gated by generation below -- only the goroutine whose captured
+	// generation still matches may read or clear it; see runScheduledRestart.
+	cancelPending context.CancelFunc
+	// generation increments every time scheduleRestart arms a new backoff
+	// attempt. Each runScheduledRestart goroutine captures the value at arm
+	// time and compares it back against this field after waking from its
+	// sleep: a mismatch means a *newer* attempt has since been armed (this
+	// goroutine was simply descheduled long enough for another
+	// crash-and-relaunch cycle to begin), so it must return immediately
+	// without touching cancelPending (which now belongs to that newer
+	// attempt) or relaunching -- otherwise a stale goroutine can clobber a
+	// live successor's cancel handle, silently losing a Stop delivered
+	// during the successor's own backoff (crash-watchdog concurrency review,
+	// fix #2).
+	generation int
+	// userStopped is a persistent (survives across the processState that was
+	// running when it was set) "the user asked this instance to stop" stamp,
+	// set unconditionally by StopContext (markUserStopped) even when there is
+	// currently no running process and no pending backoff for it to cancel --
+	// closing the window where a crash's exit goroutine is between clearing
+	// m.procs and scheduleRestart arming anything, and a concurrent Stop
+	// would otherwise find nothing to act on and silently lose the race
+	// (crash-watchdog concurrency review, fix #3). Checked by scheduleRestart
+	// before it ever arms a backoff, and by runScheduledRestart's post-sleep
+	// section; cleared only by a genuine subsequent (re)start
+	// (resetWatchdogLocked), so it never lingers past the next time the
+	// operator actually starts the instance again.
+	userStopped bool
+}
+
+// backoffSleep is sleepWithContext (mihomo_api.go), indirected through a
+// package-level var so manager_test.go can substitute a fake that reproduces
+// the exact select{} tie-break race fix #1 (crash-watchdog concurrency
+// review) defends against: select choosing the timer branch even though
+// ctx.Done() became ready at the same instant, because a concurrent Stop
+// cancelled the context right as the backoff naturally elapsed. Real
+// sleepWithContext behavior is unaffected; only tests ever assign a
+// different function here.
+var backoffSleep = sleepWithContext
+
+// errAlreadyRunning is startContext's internal signal that it hit its
+// idempotent no-op path (m.procs[id] != nil || m.starting[id]) instead of
+// actually launching a process. Every existing public entry point
+// (StartContext, and therefore Start/StartAll/the controller's start action)
+// converts this back to a plain nil -- already-running is still "success"
+// for them, matching the pre-existing idempotent-start semantics documented
+// on runBatch. runScheduledRestart is the one caller that needs to tell the
+// two apart: crediting restartCount++ / spawning watchHealthyRun for an
+// attempt that lost a race to a manual Start (and so performed no actual
+// relaunch) would misreport bookkeeping manual Start's own
+// resetWatchdogLocked call already reset out from under it (crash-watchdog
+// concurrency review, fix #4's related nit).
+var errAlreadyRunning = errors.New("instance already running or starting")
+
+// Watchdog tunables. Package-level vars, not consts, so tests can shrink
+// them (mirroring util.go's isPortFree / store_test.go's withPortFree
+// pattern) instead of a real test run waiting out up to 30s of backoff or a
+// 60s healthy-run window.
+var (
+	watchdogBaseBackoff  = 1 * time.Second
+	watchdogMaxBackoff   = 30 * time.Second
+	watchdogMaxRestarts  = 5
+	watchdogHealthyAfter = 60 * time.Second
+)
 
 type InstanceBatchError struct {
 	ID    string `json:"id"`
@@ -51,6 +176,20 @@ type Manager struct {
 	reservedPorts map[int]string
 	logs          map[string]*logBuffer
 	deleting      map[string]bool
+	// watchdogs holds the crash watchdog's per-instance bookkeeping (see
+	// watchdogState's doc comment). Entries are created lazily
+	// (watchdogFor) the first time an instance's process exits, and removed
+	// by dropWatchdog once the instance itself is deleted -- mirroring
+	// logs's lifecycle (arch L7 / conc L-1).
+	watchdogs map[string]*watchdogState
+	// coreUpdating is armed for the duration of an in-flight mihomo core
+	// binary swap (core_update.go's ApplyCoreUpdate, via
+	// BeginCoreUpdate/EndCoreUpdate) and checked by startContext, so a
+	// Start racing an in-flight update can never launch a process against
+	// the binary mid-swap. Fleet-wide rather than per-instance (unlike
+	// deleting above) since a core swap replaces the one binary every
+	// instance execs, not just one instance's own files.
+	coreUpdating bool
 	// ctx/cancel bound restoreSelection's polling loop to the Manager's own
 	// lifetime (conc L-3, docs/review-2026-07-11-go-concurrency-performance.md)
 	// rather than the per-StartContext-call ctx, which is cancelled as soon
@@ -71,6 +210,7 @@ func NewManager(store *Store, mihomoPath string) *Manager {
 		reservedPorts: make(map[int]string),
 		logs:          make(map[string]*logBuffer),
 		deleting:      make(map[string]bool),
+		watchdogs:     make(map[string]*watchdogState),
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -105,6 +245,22 @@ func (m *Manager) EndDelete(id string) {
 type instanceRuntimeState struct {
 	starting bool
 	ps       *processState
+	// started copies ps.started at snapshot time, taken under m.mu.RLock
+	// below. Unlike every other processState field, started can change after
+	// publish (Manager.markReloaded bumps it forward on a successful hot
+	// reload), so decorateStatus must not dereference the live ps.started
+	// field lock-free the way it safely does for write-once fields like
+	// ps.cmd -- that would be a genuine data race against markReloaded's
+	// m.mu.Lock()'d write. Copying the value out here, under the same mutex
+	// markReloaded writes under, is what makes decorateStatus's read safe.
+	started time.Time
+	// restartCount/lastExitReason/lastExitAt copy the instance's
+	// watchdogState (if any) at snapshot time, under the same m.mu that
+	// protects it -- see watchdogState's doc comment for why this data
+	// outlives any single processState.
+	restartCount   int
+	lastExitReason string
+	lastExitAt     time.Time
 }
 
 // runtimeSnapshot returns a starting/running snapshot for every instance
@@ -122,6 +278,14 @@ func (m *Manager) runtimeSnapshot() map[string]instanceRuntimeState {
 	for id, ps := range m.procs {
 		entry := out[id]
 		entry.ps = ps
+		entry.started = ps.started
+		out[id] = entry
+	}
+	for id, wd := range m.watchdogs {
+		entry := out[id]
+		entry.restartCount = wd.restartCount
+		entry.lastExitReason = wd.lastExitReason
+		entry.lastExitAt = wd.lastExitAt
 		out[id] = entry
 	}
 	return out
@@ -133,7 +297,16 @@ func (m *Manager) runtimeSnapshot() map[string]instanceRuntimeState {
 func (m *Manager) instanceRuntime(id string) instanceRuntimeState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return instanceRuntimeState{starting: m.starting[id], ps: m.procs[id]}
+	state := instanceRuntimeState{starting: m.starting[id], ps: m.procs[id]}
+	if state.ps != nil {
+		state.started = state.ps.started
+	}
+	if wd := m.watchdogs[id]; wd != nil {
+		state.restartCount = wd.restartCount
+		state.lastExitReason = wd.lastExitReason
+		state.lastExitAt = wd.lastExitAt
+	}
+	return state
 }
 
 // decorateStatus fills in view's Status/PID/PendingRestart from item and
@@ -162,12 +335,19 @@ func decorateStatus(view *InstanceView, item *Instance, snap instanceRuntimeStat
 		// selection was already applied live via putMihomoProxy. Compare
 		// ConfigUpdatedAt instead, which only the mutations that actually
 		// change the generated runtime config touch.
-		if item.ConfigUpdatedAt.After(snap.ps.started) {
+		if item.ConfigUpdatedAt.After(snap.started) {
 			view.PendingRestart = true
 		}
 	case item.LastError != "":
 		view.Status = "error"
 	}
+	// Crash-watchdog evidence is sticky (never cleared by a later successful
+	// restart or a status change) and shown regardless of the current
+	// status, so an operator who missed the crash live can still see that it
+	// happened -- see watchdogState's doc comment.
+	view.RestartCount = snap.restartCount
+	view.LastExitReason = snap.lastExitReason
+	view.LastExitAt = snap.lastExitAt
 }
 
 func (m *Manager) Views() []InstanceView {
@@ -215,6 +395,7 @@ func viewFor(item *Instance, profile *Profile, status string, pid int) InstanceV
 		LastError:         item.LastError,
 		Status:            status,
 		PID:               pid,
+		AutoRestart:       item.AutoRestart,
 	}
 	if profile != nil {
 		view.ProfileName = profile.Name
@@ -229,6 +410,25 @@ func (m *Manager) Start(id string) error {
 }
 
 func (m *Manager) StartContext(ctx context.Context, id string) error {
+	err := m.startContext(ctx, id, true)
+	if errors.Is(err, errAlreadyRunning) {
+		// Every public entry point treats "already running/starting" as a
+		// successful no-op, matching runBatch's documented idempotent-start
+		// semantics -- only runScheduledRestart needs to tell this apart
+		// from an actual fresh launch (errAlreadyRunning's doc comment).
+		return nil
+	}
+	return err
+}
+
+// startContext is StartContext's actual implementation. resetWatchdog is
+// true for every caller except the crash watchdog's own relaunch
+// (runScheduledRestart): a manual Start/Restart is exactly the "operator
+// took control" signal that should give an instance a fresh run of
+// consecutive backoff attempts (resetWatchdogLocked), but the watchdog's own
+// relaunch call must not reset the very counter it just incremented to
+// decide this relaunch should happen at all.
+func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -249,13 +449,25 @@ func (m *Manager) StartContext(ctx context.Context, id string) error {
 	defer cancel()
 
 	m.mu.Lock()
+	if m.coreUpdating {
+		m.mu.Unlock()
+		return errors.New("mihomo core binary is being updated; retry once the update finishes")
+	}
 	if m.deleting[id] {
 		m.mu.Unlock()
 		return fmt.Errorf("instance %q is being deleted", id)
 	}
 	if m.procs[id] != nil || m.starting[id] {
 		m.mu.Unlock()
-		return nil
+		return errAlreadyRunning
+	}
+	if resetWatchdog {
+		// A manual Start/Restart about to actually launch a process: cancel
+		// any auto-restart backoff currently pending for id (so this doesn't
+		// race a scheduled relaunch into a duplicate/late Start) and give the
+		// consecutive-restart counter a fresh start -- see startContext's own
+		// doc comment and resetWatchdogLocked's.
+		m.resetWatchdogLocked(id)
 	}
 	// reservedPorts 只覆盖启动准备窗口；已运行实例仍由持久化端口唯一性和系统 bind 结果兜底。
 	if owner := m.reservedPorts[item.ControllerPort]; owner != "" && owner != id {
@@ -375,7 +587,19 @@ func (m *Manager) StartContext(ctx context.Context, id string) error {
 	}
 
 	buf := m.log(id)
-	ps := &processState{cmd: cmd, started: time.Now().UTC(), logs: buf, done: make(chan struct{})}
+	ps := &processState{
+		cmd:     cmd,
+		started: time.Now().UTC(),
+		logs:    buf,
+		done:    make(chan struct{}),
+		// Snapshot exactly the values writeRuntimeConfig just generated the
+		// runtime config from, so a later ReloadContext call can tell whether
+		// item's stored fields have since drifted from what this process is
+		// actually listening on (see processState's doc comment).
+		controllerPort: item.ControllerPort,
+		mixedPort:      item.MixedPort,
+		proxyBind:      instanceProxyBind(item.ProxyBind),
+	}
 	m.mu.Lock()
 	m.procs[id] = ps
 	m.mu.Unlock()
@@ -393,11 +617,18 @@ func (m *Manager) StartContext(ctx context.Context, id string) error {
 			buf.Add("exited cleanly")
 		}
 		m.mu.Lock()
+		stopRequested := ps.stopRequested
 		if m.procs[id] == ps {
 			delete(m.procs, id)
 		}
 		m.mu.Unlock()
 		close(ps.done)
+
+		// Crash watchdog: decide whether this exit was unexpected (not a
+		// user Stop/Restart/delete) and, if so, whether id's AutoRestart
+		// flag calls for a relaunch. See maybeAutoRestart's doc comment for
+		// the exact gating.
+		m.maybeAutoRestart(id, err, stopRequested)
 	}()
 	// m.ctx (not startCtx) bounds this goroutine: startCtx is cancelled by the
 	// deferred cancel() as soon as StartContext itself returns, moments after
@@ -424,6 +655,17 @@ func (m *Manager) Stop(id string) error {
 // waits for it to settle before deciding whether there is anything left to
 // stop.
 func (m *Manager) StopContext(ctx context.Context, id string) error {
+	// Stamp id as user-stopped and cancel any crash-watchdog backoff
+	// currently pending for it, both unconditionally and up front -- see
+	// markUserStopped's doc comment (crash-watchdog concurrency review, fix
+	// #3) for the race this closes: an instance mid-backoff, or between a
+	// crash being observed and scheduleRestart arming anything, has no
+	// registered process and no in-flight start attempt (m.procs/m.starting
+	// are both empty for it), so neither of the two branches below would
+	// ever reach it, and a plain cancel-if-pending call can find nothing to
+	// cancel even though the watchdog is about to relaunch it moments later.
+	m.markUserStopped(id)
+
 	ps := m.state(id)
 	if ps == nil {
 		settled, err := m.cancelAndAwaitStart(ctx, id)
@@ -440,6 +682,13 @@ func (m *Manager) StopContext(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Mark this exact process as intentionally stopped before signaling it,
+	// so its wait goroutine's maybeAutoRestart call never mistakes this for
+	// a crash -- see processState.stopRequested's doc comment.
+	m.mu.Lock()
+	ps.stopRequested = true
+	m.mu.Unlock()
 
 	ps.logs.Add("stopping mihomo")
 	_ = stopProcess(ps.cmd)
@@ -507,6 +756,514 @@ func (m *Manager) Restart(id string) error {
 		return err
 	}
 	return m.Start(id)
+}
+
+// watchdogFor returns id's watchdogState, creating an empty one on first
+// use. Caller must hold m.mu.
+func (m *Manager) watchdogFor(id string) *watchdogState {
+	wd := m.watchdogs[id]
+	if wd == nil {
+		wd = &watchdogState{}
+		m.watchdogs[id] = wd
+	}
+	return wd
+}
+
+// cancelPendingRestartLocked cancels id's pending auto-restart backoff, if
+// any (runScheduledRestart's sleep will observe its context cancelled and
+// return without relaunching). Caller must hold m.mu.
+func (m *Manager) cancelPendingRestartLocked(id string) {
+	if wd := m.watchdogs[id]; wd != nil && wd.cancelPending != nil {
+		wd.cancelPending()
+		wd.cancelPending = nil
+	}
+}
+
+// markUserStopped stamps id's watchdogState as user-stopped and cancels any
+// currently-pending auto-restart backoff, both under one lock acquisition.
+// Called unconditionally at the top of StopContext -- even when there is
+// currently no running process and no pending backoff to cancel, which is
+// exactly the shape of the race fix #3 (crash-watchdog concurrency review)
+// closes: a crash's exit goroutine can be in the window between removing the
+// dead process from m.procs and scheduleRestart arming a backoff, during
+// which neither m.state(id) nor wd.cancelPending has anything for a
+// concurrent Stop to find. The stamp is checked by scheduleRestart before it
+// ever arms a backoff, and again by runScheduledRestart's post-sleep section
+// (in case a Stop lands in the narrower window between arming and waking);
+// it is cleared only by a genuine subsequent (re)start (resetWatchdogLocked),
+// so it does not linger and block auto-restart after the operator manually
+// starts the instance again.
+func (m *Manager) markUserStopped(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	wd := m.watchdogFor(id)
+	wd.userStopped = true
+	m.cancelPendingRestartLocked(id)
+}
+
+// resetWatchdogLocked cancels any pending auto-restart backoff for id (see
+// cancelPendingRestartLocked), zeroes its consecutive-restart counter, and
+// clears the userStopped stamp markUserStopped may have set. Called from
+// startContext when resetWatchdog is true: a manual Start or Restart is the
+// "operator took control" signal that should let an instance run through a
+// fresh full backoff sequence on its next crash, rather than carrying
+// forward however far a previous crash loop had already gotten toward
+// watchdogMaxRestarts -- or remaining permanently suppressed by a stop from
+// before this fresh start. Caller must hold m.mu.
+func (m *Manager) resetWatchdogLocked(id string) {
+	m.cancelPendingRestartLocked(id)
+	if wd := m.watchdogs[id]; wd != nil {
+		wd.consecutive = 0
+		wd.userStopped = false
+	}
+}
+
+// dropWatchdog discards id's crash-watchdog bookkeeping and cancels any
+// backoff still pending for it. Mirrors dropLogs's doc comment (arch L7 /
+// conc L-1): without this, m.watchdogs[id] would outlive the deleted
+// instance forever. The controller's DELETE handler calls this alongside
+// dropLogs after store.Delete succeeds -- BeginDelete/isDeleting is already
+// in effect for the whole delete handler, so any watchdog goroutine still in
+// flight at this point would refuse to relaunch on its own even without this
+// call (see maybeAutoRestart/runScheduledRestart's isDeleting checks); this
+// makes that immediate instead of leaving a goroutine to wake up, check, and
+// exit on its own later.
+func (m *Manager) dropWatchdog(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cancelPendingRestartLocked(id)
+	delete(m.watchdogs, id)
+}
+
+// maybeAutoRestart is called from the exit goroutine of every process this
+// Manager ever launches (startContext), right after it has recorded the
+// exit's outcome and cleared m.procs/closed ps.done. It decides whether the
+// crash watchdog should relaunch id, refusing whenever:
+//
+//   - stopRequested is true: this exact process was asked to stop by
+//     StopContext -- a direct Stop, the Stop half of Restart, or the Stop
+//     that BeginDelete/DELETE brackets around store.Delete. This is the
+//     watchdog's primary "the user asked for this exit" signal; see
+//     processState.stopRequested's doc comment.
+//   - id is mid-delete (m.isDeleting). Checked independently of
+//     stopRequested as defense in depth: BeginDelete's contract only
+//     promises the marker is set for the duration of the delete handler, not
+//     that every path to it necessarily also set stopRequested first.
+//   - id's current AutoRestart flag -- re-read from the store here, not any
+//     snapshot taken when this process was originally launched, since an
+//     edit can toggle it while the process was running -- is false.
+func (m *Manager) maybeAutoRestart(id string, exitErr error, stopRequested bool) {
+	if stopRequested || m.isDeleting(id) {
+		return
+	}
+	current, ok := m.store.Get(id)
+	if !ok || !current.AutoRestart {
+		return
+	}
+	// "exited cleanly" (the unconditional buf.Add a few lines up in
+	// startContext) is a plain log line and stays as-is; this is the
+	// distinct string surfaced as crash-watchdog evidence
+	// (InstanceView.LastExitReason), which needs to read as unexpected --
+	// exit status 0 with nobody having asked for it is still the watchdog's
+	// business, not a benign shutdown.
+	reason := "exited unexpectedly with status 0"
+	if exitErr != nil {
+		reason = exitErr.Error()
+	}
+	m.scheduleRestart(id, reason)
+}
+
+// watchdogBackoffDelay returns the exponential backoff delay for the given
+// 1-indexed consecutive attempt number: base * 2^(attempt-1), capped at max.
+// base/max are passed in rather than read directly from
+// watchdogBaseBackoff/watchdogMaxBackoff so every call site reads those
+// package vars exactly once, synchronously, at a point already proven safe
+// against a test's var-swapping (see scheduleRestart's doc comment).
+func watchdogBackoffDelay(base, max time.Duration, attempt int) time.Duration {
+	delay := base
+	for i := 1; i < attempt; i++ {
+		if delay >= max {
+			return max
+		}
+		delay *= 2
+	}
+	if delay > max {
+		return max
+	}
+	return delay
+}
+
+// scheduleRestart records id's crash evidence (LastExitReason/LastExitAt --
+// visible on the view immediately, even before any relaunch is attempted)
+// and, unless id has been stamped user-stopped (userStopped -- see
+// markUserStopped's doc comment and fix #3, crash-watchdog concurrency
+// review) or the consecutive-restart cap (watchdogMaxRestarts) was just
+// reached, schedules a relaunch after an exponential backoff delay in a new
+// goroutine. Called from maybeAutoRestart (which has already confirmed this
+// exit was unexpected and AutoRestart is on) and, recursively, from
+// runScheduledRestart when a relaunch attempt itself fails (fix #4) -- so a
+// failed relaunch still consumes an attempt instead of silently stopping the
+// recovery with backoff budget left.
+func (m *Manager) scheduleRestart(id, reason string) {
+	m.mu.Lock()
+	wd := m.watchdogFor(id)
+	if wd.userStopped {
+		// A Stop raced in between the exit being observed
+		// (maybeAutoRestart's stopRequested snapshot) and this call, or
+		// between one failed relaunch attempt and this recursive retry.
+		// Treat exactly like a user-intended exit: do not record this as
+		// crash evidence and do not restart.
+		m.mu.Unlock()
+		return
+	}
+	wd.lastExitReason = reason
+	wd.lastExitAt = time.Now().UTC()
+	wd.consecutive++
+	attempt := wd.consecutive
+	// Every watchdog tunable this call and the goroutines it spawns need is
+	// read exactly once, right here, while m.mu is held -- not later, and
+	// not directly inside runScheduledRestart/watchHealthyRun's own
+	// goroutines. Those goroutines can legitimately still be sleeping (up to
+	// watchdogMaxBackoff, or watchdogHealthyAfter for watchHealthyRun -- both
+	// many seconds in production) long after whatever test or caller
+	// triggered this crash has moved on; reading the package-level vars
+	// there directly raced against a test's own var-swapping cleanup
+	// (withWatchdogTiming, manager_test.go) with no synchronization linking
+	// the two. Capturing the values here, under m.mu -- the same mutex every
+	// caller that inspects wd's fields (including every test assertion this
+	// package makes) already synchronizes through -- and threading them
+	// through as plain parameters from here on closes that race entirely.
+	maxRestarts := watchdogMaxRestarts
+	baseBackoff := watchdogBaseBackoff
+	maxBackoff := watchdogMaxBackoff
+	healthyAfter := watchdogHealthyAfter
+	if attempt > maxRestarts {
+		m.mu.Unlock()
+		msg := fmt.Sprintf("auto-restart: giving up after %d consecutive crashes; last exit: %s", maxRestarts, reason)
+		m.store.SetError(id, msg)
+		m.log(id).Add(msg)
+		return
+	}
+	wd.generation++
+	myGen := wd.generation
+	backoffCtx, cancel := context.WithCancel(m.ctx)
+	wd.cancelPending = cancel
+	m.mu.Unlock()
+
+	delay := watchdogBackoffDelay(baseBackoff, maxBackoff, attempt)
+	m.log(id).Add(fmt.Sprintf("crashed (%s); auto-restart attempt %d/%d in %s", reason, attempt, maxRestarts, delay))
+
+	go m.runScheduledRestart(id, wd, backoffCtx, delay, attempt, myGen, healthyAfter)
+}
+
+// runScheduledRestart sleeps out delay (cancellable by ctx -- a Stop calling
+// markUserStopped, a manual Start's resetWatchdogLocked, or Shutdown
+// cancelling m.ctx, whichever this particular backoffCtx was derived from)
+// and, if it completes normally and id is still eligible (not mid-delete,
+// still AutoRestart, not user-stopped), relaunches it via startContext -- the
+// exact same path a normal Start uses -- with resetWatchdog=false so this
+// relaunch does not reset the very counters that led to it. It runs entirely
+// on its own goroutine, holding m.mu only for brief bookkeeping updates, so
+// calling back into startContext (which takes m.mu itself) cannot deadlock.
+//
+// myGen is the generation scheduleRestart minted when it armed this exact
+// attempt (wd.generation at that time). The very first thing this function
+// does after waking is compare myGen back against wd.generation: a mismatch
+// means a *newer* attempt has since been armed (this goroutine was simply
+// descheduled long enough for another crash-and-relaunch cycle to begin),
+// so wd.cancelPending now belongs to that newer attempt and must not be
+// touched, and this stale goroutine must not relaunch either -- otherwise it
+// can clobber a live successor's cancel handle, silently losing a Stop
+// delivered during the successor's own backoff (fix #2, crash-watchdog
+// concurrency review). Only the current (matching-generation) goroutine may
+// act past that point.
+func (m *Manager) runScheduledRestart(id string, wd *watchdogState, ctx context.Context, delay time.Duration, attempt, myGen int, healthyAfter time.Duration) {
+	err := backoffSleep(ctx, delay)
+
+	m.mu.Lock()
+	if wd.generation != myGen {
+		// Superseded by a newer attempt -- not our cancelPending to touch,
+		// and not our place to log (a deleted instance's log buffer must
+		// not be lazily resurrected by a stale goroutine either).
+		m.mu.Unlock()
+		return
+	}
+	wd.cancelPending = nil
+	stopped := wd.userStopped
+	// ctx.Err() is rechecked here, under the lock, even though backoffSleep
+	// already returned: select{} can pick its timer branch even when
+	// ctx.Done() became ready at the very same instant a concurrent Stop
+	// cancelled it, so err == nil alone does not prove nothing raced in at
+	// the wake instant (fix #1, crash-watchdog concurrency review).
+	cancelled := ctx.Err() != nil
+	m.mu.Unlock()
+
+	if stopped || err != nil || cancelled {
+		// A deleted instance's log buffer must not be lazily resurrected by
+		// this abort path (m.log(id) otherwise recreates it on any
+		// reference) -- best-effort skip while id is mid-delete, matching
+		// isDeleting's own best-effort contract elsewhere in this file.
+		if !m.isDeleting(id) {
+			if stopped {
+				m.log(id).Add("auto-restart aborted: instance was stopped")
+			} else {
+				m.log(id).Add("auto-restart cancelled during backoff")
+			}
+		}
+		return
+	}
+	if m.isDeleting(id) {
+		return
+	}
+	current, ok := m.store.Get(id)
+	if !ok || !current.AutoRestart {
+		return
+	}
+	if err := m.startContext(m.ctx, id, false); err != nil {
+		if errors.Is(err, errAlreadyRunning) {
+			// A manual Start (or another relaunch) already won the race and
+			// is the one actually running the process now; its own
+			// resetWatchdogLocked call already owns this instance's
+			// watchdog state. Crediting restartCount++ / spawning
+			// watchHealthyRun here would misreport an attempt this call
+			// never actually performed.
+			m.log(id).Add("auto-restart skipped: instance is already running")
+			return
+		}
+		// Feed the failure back through scheduleRestart so it consumes a
+		// consecutive-restart attempt and eventually reaches the give-up
+		// path/message, instead of silently going quiet with backoff budget
+		// still left (fix #4, crash-watchdog concurrency review).
+		m.scheduleRestart(id, "restart failed: "+err.Error())
+		return
+	}
+	m.mu.Lock()
+	wd.restartCount++
+	m.mu.Unlock()
+	m.log(id).Add("auto-restart succeeded")
+	go m.watchHealthyRun(id, wd, attempt, healthyAfter)
+}
+
+// watchHealthyRun resets id's consecutive-restart counter once its
+// just-relaunched process has stayed up for healthyAfter -- the "the crash
+// loop is actually over" signal, rather than resetting eagerly right after a
+// relaunch merely starts without erroring immediately. It takes no action
+// (and does not reset) if the process it is watching exits, or is no longer
+// the current one (m.procs[id] != ps -- e.g. a subsequent crash-and-relaunch,
+// or a manual Stop/Start racing in), by the time healthyAfter elapses.
+func (m *Manager) watchHealthyRun(id string, wd *watchdogState, attempt int, healthyAfter time.Duration) {
+	ps := m.state(id)
+	if ps == nil {
+		return
+	}
+	select {
+	case <-ps.done:
+		return
+	case <-m.ctx.Done():
+		return
+	case <-time.After(healthyAfter):
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.procs[id] == ps && wd.consecutive == attempt {
+		wd.consecutive = 0
+	}
+}
+
+// errReloadNetworkChanged is returned by ReloadContext when id's mixed port,
+// controller port, or proxy bind address have changed since its process was
+// launched (or last successfully hot-reloaded). Applying such a change is
+// exactly the "listener" class of edit mihomo's own PUT /configs only
+// recreates when the request asks it to force-recreate listeners (see
+// reloadMihomoConfig's doc comment in mihomo_api.go for why this codebase
+// never passes that flag) -- and even if it did, Fleet's own HTTP client
+// would be left pointed at a now-stale ControllerPort/MixedPort/ProxyBind the
+// moment mihomo actually rebound. Silently letting that through would either
+// no-op the change or strand the controller connection, so ReloadContext
+// refuses outright instead and the caller (controller.go's handleReload)
+// reports that a restart is required -- never that the change hot-applied.
+var errReloadNetworkChanged = errors.New("reload cannot apply a port or proxy bind change; restart the instance instead")
+
+// reloadGenerationError wraps a failure regenerating id's runtime config
+// locally (writeRuntimeConfig, prepareGeodata) -- before ReloadContext ever
+// contacts mihomo. handleReload (controller.go) tells this apart from
+// reloadMihomoConfig's upstream failures via errors.As, since the two
+// deserve different HTTP statuses: a broken profile/local-proxy/global-chain
+// config is a 422 (the instance's current stored fields don't produce a
+// valid config at all), not a 502 (reserved for reloadMihomoConfig's
+// failures -- an actual downstream mihomo rejection or network error).
+type reloadGenerationError struct {
+	err error
+}
+
+func (e reloadGenerationError) Error() string { return e.err.Error() }
+func (e reloadGenerationError) Unwrap() error { return e.err }
+
+// isDeleting reports whether id is mid-delete (BeginDelete/EndDelete,
+// controller.go's DELETE handler) -- ReloadContext's guard against reloading
+// into a process that is already being torn down.
+func (m *Manager) isDeleting(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.deleting[id]
+}
+
+// Reload is ReloadContext bound to context.Background(); see ReloadContext's
+// doc comment for the full contract.
+func (m *Manager) Reload(id string) error {
+	return m.ReloadContext(context.Background(), id)
+}
+
+// ReloadContext regenerates id's runtime config from its current stored
+// fields and profile (via config.go's writeRuntimeConfig -- the exact same
+// generator StartContext uses, so the reloaded config is byte-for-byte what
+// a fresh start would have produced), links any geodata files the new
+// config needs (prepareGeodata, the same call StartContext makes -- without
+// it, a profile edit that adds the first GEOSITE/GEOIP rule would have
+// mihomo try to download the data file from scratch inside
+// reloadMihomoConfig's 5s budget instead of finding it already linked), and
+// asks its already-running mihomo process to apply the result in place via
+// reloadMihomoConfig (mihomo_api.go), without restarting the process. On
+// success it also re-applies the instance's saved proxy selections the same
+// way StartContext does (restoreSelection) -- a profile without
+// store-selected-node persistence otherwise resets every group to its
+// default selection on any config apply, leaving Fleet's own
+// SelectedProxies stale.
+//
+// It only ever applies to an instance that is already running: an id with no
+// registered process (stopped, or still in its starting window) returns an
+// "instance ... is not running" error instead of starting one -- reload is
+// not a start. It also refuses outright while id is mid-delete (isDeleting)
+// -- best-effort, like StartContext's identical m.deleting check, not a
+// fully closed race (there is no "reloading" set the way m.starting tracks
+// an in-flight Start), but it closes the common case of a reload landing on
+// an instance that is already being stopped/removed.
+//
+// It is intentionally narrower than Start/Restart in what it will apply: if
+// item's ControllerPort, MixedPort, or (normalized) ProxyBind differ from the
+// values captured when the process actually launched (processState.
+// controllerPort/mixedPort/proxyBind, set by StartContext and left untouched
+// by every previous successful reload), it returns errReloadNetworkChanged
+// without writing anything or contacting mihomo -- see that var's doc
+// comment. Every other edit PendingRestart currently flags (Mode, Chain,
+// LocalProxies, profile config content, ProfileID) only changes the
+// generated YAML's proxies/rules/groups, which mihomo's PUT /configs applies
+// unconditionally regardless of the force flag (confirmed against mihomo's
+// hub/executor/executor.go ApplyConfig: only listener recreation is gated on
+// force) -- and mihomo's own executor.ParseWithPath validates the file and
+// rejects a broken config before ApplyConfig ever runs, so this deliberately
+// does not also shell out to a local "mihomo -t" the way StartContext does;
+// that would just re-validate the same file with the same parser a second
+// time.
+//
+// reloadStart is captured before item is even read from the store, and is
+// what markReloaded stamps onto the process's tracked started time -- NOT
+// the wall-clock time this function returns. The subscription auto-update
+// scheduler (and any other store mutation that bumps ConfigUpdatedAt) can
+// land at any moment, including the window this function spends inside
+// writeRuntimeConfig/prepareGeodata/reloadMihomoConfig (the last of which
+// alone budgets 5s). Stamping with a "finished" timestamp would then let a
+// mutation that landed *during* that window -- after the bytes this call
+// actually pushed were already read -- get silently marked "applied" even
+// though it wasn't. Stamping with reloadStart instead means such a mutation's
+// ConfigUpdatedAt still lands after the recorded started time, so
+// PendingRestart correctly keeps flagging it: a false positive (the safe
+// direction), never a silently lost update. See markReloaded's doc comment
+// for the rest of this.
+//
+// Reload failures (config/geodata generation, or mihomo rejecting the
+// reload) are logged to id's log buffer and returned to the caller, but
+// deliberately never go through m.store.SetError: the process is still
+// running fine on its previous config, and SetError's LastError is shown by
+// the UI even while status is "running" (InstanceDetail.vue's metaText /
+// DashboardInstances.vue's isBad) -- setting it here would misreport a
+// healthy, still-running instance as failed.
+func (m *Manager) ReloadContext(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Captured before any store read below -- see this function's doc comment
+	// and markReloaded's for why this, not time.Now() after the reload
+	// succeeds, is what gets stamped onto ps.started.
+	reloadStart := time.Now().UTC()
+
+	if m.isDeleting(id) {
+		return fmt.Errorf("instance %q is being deleted", id)
+	}
+	ps := m.state(id)
+	if ps == nil {
+		return fmt.Errorf("instance %q is not running", id)
+	}
+	item, ok := m.store.Get(id)
+	if !ok {
+		return fmt.Errorf("instance %q not found", id)
+	}
+	profile, ok := m.store.GetProfile(item.ProfileID)
+	if !ok {
+		// Typed (store.go's profileNotFoundError), not a bare fmt.Errorf like
+		// StartContext's identical check above: handleReload classifies this
+		// via errors.Is(err, errProfileNotFound) into a 404, which needs the
+		// typed wrapper to actually match.
+		return profileNotFoundError{id: item.ProfileID}
+	}
+	if item.ControllerPort != ps.controllerPort || item.MixedPort != ps.mixedPort || instanceProxyBind(item.ProxyBind) != ps.proxyBind {
+		return errReloadNetworkChanged
+	}
+
+	buf := m.log(id)
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
+		buf.Add("reload failed: " + err.Error())
+		return reloadGenerationError{err: err}
+	}
+	if _, err := m.prepareGeodata(item); err != nil {
+		buf.Add("reload geodata prepare failed: " + err.Error())
+		return reloadGenerationError{err: err}
+	}
+	if err := reloadMihomoConfig(ctx, item); err != nil {
+		buf.Add("reload failed: " + err.Error())
+		return err
+	}
+	buf.Add("reloaded runtime config without restart")
+	m.markReloaded(id, ps, reloadStart)
+	// Mirrors StartContext's own restoreSelection call: re-apply saved
+	// selections against the freshly reloaded config, since a profile without
+	// store-selected-node persistence resets group selections to their
+	// default on any config apply. mihomo's API is already up here (this
+	// function just talked to it via reloadMihomoConfig above), so this
+	// converges on its first attempt; it still runs in the background, like
+	// Start's call, so the reload response never waits on it.
+	go m.restoreSelection(m.ctx, item, ps, buf)
+	return nil
+}
+
+// markReloaded records that id's already-running process just had a fresh
+// runtime config pushed into it via a successful ReloadContext call, without
+// restarting the process. It stamps ps.started with reloadStart -- captured
+// by ReloadContext before it ever read item/profile from the store, not
+// time.Now() at this point -- and only when both:
+//
+//   - m.procs[id] == ps still holds: the process ReloadContext generated
+//     this config for is still the one running. If it died and a fresh Start
+//     replaced it mid-reload, that new process already has its own started
+//     time from StartContext, which this must not stomp with a stamp from an
+//     older reload that no longer describes what it's running.
+//   - reloadStart is strictly after ps.started's current value: monotonic
+//     progress only. Two overlapping ReloadContext calls can finish out of
+//     the order they started in; if a later-starting, faster call already
+//     advanced ps.started past this (earlier-starting, slower) call's own
+//     reloadStart, applying the earlier stamp would regress PendingRestart's
+//     tracked time backward and could wrongly clear it for an edit the
+//     faster reload never actually saw.
+//
+// See ReloadContext's doc comment for why reloadStart -- not a timestamp
+// taken here, after the reload has already finished -- is what closes the
+// lost-update window between reading item and finishing the reload.
+func (m *Manager) markReloaded(id string, ps *processState, reloadStart time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.procs[id] == ps && reloadStart.After(ps.started) {
+		ps.started = reloadStart
+	}
 }
 
 // StartAll 批量启动所有实例；单个实例失败只记录到结果中，后续实例会继续尝试。
@@ -625,6 +1382,70 @@ func (m *Manager) Busy(id string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.procs[id] != nil || m.starting[id]
+}
+
+// AnyRunning reports whether ANY instance currently has a running process or
+// is in its StartContext preparation window (same "busy" definition as
+// Busy, just fleet-wide), returning one such instance's id for use in an
+// error message. Used to gate the mihomo core binary swap
+// (core_update.go): every running instance's process holds the on-disk
+// binary open (mmap'd/exec'd), so replacing that file out from under them
+// is exactly the "binary-in-use" hazard the security review calls out --
+// refuse the swap outright rather than let os.Rename either fail
+// unpredictably (Windows) or silently succeed while a stale process image
+// keeps running against ordinary rename semantics (unix). Geodata swaps
+// deliberately do NOT gate on this: mihomo does not hold geoip.dat/
+// geosite.dat open the way it holds its own executable image, and swapping
+// the data-dir source file never touches a running instance's own
+// directory copy (geodata.go links/copies into each instance dir, so a
+// rename of the shared source only affects what the *next* prepareGeodata
+// picks up).
+func (m *Manager) AnyRunning() (id string, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for instanceID := range m.starting {
+		return instanceID, true
+	}
+	for instanceID := range m.procs {
+		return instanceID, true
+	}
+	return "", false
+}
+
+// BeginCoreUpdate atomically (a) refuses if any instance is currently
+// running/starting -- the same precondition AnyRunning alone checks -- and
+// (b) if so, arms coreUpdating so startContext refuses every Start for as
+// long as the caller holds the gate. Doing both under one m.mu.Lock is what
+// actually closes the TOCTOU a standalone "if AnyRunning() { refuse }"
+// followed by a separate write would leave: without this, an instance could
+// start in the gap between the check and the flag being set, exactly the
+// gap core_update.go's ApplyCoreUpdate needs closed for its multi-minute
+// download+verify+swap. Callers MUST pair a successful call with
+// EndCoreUpdate on every exit path (defer).
+func (m *Manager) BeginCoreUpdate() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for instanceID := range m.starting {
+		return fmt.Errorf("instance %q is starting", instanceID)
+	}
+	for instanceID := range m.procs {
+		return fmt.Errorf("instance %q is running", instanceID)
+	}
+	if m.coreUpdating {
+		return errors.New("a core update is already in progress")
+	}
+	m.coreUpdating = true
+	return nil
+}
+
+// EndCoreUpdate releases the gate BeginCoreUpdate armed. Safe to call even
+// when BeginCoreUpdate never actually armed it (idempotent no-op), so a
+// caller can unconditionally defer this right after checking
+// BeginCoreUpdate's error without an extra branch.
+func (m *Manager) EndCoreUpdate() {
+	m.mu.Lock()
+	m.coreUpdating = false
+	m.mu.Unlock()
 }
 
 func (m *Manager) runBatch(ctx context.Context, action func(context.Context, string) error) InstanceBatchResult {

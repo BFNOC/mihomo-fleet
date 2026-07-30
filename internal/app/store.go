@@ -127,6 +127,7 @@ type createInstanceOptions struct {
 	SelectedProxies        map[string]string
 	SelectedGroup          string
 	SelectedProxy          string
+	AutoRestart            bool
 }
 
 type updateInstanceOptions struct {
@@ -140,6 +141,13 @@ type updateInstanceOptions struct {
 	Mode              string
 	LocalProxies      *string
 	Chain             *[]string
+	// AutoRestart is a pointer (like ProxyBind/LocalProxies/Chain above)
+	// rather than a plain bool so UpdateWithOptions can tell "not present in
+	// this request" (nil, leave unchanged) apart from an explicit false --
+	// a plain bool has no such sentinel. It never affects configChanged: it
+	// is a fleet-controller behavior flag, not part of the generated mihomo
+	// runtime config.
+	AutoRestart *bool
 }
 
 func NewStore(dataDir string) (*Store, error) {
@@ -789,6 +797,7 @@ func (s *Store) Clone(id, name string, mixedPort, controllerPort int) (*Instance
 		Mode:            source.Mode,
 		LocalProxies:    source.LocalProxies,
 		Chain:           append([]string{}, source.Chain...),
+		AutoRestart:     source.AutoRestart,
 	})
 }
 
@@ -918,6 +927,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		SelectedProxies:   cloneStringMap(opts.SelectedProxies),
 		SelectedGroup:     opts.SelectedGroup,
 		SelectedProxy:     opts.SelectedProxy,
+		AutoRestart:       opts.AutoRestart,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -1122,6 +1132,13 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	item.LocalProxies = nextLocalProxies
 	if opts.Chain != nil {
 		item.Chain = nextChain
+	}
+	if opts.AutoRestart != nil {
+		// Deliberately outside configChanged above: AutoRestart is a
+		// fleet-controller behavior flag the crash watchdog reads, not part
+		// of the generated mihomo runtime config, so toggling it must never
+		// flip a running instance's PendingRestart.
+		item.AutoRestart = *opts.AutoRestart
 	}
 	var previousConfig []byte
 	var configPath string

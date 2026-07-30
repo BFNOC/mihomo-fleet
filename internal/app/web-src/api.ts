@@ -1,4 +1,12 @@
 import { API_SECRET_STORAGE_KEY } from "./constants.ts";
+import type {
+  FleetCoreUpdateResult,
+  FleetCoreUpdateStatus,
+  FleetGeoUpdateResult,
+  FleetGeoUpdateStatus,
+  FleetImportResult,
+  FleetInstance,
+} from "./state.ts";
 
 // Shape of the JSON error body the Go controller always sends alongside a
 // non-2xx response (internal/app/controller.go: writeJSONStatus(w, status,
@@ -119,6 +127,60 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
   if (res.status === 204) return null as T;
   const body: unknown = await res.json();
   return body as T;
+}
+
+// reloadInstance hot-reloads a running instance's config in place (feature
+// #4, docs/feature-roadmap-post-1.3.md): POST /api/instances/{id}/reload
+// regenerates the instance's runtime config from its current profile/fields
+// and pushes it into the already-running mihomo process, without a restart.
+// The backend refuses (409) when the pending change is a port/controller-
+// port/proxy-bind edit -- those need a real restart to take effect -- so a
+// caller catching this rejects into the same restart path the "重启" button
+// already offers, rather than this ever silently no-oping the change.
+export async function reloadInstance(id: string): Promise<FleetInstance> {
+  return api<FleetInstance>(`/api/instances/${id}/reload`, { method: "POST" });
+}
+
+// System / components panel (feature #3, docs/feature-roadmap-post-1.3.md):
+// mihomo core binary + geodata check/update. Both GETs are cheap status
+// polls (no download happens server-side just from checking); both POSTs
+// can legitimately run for a while (a multi-megabyte download+verify+swap),
+// matching the Go side's 5-minute handler timeout -- api()'s fetch() itself
+// carries no client-side timeout, so this is bounded only by the server.
+export async function fetchCoreUpdateStatus(): Promise<FleetCoreUpdateStatus> {
+  return api<FleetCoreUpdateStatus>("/api/system/core-update");
+}
+
+export async function applyCoreUpdate(): Promise<FleetCoreUpdateResult> {
+  return api<FleetCoreUpdateResult>("/api/system/core-update", { method: "POST" });
+}
+
+export async function fetchGeoUpdateStatus(): Promise<FleetGeoUpdateStatus> {
+  return api<FleetGeoUpdateStatus>("/api/system/geo-update");
+}
+
+export async function applyGeoUpdate(): Promise<FleetGeoUpdateResult> {
+  return api<FleetGeoUpdateResult>("/api/system/geo-update", { method: "POST" });
+}
+
+// Fleet backup / migration (feature #7, docs/feature-roadmap-post-1.3.md #7):
+// GET /api/export returns the whole fleet (every profile's config.yaml
+// content, every instance minus its runtime secret) as one JSON document;
+// POST /api/import validates and recreates it. The bundle itself is opaque
+// to the frontend -- BackupSection.vue downloads/uploads it as a file and
+// never inspects individual profile/instance fields -- so it is typed as
+// `unknown` here rather than mirroring every nested field state.ts already
+// declares server-side shapes for.
+export async function fetchExportBundle(): Promise<unknown> {
+  return api<unknown>("/api/export");
+}
+
+// bundleJson is sent verbatim as the request body (not re-serialized from a
+// parsed object), so POST /api/import validates exactly the bytes the
+// operator picked -- whether that file came straight from
+// fetchExportBundle()'s own download or was edited by hand in between.
+export async function importBundle(bundleJson: string): Promise<FleetImportResult> {
+  return api<FleetImportResult>("/api/import", { method: "POST", body: bundleJson });
 }
 
 export async function writeClipboard(value: string): Promise<void> {

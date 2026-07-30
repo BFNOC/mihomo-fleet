@@ -65,6 +65,21 @@ export interface FleetInstance {
   status: InstanceStatus;
   pid?: number;
   pendingRestart?: boolean;
+  /** Whether the crash watchdog is armed for this instance (opt-in). */
+  autoRestart?: boolean;
+  /**
+   * Crash-watchdog runtime evidence (manager.go's watchdogState, surfaced via
+   * InstanceView -- not persisted on the stored instance). restartCount is a
+   * lifetime total of successful auto-restarts; lastExitReason/lastExitAt
+   * describe the most recent unexpected exit and stay populated even after a
+   * successful restart. lastExitAt is always present once any crash has ever
+   * happened (a Go time.Time's `omitempty` does not collapse its zero
+   * value), so gate display on lastExitReason -- a plain string, which does
+   * collapse -- being non-empty, not on lastExitAt.
+   */
+  restartCount?: number;
+  lastExitReason?: string;
+  lastExitAt?: string;
 }
 
 /**
@@ -93,6 +108,70 @@ export interface FleetSystemStatus {
   version?: string;
 }
 
+/**
+ * Mirrors internal/app/types.go's CoreUpdateStatus (GET
+ * /api/system/core-update). ChecksumAvailable is true for essentially every
+ * current release (GitHub's own server-computed asset.digest field covers
+ * it -- see core_update.go's own doc comment); false only for the rare
+ * asset predating that field with no sidecar/bundle fallback either.
+ */
+export interface FleetCoreUpdateStatus {
+  installed: boolean;
+  currentVersion?: string;
+  latestVersion?: string;
+  assetName?: string;
+  updateAvailable: boolean;
+  checksumAvailable: boolean;
+  checkError?: string;
+}
+
+/** Mirrors internal/app/types.go's CoreUpdateResult. */
+export interface FleetCoreUpdateResult {
+  version?: string;
+}
+
+/** Mirrors internal/app/types.go's GeoFileStatus. */
+export interface FleetGeoFileStatus {
+  name: string;
+  present: boolean;
+  checksumAvailable: boolean;
+  updateAvailable: boolean;
+}
+
+/** Mirrors internal/app/types.go's GeoUpdateStatus. */
+export interface FleetGeoUpdateStatus {
+  files: FleetGeoFileStatus[];
+  checkError?: string;
+}
+
+/** Mirrors internal/app/types.go's GeoUpdateResult. */
+export interface FleetGeoUpdateResult {
+  updated?: string[];
+  errors?: string[];
+}
+
+/**
+ * Mirrors internal/app/types.go's ImportItemResult (feature #7,
+ * docs/feature-roadmap-post-1.3.md #7: fleet backup / export-import).
+ * PortReallocated/MixedPort/ControllerPort are only meaningful for
+ * instances -- a profile entry never sets them.
+ */
+export interface FleetImportItemResult {
+  originalName: string;
+  name: string;
+  id: string;
+  renamed?: boolean;
+  portReallocated?: boolean;
+  mixedPort?: number;
+  controllerPort?: number;
+}
+
+/** Mirrors internal/app/types.go's ImportResult (POST /api/import's response). */
+export interface FleetImportResult {
+  profiles: FleetImportItemResult[];
+  instances: FleetImportItemResult[];
+}
+
 /** A single group/proxy/kind latency measurement, keyed by latencyKey(). */
 export interface LatencyResult {
   delay: number;
@@ -109,10 +188,10 @@ export interface LatencyResult {
 export type LatencyResultPatch = Pick<LatencyResult, "delay" | "error">;
 
 /** Top-level panel the chrome is showing. */
-export type FleetView = "instances" | "profiles" | "dashboard";
+export type FleetView = "instances" | "profiles" | "dashboard" | "system";
 
 /** Tab within the instance workbench (data-tab in index.html). */
-export type FleetTab = "overview" | "proxies" | "logs";
+export type FleetTab = "overview" | "proxies" | "rules" | "logs";
 
 /** Source of the profile currently being created in the create-profile form. */
 export type ProfileCreateSource = "manual" | "subscription";

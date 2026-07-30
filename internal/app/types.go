@@ -60,6 +60,16 @@ type Instance struct {
 	// first config-affecting edit -- an acceptable, self-healing gap.
 	ConfigUpdatedAt time.Time `json:"configUpdatedAt,omitempty"`
 	LastError       string    `json:"lastError,omitempty"`
+	// AutoRestart opts this instance into the crash watchdog (manager.go):
+	// when its mihomo process exits unexpectedly (not via a user Stop, the
+	// Stop half of Restart, or a delete-in-flight), Manager relaunches it via
+	// the same StartContext path a normal start uses, with exponential
+	// backoff and a consecutive-restart cap. Persisted; defaults to false
+	// (opt-in) for every existing instance loaded from a store predating
+	// this field, matching PRODUCT.md's "explicit runtime evidence... should
+	// drive the UI" principle -- a crash only becomes a restart when the
+	// operator has explicitly said so.
+	AutoRestart bool `json:"autoRestart,omitempty"`
 }
 
 type Profile struct {
@@ -107,6 +117,25 @@ type InstanceView struct {
 	// docs/review-2026-07-11-go-architecture.md). Always false/omitted for
 	// stopped or starting instances.
 	PendingRestart bool `json:"pendingRestart,omitempty"`
+	// AutoRestart mirrors Instance.AutoRestart -- whether the crash watchdog
+	// is armed for this instance.
+	AutoRestart bool `json:"autoRestart,omitempty"`
+	// RestartCount/LastExitReason/LastExitAt are the crash watchdog's
+	// runtime evidence (manager.go's watchdogState), not persisted on
+	// Instance: a lifetime count of successful auto-restarts and a
+	// description of the most recent unexpected exit, kept for as long as
+	// the Manager process runs (cleared only when the instance itself is
+	// deleted, via dropWatchdog). Present even while the instance is
+	// currently running again after a successful auto-restart, so the
+	// operator can see that a restart happened without having to catch it
+	// live. LastExitAt follows the same json convention as
+	// Instance.ConfigUpdatedAt (omitempty on a time.Time does not actually
+	// collapse the Go zero value -- see that field's doc comment); the
+	// frontend gates display on LastExitReason, a plain string, being
+	// non-empty instead.
+	RestartCount   int       `json:"restartCount,omitempty"`
+	LastExitReason string    `json:"lastExitReason,omitempty"`
+	LastExitAt     time.Time `json:"lastExitAt,omitempty"`
 }
 
 type storedData struct {
@@ -164,4 +193,179 @@ type ChainCandidatesResult struct {
 	ProviderNames []string         `json:"providerNames,omitempty"`
 	LocalError    string           `json:"localError,omitempty"`
 	Truncated     bool             `json:"truncated,omitempty"`
+}
+
+// CoreUpdateStatus is GET /api/system/core-update's response (feature #3,
+// docs/feature-roadmap-post-1.3.md): current vs latest mihomo core version
+// for this host's GOOS/GOARCH, and whether the target release actually
+// publishes a checksum ApplyCoreUpdate could verify against -- true for
+// essentially every current release, since GitHub's own server-computed
+// asset.digest field covers it (see core_update.go's CoreUpdateStatus doc
+// comment); false only for the rare asset predating that field with no
+// sidecar/bundle fallback either.
+type CoreUpdateStatus struct {
+	// Installed is false when no mihomo binary is currently resolved at
+	// all (c.mihomoFound == false) -- e.g. -mihomo was never set and
+	// nothing was found alongside mihomo-fleet or on PATH. Every other
+	// field is the zero value in that case; this feature updates an
+	// already-installed binary in place, it does not bootstrap a fresh one
+	// into a location of its own choosing.
+	Installed         bool   `json:"installed"`
+	CurrentVersion    string `json:"currentVersion,omitempty"`
+	LatestVersion     string `json:"latestVersion,omitempty"`
+	AssetName         string `json:"assetName,omitempty"`
+	UpdateAvailable   bool   `json:"updateAvailable"`
+	ChecksumAvailable bool   `json:"checksumAvailable"`
+	CheckError        string `json:"checkError,omitempty"`
+}
+
+// CoreUpdateResult is POST /api/system/core-update's response after
+// ApplyCoreUpdate successfully installs a new mihomo binary.
+type CoreUpdateResult struct {
+	Version string `json:"version,omitempty"`
+}
+
+// GeoFileStatus is one entry of GeoUpdateStatus.Files -- one of the four
+// canonical geodata files geodata.go stages into every instance directory
+// (GeoIP.dat/GeoSite.dat/Country.mmdb/ASN.mmdb).
+type GeoFileStatus struct {
+	Name              string `json:"name"`
+	Present           bool   `json:"present"`
+	ChecksumAvailable bool   `json:"checksumAvailable"`
+	UpdateAvailable   bool   `json:"updateAvailable"`
+}
+
+// GeoUpdateStatus is GET /api/system/geo-update's response.
+type GeoUpdateStatus struct {
+	Files      []GeoFileStatus `json:"files"`
+	CheckError string          `json:"checkError,omitempty"`
+}
+
+// GeoUpdateResult is POST /api/system/geo-update's response: the canonical
+// names actually installed/updated, and a human-readable message per file
+// that was skipped or failed (a partial failure -- e.g. one file's checksum
+// unavailable -- never blocks the others, so this is additive information,
+// not an error by itself).
+type GeoUpdateResult struct {
+	Updated []string `json:"updated,omitempty"`
+	Errors  []string `json:"errors,omitempty"`
+}
+
+// FleetBundleVersion is FleetBundle's current schema version (feature #7,
+// docs/feature-roadmap-post-1.3.md #7). ImportBundle (export.go) rejects any
+// bundle whose Version does not exactly match this, rather than guessing at
+// forward/backward compatibility -- there is only ever one version today, so
+// "compatible" simply means "equal".
+const FleetBundleVersion = 1
+
+// FleetBundle is the single-file fleet backup ExportBundle (export.go)
+// produces for GET /api/export and ImportBundle consumes for POST
+// /api/import. It is deliberately a plain JSON envelope, not a zip: every
+// file this format would otherwise need (instances.json plus each profile's
+// config.yaml) is inlined as a string field instead, which is what lets
+// ImportBundle validate the entire document before creating a single record
+// and rules out zip-slip/path-traversal on import entirely -- there is no
+// per-file extraction step at all for a malicious path to hide in.
+type FleetBundle struct {
+	Version    int              `json:"version"`
+	ExportedAt time.Time        `json:"exportedAt"`
+	Profiles   []BundleProfile  `json:"profiles"`
+	Instances  []BundleInstance `json:"instances"`
+}
+
+// BundleProfile is one Profile plus its on-disk config.yaml content, inlined
+// as Config so the bundle is fully self-contained. ID is carried over
+// verbatim from the exporting Store purely as a bundle-local join key --
+// BundleInstance.ProfileID references it so ImportBundle can tell which
+// profile each instance belongs to -- it is never reused as the imported
+// profile's actual ID (a fresh one is minted by Store.CreateProfile, exactly
+// as a brand new profile would get).
+//
+// SubscriptionURL/AutoUpdate/UpdateIntervalMinutes are included: per
+// PRODUCT.md and the roadmap, a subscription URL is the operator's own data
+// needed to reproduce a working profile, not a secret to redact. What is
+// deliberately NOT carried over is SubscriptionInfo (traffic counters),
+// LastUpdatedAt/LastUpdateError -- those describe the *exporting* machine's
+// last fetch and would be misleading on the importer -- and HomeURL: it is
+// the one profile string the UI renders as a clickable href, ProfilePatch
+// has no field to plumb it through, and PatchProfile resets it on any
+// subscription-URL transition anyway, so exporting it would be a dishonest
+// schema (silently dropped on import) with an href-injection footgun if ever
+// wired up. ImportBundle leaves the excluded fields at their zero value and
+// lets the next refresh (manual or scheduled) repopulate them for real.
+type BundleProfile struct {
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Config                string `json:"config"`
+	SubscriptionURL       string `json:"subscriptionUrl,omitempty"`
+	AutoUpdate            bool   `json:"autoUpdate,omitempty"`
+	UpdateIntervalMinutes int    `json:"updateIntervalMinutes,omitempty"`
+}
+
+// BundleInstance is one Instance, minus everything that is either a
+// per-machine runtime secret or a local filesystem path meaningless on the
+// importing machine:
+//
+//   - Secret is never exported. It is a controller-only runtime credential,
+//     not fleet-portable data; ImportBundle mints a fresh one via the exact
+//     same path Store.CreateWithOptions already uses for a brand new
+//     instance.
+//   - UserConfigPath/RuntimeConfigPath are absolute paths under the
+//     exporting machine's data directory; the importer regenerates both from
+//     its own data directory when it creates the profile/instance directory.
+//   - ID/CreatedAt/UpdatedAt/ConfigUpdatedAt/LastError describe the
+//     exporting record's own history, not portable state; the imported
+//     instance gets fresh values the same way any newly created instance
+//     does.
+//
+// ProfileID refers to a BundleProfile.ID within this same bundle (see that
+// field's doc comment), not a real Store id.
+type BundleInstance struct {
+	Name            string            `json:"name"`
+	ProfileID       string            `json:"profileId"`
+	MixedPort       int               `json:"mixedPort"`
+	ProxyBind       string            `json:"proxyBind,omitempty"`
+	ControllerPort  int               `json:"controllerPort"`
+	Mode            string            `json:"mode,omitempty"`
+	LocalProxies    string            `json:"localProxies,omitempty"`
+	Chain           []string          `json:"chain,omitempty"`
+	SelectedProxies map[string]string `json:"selectedProxies,omitempty"`
+	SelectedGroup   string            `json:"selectedGroup,omitempty"`
+	SelectedProxy   string            `json:"selectedProxy,omitempty"`
+	AutoRestart     bool              `json:"autoRestart,omitempty"`
+}
+
+// ImportItemResult reports what actually happened to one bundle entry
+// (export.go's ImportBundle). Name is what was actually created; it only
+// differs from OriginalName when Renamed is true (a name collision with an
+// already-existing profile/instance on this machine, or with an earlier
+// entry from the same bundle, was resolved by appending " (2)", " (3)", ...
+// -- see dedupName). PortReallocated/MixedPort/ControllerPort are only
+// meaningful for instances: PortReallocated is true when the bundle's
+// original mixed/controller ports collided with a port already in use on
+// this machine and had to be re-allocated (never silently overwriting the
+// existing instance holding that port); MixedPort/ControllerPort always
+// report the port the instance actually ended up with, reallocated or not.
+//
+// There is deliberately no "skipped" outcome: every profile and instance in
+// a validated bundle is always created, with renaming/reallocation applied
+// as needed -- see ImportBundle's doc comment for why validate-then-mutate
+// makes a partial "some created, some skipped" result impossible in normal
+// operation.
+type ImportItemResult struct {
+	OriginalName    string `json:"originalName"`
+	Name            string `json:"name"`
+	ID              string `json:"id"`
+	Renamed         bool   `json:"renamed,omitempty"`
+	PortReallocated bool   `json:"portReallocated,omitempty"`
+	MixedPort       int    `json:"mixedPort,omitempty"`
+	ControllerPort  int    `json:"controllerPort,omitempty"`
+}
+
+// ImportResult is POST /api/import's response body: exactly what was
+// created for every profile and instance in the bundle (see
+// ImportItemResult), in the same order they appeared in the bundle.
+type ImportResult struct {
+	Profiles  []ImportItemResult `json:"profiles"`
+	Instances []ImportItemResult `json:"instances"`
 }

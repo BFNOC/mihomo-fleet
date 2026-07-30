@@ -20,6 +20,7 @@ import ProfileManagerView from "./views/profiles/ProfileManagerView.vue";
 import CreatePanel from "./views/create/CreatePanel.vue";
 import EmptyPanel from "./views/create/EmptyPanel.vue";
 import InstanceDetail from "./views/detail/InstanceDetail.vue";
+import SystemView from "./views/system/SystemView.vue";
 import { store } from "./store.ts";
 import "./styles.css";
 
@@ -44,6 +45,7 @@ mountShell(SideBar, ".sidebar");
 mountShell(MessageBanner, "#messageMount");
 const dashboardPanel = mountShell(DashboardView, "#dashboardPanel");
 const profilePanel = mountShell(ProfileManagerView, "#profilePanel");
+const systemPanel = mountShell(SystemView, "#systemPanel");
 const createPanel = mountShell(CreatePanel, "#createPanel");
 const emptyPanel = mountShell(EmptyPanel, "#emptyPanel");
 mountShell(InstanceDetail, "#detailMount");
@@ -64,12 +66,14 @@ mountShell(InstanceDetail, "#detailMount");
 watchEffect(() => {
   const profilesView = store.view === "profiles";
   const dashboardView = store.view === "dashboard";
+  const systemView = store.view === "system";
   // Anything that is not the instance workbench hides the workbench panels.
   // Testing "not instances" rather than "is profiles" keeps this correct as
   // further views are added.
-  const away = profilesView || dashboardView;
+  const away = profilesView || dashboardView || systemView;
   profilePanel.classList.toggle("hidden", !profilesView);
   dashboardPanel.classList.toggle("hidden", !dashboardView);
+  systemPanel.classList.toggle("hidden", !systemView);
   createPanel.classList.toggle("hidden", away || !store.creating);
   emptyPanel.classList.toggle("hidden", away || store.creating || store.instances.length > 0);
   document.body.classList.toggle("view-dashboard", dashboardView);

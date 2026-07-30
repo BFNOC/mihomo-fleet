@@ -148,60 +148,25 @@ func redactSubscriptionURLText(raw string) string {
 	return text
 }
 
+// newSubscriptionHTTPClient builds the SSRF-hardened client every
+// subscription fetch uses. The actual hardening (dial-time IP re-check,
+// blocklist, redirect re-validation) lives in hardened_transport.go and is
+// shared with the mihomo core/geodata update downloaders (core_update.go,
+// geo_update.go) -- this function only supplies subscription-specific
+// knobs: an 8s dial timeout and an overall 25s request budget, both sized
+// for a single small YAML fetch rather than the much larger, longer-running
+// binary/geodata downloads those other callers need.
 func newSubscriptionHTTPClient() *http.Client {
 	dialer := &net.Dialer{
 		Timeout:   8 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
 	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: subscriptionDialContext(dialer),
-			// L-4 (docs/review-2026-07-11-go-concurrency-performance.md):
-			// http.Transport disables automatic HTTP/2 negotiation whenever a
-			// custom DialContext is set, unless explicitly re-enabled here.
-			// Subscription hosts are frequently CDN-fronted (h2-capable), so
-			// this was silently pinning every subscription fetch to HTTP/1.1.
-			ForceAttemptHTTP2:     true,
-			ResponseHeaderTimeout: 15 * time.Second,
-			IdleConnTimeout:       30 * time.Second,
-		},
-		Timeout: 25 * time.Second,
+		Transport: newHardenedTransport(dialer),
+		Timeout:   25 * time.Second,
 	}
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return errors.New("subscription redirect limit exceeded")
-		}
-		return validateSubscriptionTargetFn(req.Context(), req.URL)
-	}
+	client.CheckRedirect = hardenedCheckRedirect(5, validateSubscriptionTargetFn)
 	return client
-}
-
-func subscriptionDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
-	if dialer == nil {
-		dialer = &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
-	}
-	return func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, err
-		}
-		ips, err := safeSubscriptionIPs(ctx, host)
-		if err != nil {
-			return nil, err
-		}
-		var lastErr error
-		for _, ip := range ips {
-			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-			if err == nil {
-				return conn, nil
-			}
-			lastErr = err
-		}
-		if lastErr != nil {
-			return nil, lastErr
-		}
-		return nil, errors.New("subscription host did not resolve")
-	}
 }
 
 // validateSubscriptionTargetFn is a package-level indirection over
@@ -213,77 +178,19 @@ func subscriptionDialContext(dialer *net.Dialer) func(context.Context, string, s
 // always reject (testing M2 in docs/review-2026-07-11-testing-quality.md).
 var validateSubscriptionTargetFn = validateSubscriptionTarget
 
+// validateSubscriptionTarget delegates to the shared
+// validateHardenedTarget (hardened_transport.go); "subscription" only
+// affects this call's own error wording ("subscription URL must start
+// with...").
 func validateSubscriptionTarget(ctx context.Context, parsed *url.URL) error {
-	if parsed == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return errors.New("subscription URL must start with http:// or https://")
-	}
-	host := parsed.Hostname()
-	if host == "" {
-		return errors.New("subscription URL host is required")
-	}
-	_, err := safeSubscriptionIPs(ctx, host)
-	return err
+	return validateHardenedTarget(ctx, parsed, "subscription")
 }
 
-func safeSubscriptionIPs(ctx context.Context, host string) ([]net.IP, error) {
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("resolve subscription host: %w", err)
-	}
-	if len(addrs) == 0 {
-		return nil, errors.New("subscription host did not resolve")
-	}
-	ips := make([]net.IP, 0, len(addrs))
-	for _, addr := range addrs {
-		if blockedSubscriptionIP(addr.IP) {
-			return nil, fmt.Errorf("subscription host resolves to blocked address %s", addr.IP.String())
-		}
-		ips = append(ips, addr.IP)
-	}
-	return ips, nil
-}
-
+// blockedSubscriptionIP delegates to the shared blockedHardenedIP
+// (hardened_transport.go). Kept under this name because
+// subscription_test.go asserts against it directly by name.
 func blockedSubscriptionIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	if ip.IsUnspecified() ||
-		ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() {
-		return true
-	}
-	for _, network := range blockedSubscriptionNetworks {
-		if network.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-var blockedSubscriptionNetworks = []*net.IPNet{
-	mustParseCIDR("100.64.0.0/10"),
-	mustParseCIDR("192.0.0.0/24"),
-	mustParseCIDR("192.0.2.0/24"),
-	mustParseCIDR("198.18.0.0/15"),
-	mustParseCIDR("198.51.100.0/24"),
-	mustParseCIDR("203.0.113.0/24"),
-	mustParseCIDR("240.0.0.0/4"),
-	mustParseCIDR("100::/64"),
-	mustParseCIDR("2001:db8::/32"),
-}
-
-func mustParseCIDR(raw string) *net.IPNet {
-	_, network, err := net.ParseCIDR(raw)
-	if err != nil {
-		panic(err)
-	}
-	return network
+	return blockedHardenedIP(ip)
 }
 
 func validateSubscriptionConfig(config string) error {

@@ -116,6 +116,7 @@ export const errorLabels: Record<string, string> = {
   "remote profile is empty": "订阅返回的配置内容为空，请检查订阅链接。",
   "fetched subscription is required": "缺少已拉取的订阅内容，请重新更新订阅。",
   "instance state conflict": "实例状态发生冲突，请刷新后重试。",
+  "reload cannot apply a port or proxy bind change; restart the instance instead": "本次修改涉及端口或代理绑定地址变更，热重载无法应用，请改为重启该实例。",
 };
 
 export type ErrorPatternRenderer = (match: RegExpMatchArray) => string;
@@ -162,4 +163,11 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   [/^proxy bind address "(.+)" must not include a port; use the mixed port field instead$/, (match) => `代理绑定地址 ${match[1]} 不要写端口，请使用混合端口字段。`],
   [/^proxy bind address "(.+)" must be an IP address, localhost, all, or \*$/, (match) => `代理绑定地址 ${match[1]} 无效，请填写 IP、localhost、all 或 *。`],
   [/^proxy bind address "(.+)" has invalid IPv6 brackets$/, (match) => `代理绑定地址 ${match[1]} 的 IPv6 方括号不完整。`],
+  // Fleet backup / export-import (feature #7, docs/feature-roadmap-post-1.3.md #7).
+  [/^malformed import bundle: (.+)$/, (match) => `导入文件不是合法的备份文件：${match[1]}`],
+  [/^unsupported bundle version (\d+) \(expected (\d+)\)$/, (match) => `备份文件版本 ${match[1]} 不受支持（当前程序支持版本 ${match[2]}）。`],
+  [/^import bundle is larger than (\d+) bytes$/, (match) => `导入文件超过 ${match[1]} 字节限制。`],
+  [/^instance "(.+)" references unknown profile "(.+)"$/, (match) => `实例 ${match[1]} 引用了备份文件中不存在的配置档 ${match[2]}。`],
+  [/^create profile "(.+)": (.+)$/, (match) => `创建配置档 ${match[1]} 失败：${match[2]}`],
+  [/^create instance "(.+)": (.+)$/, (match) => `创建实例 ${match[1]} 失败：${match[2]}`],
 ];

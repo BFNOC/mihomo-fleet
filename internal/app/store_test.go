@@ -845,6 +845,35 @@ func TestStoreCloneCopiesProfileSelectionAndAllocatesNextPorts(t *testing.T) {
 	}
 }
 
+// TestStoreCloneCopiesAutoRestart covers #2: cloning an instance should
+// carry over its crash-watchdog opt-in, the same way Mode/LocalProxies/Chain
+// already do, rather than silently resetting a cloned instance back to the
+// (opt-in) default of off.
+func TestStoreCloneCopiesAutoRestart(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.Create("US", "", defaultUserConfig, 28010, 29010)
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoRestart := true
+	if _, err := store.UpdateWithOptions(source.ID, updateInstanceOptions{AutoRestart: &autoRestart}); err != nil {
+		t.Fatal(err)
+	}
+
+	clone, err := store.Clone(source.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clone.AutoRestart {
+		t.Fatal("expected the clone to inherit AutoRestart from its source")
+	}
+}
+
 func TestStoreCloneRejectsExplicitPortConflict(t *testing.T) {
 	withPortFree(t, func(int) bool { return true })
 

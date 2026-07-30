@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +43,89 @@ func TestMihomoProxyDelay(t *testing.T) {
 	}
 	if delay != 123 {
 		t.Fatalf("delay = %d, want 123", delay)
+	}
+}
+
+// TestReloadMihomoConfig covers the exact PUT /configs contract
+// reloadMihomoConfig builds (confirmed against MetaCubeX/mihomo's
+// hub/route/configs.go updateConfigs handler and hub/executor/executor.go's
+// ApplyConfig): method PUT, JSON body {"path": "<absolute path>"}, no "force"
+// query parameter, and the instance's bearer secret -- mirroring
+// TestMihomoProxyDelay's assertion style for putMihomoProxy's sibling
+// endpoint. item.RuntimeConfigPath is deliberately relative here: mihomo
+// rejects a non-absolute "path" outright (filepath.IsAbs check), so
+// reloadMihomoConfig must resolve it before sending, regardless of how the
+// Instance happens to store it (e.g. the default "-data .mihomo-fleet" flag
+// builds every instance path from a relative dataDir).
+func TestReloadMihomoConfig(t *testing.T) {
+	var gotMethod, gotPath, gotAuth, gotContentType, gotQuery string
+	var gotBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		gotQuery = r.URL.RawQuery
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	item := testMihomoItem(t, server.URL)
+	item.RuntimeConfigPath = filepath.Join("relative", "instances", item.ID, "config.runtime.yaml")
+
+	if err := reloadMihomoConfig(context.Background(), item); err != nil {
+		t.Fatalf("reloadMihomoConfig() error = %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Fatalf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != "/configs" {
+		t.Fatalf("path = %q, want /configs", gotPath)
+	}
+	if gotQuery != "" {
+		t.Fatalf("query = %q, want empty -- force must never be set (see reloadMihomoConfig's doc comment)", gotQuery)
+	}
+	if gotAuth != "Bearer secret" {
+		t.Fatalf("Authorization = %q, want Bearer secret", gotAuth)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", gotContentType)
+	}
+	wantPath, err := filepath.Abs(item.RuntimeConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(gotBody["path"]) {
+		t.Fatalf("body path = %q, want an absolute path (mihomo rejects relative paths)", gotBody["path"])
+	}
+	if gotBody["path"] != wantPath {
+		t.Fatalf("body path = %q, want %q", gotBody["path"], wantPath)
+	}
+	if len(gotBody) != 1 {
+		t.Fatalf("body = %v, want exactly one field (path)", gotBody)
+	}
+}
+
+// TestReloadMihomoConfigReturnsUpstreamError covers reloadMihomoConfig's
+// non-2xx classification, mirroring putMihomoProxy's identical status-check
+// shape (both share doMihomoDelayRequest's non-delay sibling pattern of
+// wrapping the response body into the returned error).
+func TestReloadMihomoConfigReturnsUpstreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"path is not a absolute path"}`))
+	}))
+	defer server.Close()
+
+	item := testMihomoItem(t, server.URL)
+	item.RuntimeConfigPath = filepath.Join(t.TempDir(), "config.runtime.yaml")
+	err := reloadMihomoConfig(context.Background(), item)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "path is not a absolute path") {
+		t.Fatalf("error = %v, want it to include the upstream message", err)
 	}
 }
 

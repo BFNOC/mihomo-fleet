@@ -51,6 +51,7 @@ interface CreateInstancePayload {
   mode: string;
   localProxies: string;
   chain: string[];
+  autoRestart: boolean;
 }
 
 // Shape GET /api/ports/suggest resolves to (mirrors pre-Vue app.ts's
@@ -75,6 +76,7 @@ interface CreateFormState {
   // The chain is the array the payload sends, not text: it used to be a
   // newline-delimited <textarea> that chainFromText() had to reparse.
   chain: string[];
+  autoRestart: boolean;
 }
 
 const mixedPortPlaceholder = ref("自动");
@@ -94,6 +96,7 @@ const form = reactive<CreateFormState>({
   controllerPort: "",
   localProxies: "",
   chain: [],
+  autoRestart: false,
 });
 
 // Mirrors updateCreateProfileControls()'s hasProfiles-derived disables
@@ -186,6 +189,7 @@ watch(
     form.controllerPort = "";
     form.localProxies = "";
     form.chain = [];
+    form.autoRestart = false;
     mixedPortPlaceholder.value = "自动";
     controllerPortPlaceholder.value = "自动";
     void loadSuggestedPorts();
@@ -220,6 +224,7 @@ async function submit(): Promise<void> {
       mode: form.mode,
       localProxies: isChainMode.value ? form.localProxies : "",
       chain: isChainMode.value ? [...form.chain] : [],
+      autoRestart: form.autoRestart,
     };
     await actions.createInstance(payload);
   } finally {
@@ -283,6 +288,12 @@ function cancel(): void {
       <span>代理绑定地址</span>
       <ProxyBindField v-model="form.proxyBind" input-id="createProxyBind" @dirty="markCreateDirty" />
     </div>
+  </div>
+  <div class="form-grid two">
+    <label class="checkline">
+      <input id="createAutoRestart" v-model="form.autoRestart" type="checkbox" @change="markCreateDirty">
+      <span>崩溃后自动重启</span>
+    </label>
   </div>
   <div id="createChainFields" class="chain-fields" :class="{ hidden: !isChainMode }">
     <div class="stacked">

@@ -28,6 +28,7 @@ import {
   instanceMode,
   modeLabel,
   proxyEndpointText,
+  restartEvidenceText,
   selectionSummary,
 } from "../../format.ts";
 import { refreshInstancesList } from "./instance-refresh.ts";
@@ -49,6 +50,7 @@ const editLocalProxies = ref("");
 // The chain is held as the array the PUT body sends. It used to be newline text
 // because a <textarea> could not hold anything else.
 const editChain = ref<string[]>([]);
+const editAutoRestart = ref(false);
 
 const showChainFields = computed(() => editMode.value === instanceModes.globalChain);
 
@@ -97,6 +99,7 @@ watch(
       editControllerPort.value = String(instance.controllerPort);
       editLocalProxies.value = instance.localProxies || "";
       editChain.value = Array.isArray(instance.chain) ? [...instance.chain] : [];
+      editAutoRestart.value = Boolean(instance.autoRestart);
     }
   },
   { immediate: true },
@@ -132,6 +135,7 @@ async function saveBasics(): Promise<void> {
         mode: editMode.value,
         localProxies: editMode.value === instanceModes.globalChain ? editLocalProxies.value : "",
         chain: editMode.value === instanceModes.globalChain ? [...editChain.value] : [],
+        autoRestart: editAutoRestart.value,
       }),
     });
     if (store.editInstanceId === instance.id && store.editVersion === editVersion) {
@@ -163,6 +167,16 @@ const overviewProfile = computed(() => selected.value?.profileName || selected.v
 const overviewUserConfig = computed(() => selected.value?.profileConfigPath || selected.value?.userConfigPath || "");
 const overviewRuntimeConfig = computed(() => selected.value?.runtimeConfigPath || "");
 const overviewSelection = computed(() => (selected.value ? selectionSummary(selected.value) : ""));
+// Crash-watchdog status + evidence (#2): a short "开启/关闭" state plus --
+// only when there is anything to report -- restart count and last crash
+// reason, so the operator can tell "armed but never fired" apart from
+// "armed and it already saved this instance once".
+const overviewAutoRestart = computed(() => {
+  if (!selected.value) return "";
+  const base = selected.value.autoRestart ? "已开启" : "已关闭";
+  const evidence = restartEvidenceText(selected.value);
+  return evidence ? `${base} · ${evidence}` : base;
+});
 </script>
 
 <template>
@@ -188,6 +202,8 @@ const overviewSelection = computed(() => (selected.value ? selectionSummary(sele
         <dd id="overviewRuntimeConfig">{{ overviewRuntimeConfig }}</dd>
         <dt>已保存节点</dt>
         <dd id="overviewSelection">{{ overviewSelection }}</dd>
+        <dt>崩溃自动重启</dt>
+        <dd id="overviewAutoRestart">{{ overviewAutoRestart }}</dd>
       </dl>
     </section>
     <section id="editForm" ref="editFormEl" class="panel">
@@ -223,6 +239,10 @@ const overviewSelection = computed(() => (selected.value ? selectionSummary(sele
           <ProxyBindField v-model="editProxyBind" input-id="editProxyBind" @dirty="markDirty" />
         </div>
       </div>
+      <label class="checkline">
+        <input id="editAutoRestart" v-model="editAutoRestart" type="checkbox" @change="markDirty">
+        <span>崩溃后自动重启</span>
+      </label>
       <div id="editChainFields" class="chain-fields" :class="{ hidden: !showChainFields }">
         <div class="stacked">
           <span>本地节点 YAML</span>

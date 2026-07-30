@@ -114,3 +114,25 @@ export function closeDashboard(): boolean {
   store.view = "instances";
   return true;
 }
+
+// The system/components panel (feature #3, docs/feature-roadmap-post-1.3.md)
+// is read-only except for its own update buttons, which own their own busy
+// state -- same "no discard prompt needed to enter" reasoning as
+// openDashboard, but leaving it still asks, since the profile editor may be
+// mid-operation exactly like every other navigation away from "profiles".
+export function openSystemPanel(): boolean {
+  if (profileOperationRunning()) return false;
+  if (store.view === "profiles" && !confirmDiscardChanges("打开系统组件")) return false;
+  if (store.view === "profiles") {
+    store.profileCreating = false;
+    store.profileFormDirty = false;
+    store.profileConfigDirty = false;
+  }
+  store.view = "system";
+  return true;
+}
+
+export function closeSystemPanel(): boolean {
+  store.view = "instances";
+  return true;
+}

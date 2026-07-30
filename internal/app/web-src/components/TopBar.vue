@@ -32,8 +32,10 @@ const systemLineText = computed(() => {
 // half (pre-Vue app.ts). #showDashboardBtn's onDashboard-only styling is
 // the sidebar's concern, so it is intentionally not reproduced here.
 const managingProfiles = computed(() => store.view === "profiles");
-const selectorMuted = computed(() => managingProfiles.value || store.view === "dashboard");
+const managingSystem = computed(() => store.view === "system");
+const selectorMuted = computed(() => managingProfiles.value || managingSystem.value || store.view === "dashboard");
 const manageProfilesLabel = computed(() => (managingProfiles.value ? "返回实例" : "配置档管理"));
+const systemPanelLabel = computed(() => (managingSystem.value ? "返回实例" : "系统组件"));
 
 // Mirrors renderSelector()'s `selected` argument, which render() computes as
 // active() = activeInstance(state) (pre-Vue app.ts): the instance
@@ -44,6 +46,13 @@ const selectedInstance = computed(() => activeInstance(store));
 function toggleProfileManager(): void {
   if (store.view === "profiles") actions.closeProfileManager();
   else actions.openProfileManager();
+}
+
+// Same toggle shape as toggleProfileManager, for the new "系统组件" panel
+// (feature #3, docs/feature-roadmap-post-1.3.md).
+function toggleSystemPanel(): void {
+  if (store.view === "system") actions.closeSystemPanel();
+  else actions.openSystemPanel();
 }
 
 // Mirrors the change handler app.ts wires onto #instanceSelect (pre-Vue app.ts),
@@ -82,6 +91,13 @@ async function onInstanceChange(event: Event): Promise<void> {
       :disabled="chrome.profileBusy"
       @click="toggleProfileManager"
     >{{ manageProfilesLabel }}</button>
+    <button
+      id="systemPanelBtn"
+      type="button"
+      :class="{ active: managingSystem }"
+      :disabled="chrome.profileBusy"
+      @click="toggleSystemPanel"
+    >{{ systemPanelLabel }}</button>
     <label class="selector" :class="{ 'muted-control': selectorMuted }">
       <span>当前实例</span>
       <select aria-label="当前实例" :value="selectedInstance?.id ?? ''" @change="onInstanceChange">

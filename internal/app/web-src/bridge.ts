@@ -44,6 +44,7 @@ export interface CreateInstancePayload {
   mode: string;
   localProxies: string;
   chain: string[];
+  autoRestart: boolean;
 }
 
 export interface FleetActions {
@@ -53,6 +54,8 @@ export interface FleetActions {
   closeDashboard: () => void;
   openProfileManager: (profileId?: string) => void;
   closeProfileManager: () => void;
+  openSystemPanel: () => void;
+  closeSystemPanel: () => void;
   startAll: () => void;
   stopAll: () => void;
   copyProxyValue: (value: string, success: string | undefined) => void;
@@ -105,6 +108,8 @@ export const actions: FleetActions = {
   closeDashboard: noop,
   openProfileManager: noop,
   closeProfileManager: noop,
+  openSystemPanel: noop,
+  closeSystemPanel: noop,
   startAll: noop,
   stopAll: noop,
   copyProxyValue: noop,

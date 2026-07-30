@@ -26,20 +26,51 @@ import (
 )
 
 type Controller struct {
-	opts                Options
-	store               *Store
-	manager             *Manager
-	mihomoPath          string
-	mihomoFound         bool
-	mihomoSource        string
-	appVersion          string
+	opts         Options
+	store        *Store
+	manager      *Manager
+	mihomoPath   string
+	mihomoFound  bool
+	mihomoSource string
+	appVersion   string
+	// version is read by handleSystem (GET /api/system) and rewritten by
+	// ApplyCoreUpdate (core_update.go) once a swap succeeds -- both can run
+	// concurrently on different request goroutines, unlike every other
+	// field above, which is set once in NewController and never mutated
+	// again. versionMu is exactly this field's guard; use
+	// currentMihomoVersion()/setMihomoVersion() rather than touching
+	// version directly.
 	version             string
+	versionMu           sync.RWMutex
 	proxyTransport      http.RoundTripper
 	subscriptionClient  *http.Client
 	subscriptionCancel  context.CancelFunc
 	subscriptionMu      sync.Mutex
 	subscriptionRunning map[string]bool
-	apiSecret           string
+	// updateClient is the SSRF-hardened client core_update.go/geo_update.go
+	// share for GitHub API calls and asset/checksum downloads (feature #3).
+	// Deliberately separate from subscriptionClient: that client's 25s
+	// overall Timeout is sized for one small subscription YAML fetch and
+	// would truncate a legitimate multi-megabyte binary/geodata download on
+	// a slow connection -- see newUpdateHTTPClient's doc comment.
+	updateClient *http.Client
+	// coreUpdateMu/geoUpdateMu single-flight handleCoreUpdate/
+	// handleGeoUpdate's POST case: TryLock rejects a second concurrent
+	// update-of-the-same-kind request outright (409) rather than letting
+	// two ApplyCoreUpdate/ApplyGeoUpdate calls run at once. Without this, A
+	// renaming target->.bak followed by B's atomicSwap rename-then-remove
+	// of that SAME .bak (B believes it is removing ITS OWN stale .bak, per
+	// atomicSwap's own doc comment) destroys A's rollback copy, and two
+	// full-size downloads running concurrently doubles the resource
+	// exhaustion the size cap alone does not prevent. One mutex per kind
+	// (not one shared) because a core update and a geo update touch
+	// disjoint files and have no reason to block each other.
+	coreUpdateMu sync.Mutex
+	geoUpdateMu  sync.Mutex
+	// importMu single-flights POST /api/import: a second concurrent import
+	// gets 409 instead of racing the first's create/rollback (feature #7).
+	importMu  sync.Mutex
+	apiSecret string
 	// mihomoProxies caches one *httputil.ReverseProxy per controller port
 	// (arch L9, docs/review-2026-07-11-go-architecture.md): handleMihomoProxy
 	// previously built a brand new ReverseProxy (and Director closure) on
@@ -132,12 +163,29 @@ func NewController(opts Options) (*Controller, error) {
 		proxyTransport:      transport,
 		subscriptionClient:  newSubscriptionHTTPClient(),
 		subscriptionRunning: make(map[string]bool),
+		updateClient:        newUpdateHTTPClient(),
 		mihomoProxies:       make(map[int]*httputil.ReverseProxy),
 	}
 	c.version = detectVersion(mihomoPath)
 	c.manager = NewManager(store, mihomoPath)
 	c.startSubscriptionScheduler()
 	return c, nil
+}
+
+// currentMihomoVersion/setMihomoVersion guard Controller.version (see its
+// field comment): every read after startup must go through
+// currentMihomoVersion, and the only post-startup write is
+// ApplyCoreUpdate's, through setMihomoVersion.
+func (c *Controller) currentMihomoVersion() string {
+	c.versionMu.RLock()
+	defer c.versionMu.RUnlock()
+	return c.version
+}
+
+func (c *Controller) setMihomoVersion(v string) {
+	c.versionMu.Lock()
+	c.version = v
+	c.versionMu.Unlock()
 }
 
 func (c *Controller) Shutdown(ctx context.Context) {
@@ -164,7 +212,167 @@ func (c *Controller) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/instances/", c.handleInstance)
 	mux.HandleFunc("/api/mihomo/", c.handleMihomoProxy)
 	mux.HandleFunc("/api/geoip", c.handleGeoIP)
+	mux.HandleFunc("/api/system/core-update", c.handleCoreUpdate)
+	mux.HandleFunc("/api/system/geo-update", c.handleGeoUpdate)
+	mux.HandleFunc("/api/export", c.handleExport)
+	mux.HandleFunc("/api/import", c.handleImport)
 	mux.HandleFunc("/", c.handleStatic)
+}
+
+// handleCoreUpdate serves feature #3's mihomo core binary check/update
+// (docs/feature-roadmap-post-1.3.md #3). GET reports current vs latest
+// version and whether the release publishes a verifiable checksum; POST
+// downloads, verifies, and installs it -- see core_update.go's
+// ApplyCoreUpdate for the mandatory checksum-before-download-content-used
+// ordering.
+func (c *Controller) handleCoreUpdate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		writeJSON(w, c.CoreUpdateStatus(ctx))
+	case http.MethodPost:
+		// Single-flight: a second concurrent POST while one is already
+		// running is rejected outright rather than letting two
+		// ApplyCoreUpdate calls race (see coreUpdateMu's field comment).
+		if !c.coreUpdateMu.TryLock() {
+			writeError(w, http.StatusConflict, errors.New("a mihomo core update is already in progress"))
+			return
+		}
+		defer c.coreUpdateMu.Unlock()
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+		result, err := c.ApplyCoreUpdate(ctx)
+		if err != nil {
+			writeError(w, updateErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, result)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+// handleGeoUpdate serves feature #3's geodata (GeoIP.dat/GeoSite.dat/
+// Country.mmdb/ASN.mmdb) check/update. See geo_update.go.
+func (c *Controller) handleGeoUpdate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		writeJSON(w, c.GeoUpdateStatus(ctx))
+	case http.MethodPost:
+		// Single-flight, mirroring handleCoreUpdate's POST case above --
+		// its own mutex, since a core update and a geo update touch
+		// disjoint files and have no reason to block each other.
+		if !c.geoUpdateMu.TryLock() {
+			writeError(w, http.StatusConflict, errors.New("a geodata update is already in progress"))
+			return
+		}
+		defer c.geoUpdateMu.Unlock()
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+		result, err := c.ApplyGeoUpdate(ctx)
+		if err != nil {
+			writeError(w, updateErrorStatus(err), err)
+			return
+		}
+		writeJSON(w, result)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+// updateErrorStatus classifies an ApplyCoreUpdate/ApplyGeoUpdate error into
+// an HTTP status: errMihomoNotFound is a client-fixable precondition (400),
+// errCoreUpdateBusy is the same "stop the instance first" conflict every
+// other write-guard in this file already reports as 409 (see e.g. the
+// "stop instance before changing ports" checks in handleInstance), and
+// anything else (network/checksum/extract/install failure) is treated as
+// an upstream/verification problem (502).
+func updateErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, errMihomoNotFound):
+		return http.StatusBadRequest
+	case errors.Is(err, errCoreUpdateBusy):
+		return http.StatusConflict
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// maxImportBundleBytes bounds POST /api/import's request body (feature #7,
+// docs/feature-roadmap-post-1.3.md #7), mirroring readJSON's 2MiB cap on
+// every other POST body in this package but sized for what an import bundle
+// actually needs to hold: possibly several profiles, each with a full
+// subscription YAML up to maxSubscriptionBytes (16MiB, subscription.go)
+// inlined as a string, plus every instance's metadata.
+const maxImportBundleBytes = 64 << 20
+
+// handleExport serves feature #7's fleet backup: GET /api/export returns the
+// whole fleet (every profile's config.yaml content inlined, every instance
+// minus its runtime secret) as one downloadable JSON document. See
+// ExportBundle's doc comment (types.go) for the envelope shape and export.go's
+// ExportBundle for what does/doesn't get carried over.
+func (c *Controller) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	bundle, err := ExportBundle(c.store)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	filename := fmt.Sprintf("mihomo-fleet-backup-%s.json", time.Now().UTC().Format("20060102-150405"))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	// The bundle carries every profile's config.yaml (proxy credentials) and
+	// subscription URLs -- keep it out of the browser's HTTP disk cache, the
+	// same way /api/ports/suggest guards its dynamic response.
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, bundle)
+}
+
+// handleImport serves feature #7's fleet restore: POST /api/import takes a
+// bundle GET /api/export produced (or a hand-built one following the same
+// schema) and, once ImportBundle's validate-then-mutate pass accepts it in
+// full, creates every profile and instance it describes. The response is an
+// ImportResult reporting exactly what was created, renamed, and/or had its
+// ports re-allocated -- see ImportBundle's doc comment (export.go).
+func (c *Controller) handleImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	// Single-flight: an import is a multi-record create+rollback sequence, so
+	// two concurrent imports could interleave their creates. Reject the second
+	// with 409 rather than racing (mirrors coreUpdateMu/geoUpdateMu).
+	if !c.importMu.TryLock() {
+		writeError(w, http.StatusConflict, errors.New("an import is already in progress"))
+		return
+	}
+	defer c.importMu.Unlock()
+	w.Header().Set("Cache-Control", "no-store")
+	defer r.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxImportBundleBytes+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(data) > maxImportBundleBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("import bundle is larger than %d bytes", maxImportBundleBytes))
+		return
+	}
+	result, err := ImportBundle(c.store, data)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, errValidation) {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, result)
 }
 
 func (c *Controller) handleProfiles(w http.ResponseWriter, r *http.Request) {
@@ -532,7 +740,7 @@ func (c *Controller) handleSystem(w http.ResponseWriter, r *http.Request) {
 		MihomoPath:   c.mihomoPath,
 		MihomoFound:  c.mihomoFound,
 		MihomoSource: c.mihomoSource,
-		Version:      c.version,
+		Version:      c.currentMihomoVersion(),
 	})
 }
 
@@ -563,6 +771,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			Mode                  string   `json:"mode"`
 			LocalProxies          string   `json:"localProxies"`
 			Chain                 []string `json:"chain"`
+			AutoRestart           bool     `json:"autoRestart"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -611,6 +820,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			Mode:                   req.Mode,
 			LocalProxies:           req.LocalProxies,
 			Chain:                  req.Chain,
+			AutoRestart:            req.AutoRestart,
 		})
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -707,6 +917,8 @@ func (c *Controller) handleInstance(w http.ResponseWriter, r *http.Request) {
 		c.handleAction(w, r, id, "stop")
 	case "restart":
 		c.handleAction(w, r, id, "restart")
+	case "reload":
+		c.handleReload(w, r, id)
 	case "clone":
 		c.handleClone(w, r, id)
 	case "logs":
@@ -741,6 +953,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			Mode              string    `json:"mode"`
 			LocalProxies      *string   `json:"localProxies"`
 			Chain             *[]string `json:"chain"`
+			AutoRestart       *bool     `json:"autoRestart"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -803,6 +1016,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			Mode:              req.Mode,
 			LocalProxies:      req.LocalProxies,
 			Chain:             req.Chain,
+			AutoRestart:       req.AutoRestart,
 		})
 		if err != nil {
 			status := http.StatusBadRequest
@@ -847,6 +1061,11 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		// record (and its on-disk directory) are gone -- otherwise it stays in
 		// Manager.logs forever, since nothing else ever removes that entry.
 		c.manager.dropLogs(id)
+		// Same reasoning for the crash watchdog's bookkeeping (#2): without
+		// this, m.watchdogs[id] would leak forever too, and (defense in
+		// depth) any in-flight backoff for id is cancelled immediately
+		// instead of waking up later only to find isDeleting still true.
+		c.manager.dropWatchdog(id)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w)
@@ -1096,6 +1315,71 @@ func (c *Controller) handleAction(w http.ResponseWriter, r *http.Request, id, ac
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	view, ok := c.manager.View(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, view)
+}
+
+// handleReload hot-reloads a running instance's config without restarting its
+// process (feature #4, docs/feature-roadmap-post-1.3.md): it regenerates
+// item.RuntimeConfigPath from the instance's current stored fields and
+// profile (Manager.ReloadContext reuses config.go's writeRuntimeConfig --
+// the exact generator StartContext itself calls, so this never diverges from
+// what a fresh start would produce) and pushes it into the already-running
+// mihomo process via PUT /configs (reloadMihomoConfig, mihomo_api.go).
+//
+// Only a running instance can be reloaded -- mirrors handleLatency's
+// same-shaped guard below, and reuses handleMihomoProxy's exact wording so
+// app.js's/constants.ts's errorPatterns entry for `instance "(.+)" is not
+// running` covers this response too instead of needing a second one for the
+// same condition.
+func (c *Controller) handleReload(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if _, ok := c.store.Get(id); !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if c.manager.state(id) == nil {
+		writeError(w, http.StatusConflict, fmt.Errorf("instance %q is not running", id))
+		return
+	}
+	if err := c.manager.ReloadContext(r.Context(), id); err != nil {
+		// Default (502) is reserved for reloadMihomoConfig's own failures --
+		// an actual downstream mihomo rejection or network error -- since
+		// that is the only case ReloadContext returns an error un-classified
+		// below.
+		status := http.StatusBadGateway
+		var genErr reloadGenerationError
+		switch {
+		case errors.Is(err, errReloadNetworkChanged):
+			// Port/controller-port/proxy-bind changed since the process
+			// launched: reload refuses to touch listeners live (see
+			// errReloadNetworkChanged's doc comment in manager.go). This is a
+			// conflict between the pending edit and what's safe to hot-apply,
+			// not a downstream mihomo failure -- 409, like the other
+			// "instance state disagrees with the request" cases above
+			// (handleLatency's stopped-instance check, handleSelection's
+			// starting-instance retry-later case).
+			status = http.StatusConflict
+		case errors.Is(err, errProfileNotFound):
+			status = http.StatusNotFound
+		case errors.As(err, &genErr):
+			// writeRuntimeConfig/prepareGeodata failed before ReloadContext
+			// ever contacted mihomo -- a broken profile/local-proxy/
+			// global-chain config, not a downstream failure, so this must
+			// not fall into the 502 default (see reloadGenerationError's doc
+			// comment, manager.go).
+			status = http.StatusUnprocessableEntity
+		}
+		writeError(w, status, err)
 		return
 	}
 	view, ok := c.manager.View(id)

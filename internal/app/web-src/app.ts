@@ -21,8 +21,10 @@ import {
 } from "./services/instances.ts";
 import {
   closeDashboard,
+  closeSystemPanel,
   hasUnsavedChanges,
   openDashboard,
+  openSystemPanel,
   selectInstance,
   showCreate,
 } from "./services/navigation.ts";
@@ -56,6 +58,8 @@ registerActions({
   showCreate,
   openDashboard,
   closeDashboard,
+  openSystemPanel,
+  closeSystemPanel,
   startAll: () => runBulkAction("start-all"),
   stopAll: () => runBulkAction("stop-all"),
   copyProxyValue,
