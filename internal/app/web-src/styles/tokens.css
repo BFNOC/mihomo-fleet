@@ -1,46 +1,47 @@
 /*
- * Design tokens: the :root custom properties every other file reads.
- * Warm paper neutrals, one teal accent, amber warning, coral danger.
+ * Design tokens: Minimalist Modern system.
+ * Cool slate neutrals, Electric Blue accent gradient, amber warning, coral danger.
  */
 :root {
   color-scheme: light;
-  --accent-border: #5aa89a;
-  --line-hover: #b7c0bc;
+  --accent-border: #4D7CFF;
+  --line-hover: #CBD5E1;
   --warn-text: #7a5418;
-  --bg: #f3f1ec;
-  --surface: #fbfaf7;
-  --panel: #f6f4ef;
-  --line: #e2ddd4;
-  --text: #1c2421;
-  --muted: #5f6b66;
-  --soft: #ebe7df;
-  --accent: #0f8a74;
-  --accent-strong: #0b6b5b;
-  --accent-soft: #d9f0e9;
+  --bg: #FAFAFA;
+  --surface: #FFFFFF;
+  --panel: #F1F5F9;
+  --line: #E2E8F0;
+  --text: #0F172A;
+  --muted: #64748B;
+  --soft: #F1F5F9;
+  --accent: #0052FF;
+  --accent-strong: #003FCC;
+  --accent-soft: #EBF0FF;
+  --accent-secondary: #4D7CFF;
   --warn: #c98a1a;
   --warn-soft: #f7edd6;
   --danger: #c24735;
   --danger-soft: #f8e3de;
-  /* Darker than --danger: --danger is tuned for decorative use (orbs, dots,
-     borders) and fails 4.5:1 as text on --danger-soft, mirroring why
-     --warn-text exists alongside --warn. */
   --danger-text: #99402e;
-  --on-accent: #f7fffc;
-  --shadow-sm: 0 1px 2px rgba(28, 36, 33, 0.04);
-  --shadow: 0 8px 28px rgba(28, 36, 33, 0.06);
-  --shadow-card: 0 1px 2px rgba(28, 36, 33, 0.04), 0 12px 32px rgba(28, 36, 33, 0.05);
-  /* Upload uses the existing amber warning hue; download stays on the teal
-     accent. Charts are the only place these two meet on one axis. */
+  --on-accent: #FFFFFF;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.07);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 32px rgba(0, 0, 0, 0.05);
+  --shadow-accent: 0 4px 14px rgba(0, 82, 255, 0.25);
+  --shadow-accent-lg: 0 8px 24px rgba(0, 82, 255, 0.35);
+  /* Upload amber / download accent — charts are the only place both meet. */
   --spark-up: #c98a1a;
-  --spark-down: #0f8a74;
-  --radius: 10px;
+  --spark-down: #0052FF;
+  --radius: 12px;
   --radius-lg: 16px;
   --radius-sm: 8px;
   --radius-xs: 6px;
-  --control-h: 34px;
+  --control-h: 36px;
   --focus: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
-  --font: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+  --font: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
     -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: "Calistoga", Georgia, serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo,
+    Consolas, monospace;
 }

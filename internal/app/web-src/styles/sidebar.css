@@ -29,9 +29,17 @@
 }
 
 .side-dashboard-btn.active {
-  border-color: var(--accent-border);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
   background: var(--accent-soft);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.side-dashboard-btn {
+  transition:
+    border-color 200ms var(--ease),
+    background-color 200ms var(--ease),
+    box-shadow 200ms var(--ease),
+    transform 200ms var(--ease);
 }
 
 .side-dashboard-btn:disabled {
@@ -54,10 +62,11 @@
 /* .side-head's flex-row base lives in shell.css now (shared with
    .detail-head/.panel-title/.actions and the profile-*-head selectors). */
 .side-head h2 {
-  font-size: 13px;
-  font-weight: 700;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.15em;
   color: var(--muted);
 }
 

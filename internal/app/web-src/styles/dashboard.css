@@ -9,9 +9,9 @@
 
 .dashboard-head h2 {
   margin: 4px 0 2px;
-  font-size: 22px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
 }
 
 .dashboard-head p {
@@ -22,10 +22,11 @@
 
 .eyebrow {
   margin: 0;
-  color: var(--accent-strong);
+  color: var(--accent);
+  font-family: var(--mono);
   font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.12em;
+  font-weight: 500;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
 }
 
@@ -197,6 +198,15 @@
   border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-card);
+  transition:
+    box-shadow 200ms var(--ease),
+    border-color 200ms var(--ease),
+    transform 200ms var(--ease);
+}
+
+.dash-card:hover {
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.08);
+  border-color: color-mix(in srgb, var(--accent) 15%, var(--line));
 }
 
 .dash-card h3 {
@@ -338,6 +348,7 @@
   border-radius: 50%;
   background: var(--accent);
   content: "";
+  animation: mm-pulse 2s infinite;
 }
 
 .dash-figure {
@@ -349,8 +360,8 @@
 }
 
 .dash-figure-value {
-  font-size: 34px;
-  font-weight: 650;
+  font-size: 36px;
+  font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.05;
 }
@@ -388,19 +399,26 @@
 
 .dash-open-btn {
   height: 30px;
-  padding: 0 12px;
-  border: 1px solid var(--accent-border);
+  padding: 0 14px;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
+  background: linear-gradient(to right, var(--accent), var(--accent-secondary));
+  color: var(--on-accent);
   font: inherit;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition:
+    filter 200ms var(--ease),
+    box-shadow 200ms var(--ease),
+    transform 200ms var(--ease);
 }
 
 .dash-open-btn:hover {
-  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  filter: brightness(1.1);
+  box-shadow: var(--shadow-accent);
+  transform: translateY(-0.5px);
 }
 
 .dash-trend-note {
