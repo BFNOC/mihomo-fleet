@@ -513,7 +513,7 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 	if !ok {
 		return fmt.Errorf("instance %q not found", id)
 	}
-	profile, ok := m.store.GetProfile(item.ProfileID)
+	_, ok = m.store.GetProfile(item.ProfileID)
 	if !ok {
 		return fmt.Errorf("profile %q not found", item.ProfileID)
 	}
@@ -650,7 +650,7 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 	if !ok {
 		return fmt.Errorf("instance %q not found", id)
 	}
-	profile, ok = m.store.GetProfile(item.ProfileID)
+	profile, ok := m.store.GetProfile(item.ProfileID)
 	if !ok {
 		return fmt.Errorf("profile %q not found", item.ProfileID)
 	}

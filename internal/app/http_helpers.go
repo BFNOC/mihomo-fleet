@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,11 +10,33 @@ import (
 	"net/http"
 )
 
+const maxJSONBodyBytes = 2 << 20
+
 func readJSON(r *http.Request, out any) error {
 	defer r.Body.Close()
-	dec := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBodyBytes+1))
+	if err != nil {
+		return fmt.Errorf("read request body: %w", err)
+	}
+	if len(raw) > maxJSONBodyBytes {
+		return fmt.Errorf("request body exceeds %d byte limit", maxJSONBodyBytes)
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	return dec.Decode(out)
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	// 一个请求体只能有一个 JSON 值；否则上游与 Fleet 对同一字节流的
+	// 解释可能不一致。仅允许第一个值之后出现空白。
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain exactly one JSON value")
+		}
+		return fmt.Errorf("invalid trailing data after JSON value: %w", err)
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, payload any) {

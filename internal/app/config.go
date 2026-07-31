@@ -203,9 +203,7 @@ func applyGlobalChainConfig(cfg map[string]any, item *Instance) error {
 		return err
 	}
 
-	for _, proxy := range localProxies {
-		proxies = append(proxies, proxy)
-	}
+	proxies = append(proxies, localProxies...)
 	applyDialerProxyChain(proxies, plan)
 	if len(proxies) > 0 {
 		cfg["proxies"] = proxies
