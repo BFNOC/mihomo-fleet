@@ -9,6 +9,7 @@ import {
 } from "./constants.ts";
 import type { InstanceMode, LatencyKind, ProxyCopyActionDef, ProxyCopyActionId } from "./constants.ts";
 import { localizedMessage } from "./messages.ts";
+import { formatRate } from "./traffic.ts";
 import type { FleetInstance, FleetProfile, FleetProxyGroup, FleetSubscriptionInfo, LatencyResult } from "./state.ts";
 
 export function instanceMode(item: Pick<FleetInstance, "mode"> | null | undefined): InstanceMode {
@@ -48,6 +49,43 @@ export function formatBytes(value: number): string {
   // index is always in range even though noUncheckedIndexedAccess can't
   // prove the loop invariant on its own.
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]!}`;
+}
+
+export interface DocumentTitleInput {
+  /** Fleet-wide upload rate, bytes per second. */
+  up: number;
+  /** Fleet-wide download rate, bytes per second. */
+  down: number;
+  /** How many instances are running right now. */
+  running: number;
+  /** store.system's appVersion. Empty until GET /api/system lands. */
+  appVersion: string;
+  /** document.visibilityState === "hidden". */
+  hidden: boolean;
+}
+
+/**
+ * The browser tab title. index.html ships a bare "MF" as the pre-boot
+ * fallback; everything below only runs once the app is live.
+ *
+ * Rates show whenever anything is running, including at 0 B/s. Collapsing to
+ * the plain name on an idle sample would flip the title's format every time
+ * traffic paused for a single tick.
+ *
+ * The hidden branch exists because services/polling.ts stops both loops while
+ * the tab is backgrounded, so the rates would freeze at whatever the last
+ * sample happened to read. The instance count freezes with them -- the slow
+ * poll stops on the same condition -- but it degrades to last-known rather
+ * than to actively wrong: a count rarely changes between hide and return,
+ * where a rate almost always has.
+ */
+export function documentTitle(input: DocumentTitleInput): string {
+  const base = input.appVersion ? `MF v${input.appVersion}` : "MF";
+  if (input.running <= 0) return base;
+  if (input.hidden) return `${input.running} 个实例运行中 · ${base}`;
+  const up = formatRate(input.up);
+  const down = formatRate(input.down);
+  return `↑${up.value} ${up.unit} ↓${down.value} ${down.unit} · ${base}`;
 }
 
 export function formatProfileUpdate(profile: Pick<FleetProfile, "lastUpdateError" | "lastUpdatedAt">): string {

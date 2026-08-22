@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   chainFromText,
   currentLatencyTarget,
+  documentTitle,
   formatBatchMessage,
   formatBytes,
   proxyEndpointText,
@@ -14,6 +15,39 @@ import {
   splitProxyLabel,
 } from "./format.ts";
 import { localizedMessage } from "./messages.ts";
+
+test("documentTitle falls back to the bare name before the version lands", () => {
+  const idle = { up: 0, down: 0, running: 0, hidden: false };
+  assert.equal(documentTitle({ ...idle, appVersion: "" }), "MF");
+  assert.equal(documentTitle({ ...idle, appVersion: "1.4.5" }), "MF v1.4.5");
+  assert.equal(documentTitle({ ...idle, appVersion: "dev" }), "MF vdev");
+});
+
+test("documentTitle shows rates while the tab is visible", () => {
+  assert.equal(
+    documentTitle({ up: 1_200_000, down: 318_000, running: 3, appVersion: "1.4.5", hidden: false }),
+    "↑1.2 MB/s ↓318 kB/s · MF v1.4.5",
+  );
+  // Kept even at zero: collapsing to the plain name on one idle sample would
+  // flip the title's format back and forth.
+  assert.equal(
+    documentTitle({ up: 0, down: 0, running: 1, appVersion: "1.4.5", hidden: false }),
+    "↑0 B/s ↓0 B/s · MF v1.4.5",
+  );
+});
+
+test("documentTitle swaps rates for the instance count while hidden", () => {
+  // polling.ts stops sampling on a backgrounded tab, so the rates below are
+  // stale by construction and must not reach the title.
+  assert.equal(
+    documentTitle({ up: 1_200_000, down: 318_000, running: 3, appVersion: "1.4.5", hidden: true }),
+    "3 个实例运行中 · MF v1.4.5",
+  );
+  assert.equal(
+    documentTitle({ up: 0, down: 0, running: 0, appVersion: "1.4.5", hidden: true }),
+    "MF v1.4.5",
+  );
+});
 
 test("proxyPort accepts only valid tcp ports", () => {
   assert.equal(proxyPort(7890), 7890);

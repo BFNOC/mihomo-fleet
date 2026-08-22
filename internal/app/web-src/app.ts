@@ -11,6 +11,7 @@ import { setGeoResolver } from "./dashboard.ts";
 import type { GeoLookupResult } from "./dashboard.ts";
 import { api } from "./api.ts";
 import { copyProxyValue } from "./services/clipboard.ts";
+import { startDocumentTitle } from "./services/document-title.ts";
 import { refresh } from "./services/fleet-refresh.ts";
 import { startPolling } from "./services/polling.ts";
 import {
@@ -84,3 +85,4 @@ registerActions({
 
 refresh();
 startPolling();
+startDocumentTitle();

@@ -7,7 +7,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Calistoga&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-    <title>Mihomo Fleet</title>
+    <!-- Pre-boot fallback only. services/document-title.ts owns this element's
+         text from the first tick onward; the version is not known until
+         GET /api/system lands, so it cannot be stamped in here. -->
+    <title>MF</title>
   </head>
   <body>
     <div class="shell">

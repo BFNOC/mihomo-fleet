@@ -95,10 +95,22 @@ Build artifacts under `internal/app/web/` are **not** in git — releases rebuil
 them before `go build`. Only `internal/app/web/README.md` is tracked, because
 `go:embed web/*` fails to compile against an empty directory.
 
-For UI changes, verify in a real browser rather than by inspection. There is no
-Chrome here, but `playwright` + chromium are installed. Measure boxes and read
+For UI changes, verify in a real browser rather than by inspection — but confirm
+the tooling is there first (`node -e "require.resolve('playwright')"`). It is
+absent in some environments, and where it is, the Chrome DevTools MCP server has
+no browser to drive either. When it is present, measure boxes and read
 `textContent`; do not judge by screenshots — CJK fonts are deliberately not
 installed, so Chinese text renders as empty boxes and that is expected.
+
+With no browser, the fallback is a throwaway Node harness: stub
+`globalThis.document` and `globalThis.localStorage`, then reach the module under
+test through `await import()` so the stubs are in place before `vue` loads. Two
+of those stubs are mandatory — `document.createElement`, which `@vue/runtime-dom`
+calls at module load, and `localStorage.getItem`, which `state.ts`'s
+`createState()` calls. This runs real Vue reactivity, so it catches the
+module-init cycles, temporal-dead-zone errors and missing reactive dependencies
+that the pure-logic unit tests cannot. It cannot check layout: say the change was
+not seen rendered rather than implying it was.
 
 ## Conventions
 
