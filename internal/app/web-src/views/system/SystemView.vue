@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// #systemPanel's content: thin shell importing the three system sections.
+// #systemPanel's content: thin shell importing the system sections.
 // All formatting/decision logic lives in system-update.ts; section-specific
 // fetch-on-open + button wiring lives in each section component.
 import { ref, watch } from "vue";
@@ -14,6 +14,7 @@ import {
 } from "./system-update.ts";
 import GeoUpdateSection from "./GeoUpdateSection.vue";
 import BackupSection from "./BackupSection.vue";
+import AlertsSection from "./AlertsSection.vue";
 
 const coreStatus = ref<FleetCoreUpdateStatus | null>(null);
 const coreLoading = ref(false);
@@ -103,6 +104,7 @@ watch(
       冲突的端口会自动重新分配，重名的配置档或实例会自动改名，不会覆盖已有数据。
       导出文件包含订阅地址等敏感信息，请妥善保管。
     </p>
+    <AlertsSection />
     <BackupSection />
   </section>
 </template>

@@ -38,6 +38,12 @@ const geoBatchLimit = 256
 // without changing how any GEOIP rule resolves.
 var geoDatabaseNames = []string{"GeoLite2-Country.mmdb", "Country.mmdb", "country.mmdb"}
 
+// The ASN database geo_update.go already downloads and stages, under both the
+// name it is published with upstream and the canonical name the updater
+// installs it as. Nothing else reads it -- mihomo uses it for ASN rules, this
+// handler for the connections table's network column.
+var asnDatabaseNames = []string{"GeoLite2-ASN.mmdb", "ASN.mmdb", "asn.mmdb"}
+
 // handleGeoIP resolves a batch of destination addresses to ISO country codes.
 // Everything is answered from the local database -- no address a user is
 // connecting to ever leaves the machine, which rules out the obvious
@@ -58,21 +64,41 @@ func (c *Controller) handleGeoIP(w http.ResponseWriter, r *http.Request) {
 		payload.IPs = payload.IPs[:geoBatchLimit]
 	}
 	db := c.geoDatabase()
+	asnDB := c.asnDatabase()
 	// Addresses with no answer are simply absent from the map; the caller
 	// remembers that as "asked, nothing there" and stops asking.
 	countries := make(map[string]string, len(payload.IPs))
-	if db != nil {
-		for _, raw := range payload.IPs {
-			addr, err := netip.ParseAddr(strings.TrimSpace(raw))
-			if err != nil {
-				continue
-			}
+	asns := make(map[string]ASNRecord, len(payload.IPs))
+	for _, raw := range payload.IPs {
+		if db == nil && asnDB == nil {
+			break
+		}
+		addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+		if err != nil {
+			continue
+		}
+		if db != nil {
 			if code, ok := db.lookupCountry(addr); ok {
 				countries[raw] = code
 			}
 		}
+		if asnDB != nil {
+			if record, ok := asnDB.lookupASN(addr); ok {
+				asns[raw] = record
+			}
+		}
 	}
-	writeJSON(w, map[string]any{"available": db != nil, "countries": countries})
+	// `available` keeps its original meaning (the country database) so the
+	// field is not silently redefined; `asnAvailable` is its own flag. The
+	// frontend stops asking only when both are false -- one database present
+	// without the other is a normal deployment, not a reason to blank the
+	// column that does work.
+	writeJSON(w, map[string]any{
+		"available":    db != nil,
+		"countries":    countries,
+		"asnAvailable": asnDB != nil,
+		"asns":         asns,
+	})
 }
 
 // geoDatabase returns the open country database, opening or reopening it when
@@ -80,32 +106,45 @@ func (c *Controller) handleGeoIP(w http.ResponseWriter, r *http.Request) {
 // normal state (the database is optional and user-supplied), so it yields nil
 // rather than an error -- the geo column just stays empty.
 func (c *Controller) geoDatabase() *geoDB {
-	c.geo.mu.Lock()
-	defer c.geo.mu.Unlock()
+	return c.openStagedDatabase(&c.geo, geoDatabaseNames)
+}
+
+// asnDatabase is geoDatabase for the ASN file. Separate handle, same lifecycle:
+// a fleet with no ASN database staged simply answers no ASN for every address.
+func (c *Controller) asnDatabase() *geoDB {
+	return c.openStagedDatabase(&c.asn, asnDatabaseNames)
+}
+
+// openStagedDatabase holds the stat-and-reopen logic both lookups share. The
+// interval check is per-handle, so one database going missing never resets the
+// other's timer.
+func (c *Controller) openStagedDatabase(lookup *geoLookup, names []string) *geoDB {
+	lookup.mu.Lock()
+	defer lookup.mu.Unlock()
 	now := time.Now()
-	if !c.geo.checked.IsZero() && now.Sub(c.geo.checked) < geoStatInterval {
-		return c.geo.db
+	if !lookup.checked.IsZero() && now.Sub(lookup.checked) < geoStatInterval {
+		return lookup.db
 	}
-	c.geo.checked = now
-	path := findGeodataSource(c.manager.geodataSourceDirs(), geoDatabaseNames)
+	lookup.checked = now
+	path := findGeodataSource(c.manager.geodataSourceDirs(), names)
 	if path == "" {
-		c.geo.db, c.geo.path, c.geo.modTime = nil, "", time.Time{}
+		lookup.db, lookup.path, lookup.modTime = nil, "", time.Time{}
 		return nil
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		c.geo.db, c.geo.path, c.geo.modTime = nil, "", time.Time{}
+		lookup.db, lookup.path, lookup.modTime = nil, "", time.Time{}
 		return nil
 	}
-	if c.geo.db != nil && path == c.geo.path && info.ModTime().Equal(c.geo.modTime) {
-		return c.geo.db
+	if lookup.db != nil && path == lookup.path && info.ModTime().Equal(lookup.modTime) {
+		return lookup.db
 	}
 	db, err := openGeoDB(path)
 	if err != nil {
 		log.Printf("geoip: %s unusable: %v", path, err)
-		c.geo.db, c.geo.path, c.geo.modTime = nil, "", time.Time{}
+		lookup.db, lookup.path, lookup.modTime = nil, "", time.Time{}
 		return nil
 	}
-	c.geo.db, c.geo.path, c.geo.modTime = db, path, info.ModTime()
+	lookup.db, lookup.path, lookup.modTime = db, path, info.ModTime()
 	return db
 }

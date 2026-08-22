@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -539,4 +540,90 @@ func TestMmdbConcurrentLookups(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// mmdbTestASNDB builds a synthetic ASN database covering the shapes lookupASN
+// has to survive: both fields present, each one alone, neither, and a record
+// whose organisation carries control characters.
+func mmdbTestASNDB(t *testing.T) *geoDB {
+	t.Helper()
+	b := newMmdbTestBuilder(28, 6)
+	b.insertV4(8, 8, 8, 0, 24, b.addData(mmdbTestMap(
+		mmdbTestString("autonomous_system_number"), mmdbTestUint(mmdbUint32, 15169),
+		mmdbTestString("autonomous_system_organization"), mmdbTestString("Google LLC"),
+	)))
+	// Number only -- still a hit; "AS13335" alone is useful.
+	b.insertV4(1, 1, 1, 0, 24, b.addData(mmdbTestMap(
+		mmdbTestString("autonomous_system_number"), mmdbTestUint(mmdbUint32, 13335),
+	)))
+	// Organisation only -- also a hit.
+	b.insertV4(2, 2, 2, 0, 24, b.addData(mmdbTestMap(
+		mmdbTestString("autonomous_system_organization"), mmdbTestString("Example Net"),
+	)))
+	// Neither field: present in the tree, but nothing to show.
+	b.insertV4(3, 3, 3, 0, 24, b.addData(mmdbTestMap(
+		mmdbTestString("geoname_id"), mmdbTestUint(mmdbUint32, 7),
+	)))
+	b.insertV4(4, 4, 4, 0, 24, b.addData(mmdbTestMap(
+		mmdbTestString("autonomous_system_number"), mmdbTestUint(mmdbUint32, 64500),
+		mmdbTestString("autonomous_system_organization"), mmdbTestString("Bad\x00Org\nInc\t"),
+	)))
+	b.insert([]byte{0x20, 0x01, 0x0d, 0xb8}, 32, b.addData(mmdbTestMap(
+		mmdbTestString("autonomous_system_number"), mmdbTestUint(mmdbUint32, 3320),
+		mmdbTestString("autonomous_system_organization"), mmdbTestString("Deutsche Telekom AG"),
+	)))
+	return mmdbTestMustOpen(t, b.build())
+}
+
+func TestMmdbLookupASN(t *testing.T) {
+	db := mmdbTestASNDB(t)
+	cases := []struct {
+		ip      string
+		wantNum uint32
+		wantOrg string
+		wantOK  bool
+	}{
+		{"8.8.8.8", 15169, "Google LLC", true},
+		{"1.1.1.1", 13335, "", true},
+		{"2.2.2.2", 0, "Example Net", true},
+		// Both fields absent: a tree hit is not an ASN.
+		{"3.3.3.3", 0, "", false},
+		// Control characters are stripped, not escaped or passed through.
+		{"4.4.4.4", 64500, "BadOrgInc", true},
+		{"2001:db8::1", 3320, "Deutsche Telekom AG", true},
+		// ::ffff:8.8.8.8 must resolve through the ::/96 IPv4 subtree, the same
+		// as lookupCountry -- both now share recordOffset.
+		{"::ffff:8.8.8.8", 15169, "Google LLC", true},
+		{"9.9.9.9", 0, "", false},
+	}
+	for _, tt := range cases {
+		addr, err := netip.ParseAddr(tt.ip)
+		if err != nil {
+			t.Fatalf("ParseAddr(%q): %v", tt.ip, err)
+		}
+		got, ok := db.lookupASN(addr)
+		if ok != tt.wantOK {
+			t.Fatalf("lookupASN(%s) ok = %v, want %v", tt.ip, ok, tt.wantOK)
+		}
+		if got.Number != tt.wantNum || got.Org != tt.wantOrg {
+			t.Fatalf("lookupASN(%s) = %d/%q, want %d/%q", tt.ip, got.Number, got.Org, tt.wantNum, tt.wantOrg)
+		}
+	}
+}
+
+func TestMmdbLookupASNOnNilDatabase(t *testing.T) {
+	var db *geoDB
+	if _, ok := db.lookupASN(netip.MustParseAddr("8.8.8.8")); ok {
+		t.Fatal("lookupASN on a nil database must report a miss, not panic")
+	}
+}
+
+func TestSanitizeASNOrgBoundsLength(t *testing.T) {
+	long := strings.Repeat("x", asnOrgMaxLen+50)
+	if got := sanitizeASNOrg(long); len(got) != asnOrgMaxLen {
+		t.Fatalf("sanitizeASNOrg length = %d, want %d", len(got), asnOrgMaxLen)
+	}
+	if got := sanitizeASNOrg("  Cloudflare, Inc.  "); got != "Cloudflare, Inc." {
+		t.Fatalf("sanitizeASNOrg = %q, want the trimmed name", got)
+	}
 }

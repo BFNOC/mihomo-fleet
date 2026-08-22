@@ -186,21 +186,42 @@ export async function sampleFleet(
   await Promise.all(running.map((item) => sampleInstance(item.id, fetchConnections, now)));
 }
 
-// Country codes are resolved once per address and kept for the session: a
-// connection's destination does not move between countries, and the table
-// re-renders every 1.8s. A miss is cached as "" so a database that simply does
-// not carry that address is not re-asked forever.
-const geoCache = new Map<string, string>();
+/**
+ * What one address resolves to: an ISO country code, plus the autonomous
+ * system announcing it. `org` is the operator's name ("Google LLC",
+ * "China Telecom") and is the part worth showing; `asn` is the bare number
+ * behind it.
+ *
+ * Every field is optional-by-emptiness rather than absent, so a partially
+ * answered address (country known, ASN database missing) needs no branching at
+ * the call site.
+ */
+export interface GeoEntry {
+  country: string;
+  asn: number;
+  org: string;
+}
+
+const emptyGeoEntry: GeoEntry = { country: "", asn: 0, org: "" };
+
+// Resolved once per address and kept for the session: a connection's
+// destination does not move between countries or networks, and the table
+// re-renders every 1.8s. A miss is cached as the empty entry so a database that
+// simply does not carry that address is not re-asked forever.
+const geoCache = new Map<string, GeoEntry>();
 const geoPending = new Set<string>();
 let geoAvailable = true;
 
 // JSON body POST /api/geoip resolves to. `available: false` means the
-// controller has no GeoIP database staged at all (a deployment choice, not a
-// failed request) -- a rejected promise is the transport-error case instead,
-// handled by requestGeo's `.catch`.
+// controller has no country database staged at all (a deployment choice, not a
+// failed request); `asnAvailable` says the same about the ASN database, and the
+// two are independent files. A rejected promise is the transport-error case
+// instead, handled by requestGeo's `.catch`.
 export interface GeoLookupResult {
   available?: boolean;
   countries?: Record<string, string>;
+  asnAvailable?: boolean;
+  asns?: Record<string, { asn?: number; org?: string }>;
 }
 
 let geoFetch: ((ips: string[]) => Promise<GeoLookupResult>) | null = null;
@@ -221,9 +242,20 @@ export function requestGeo(rows: Pick<FleetConnectionRow, "ip">[]): void {
   if (!wanted.length) return;
   geoFetch(wanted)
     .then((result) => {
-      if (result && result.available === false) geoAvailable = false;
+      // Stop asking only when the controller has NEITHER database. One present
+      // without the other is a normal deployment, and blanking both columns
+      // over it would throw away the half that works.
+      if (result && result.available === false && result.asnAvailable === false) geoAvailable = false;
       const countries: Record<string, string> = result?.countries || {};
-      for (const ip of wanted) geoCache.set(ip, countries[ip] || "");
+      const asns = result?.asns || {};
+      for (const ip of wanted) {
+        const asn = asns[ip];
+        geoCache.set(ip, {
+          country: countries[ip] || "",
+          asn: Math.max(0, Number(asn?.asn) || 0),
+          org: String(asn?.org || ""),
+        });
+      }
     })
     .catch(() => {
       // Leave the addresses uncached so the next paint retries; a failed
@@ -235,8 +267,8 @@ export function requestGeo(rows: Pick<FleetConnectionRow, "ip">[]): void {
 }
 
 // Read accessor for requestGeo()'s cache. A miss (not yet resolved, still
-// pending, or genuinely unknown to the database) reads as "", matching the
-// old geoCell()'s "no code yet" branch.
-export function resolveGeo(ip: string): string {
-  return geoCache.get(ip) || "";
+// pending, or genuinely unknown to either database) reads as the empty entry,
+// so a caller can always reach `.country`/`.org` without a null check.
+export function resolveGeo(ip: string): GeoEntry {
+  return geoCache.get(ip) || emptyGeoEntry;
 }

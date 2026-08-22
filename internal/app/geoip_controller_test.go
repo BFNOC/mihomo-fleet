@@ -12,8 +12,10 @@ import (
 )
 
 type geoIPResponse struct {
-	Available bool              `json:"available"`
-	Countries map[string]string `json:"countries"`
+	Available    bool                 `json:"available"`
+	Countries    map[string]string    `json:"countries"`
+	ASNAvailable bool                 `json:"asnAvailable"`
+	ASNs         map[string]ASNRecord `json:"asns"`
 }
 
 func newGeoTestController(t *testing.T) (*Controller, string) {
@@ -180,5 +182,82 @@ func TestGeoIPCapsTheBatch(t *testing.T) {
 	_, payload := postGeoIP(t, c, string(body))
 	if _, ok := payload.Countries["203.0.113.9"]; ok {
 		t.Fatal("address past the batch limit was resolved, want it dropped")
+	}
+}
+
+// writeASNDatabase drops an ASN database naming 203.0.113.0/24 beside the
+// country database, in the same directory prepareGeodata stages from.
+func writeASNDatabase(t *testing.T, dataDir string, number uint32, org string) string {
+	t.Helper()
+	builder := newMmdbTestBuilder(28, 6)
+	builder.insertV4(203, 0, 113, 0, 24, builder.addData(mmdbTestMap(
+		mmdbTestString("autonomous_system_number"), mmdbTestUint(mmdbUint32, uint64(number)),
+		mmdbTestString("autonomous_system_organization"), mmdbTestString(org),
+	)))
+	dir := filepath.Join(dataDir, "geo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "ASN.mmdb")
+	if err := os.WriteFile(path, builder.build(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestGeoIPResolvesASNAlongsideCountry(t *testing.T) {
+	c, dataDir := newGeoTestController(t)
+	writeGeoDatabase(t, dataDir, "NL")
+	writeASNDatabase(t, dataDir, 64500, "Example Net")
+
+	_, payload := postGeoIP(t, c, `{"ips":["203.0.113.9","198.51.100.7"]}`)
+	if !payload.Available || !payload.ASNAvailable {
+		t.Fatalf("available = %v, asnAvailable = %v; want both true", payload.Available, payload.ASNAvailable)
+	}
+	if payload.Countries["203.0.113.9"] != "NL" {
+		t.Fatalf("countries = %v", payload.Countries)
+	}
+	got := payload.ASNs["203.0.113.9"]
+	if got.Number != 64500 || got.Org != "Example Net" {
+		t.Fatalf("asns[203.0.113.9] = %+v, want 64500/Example Net", got)
+	}
+	// An address neither database knows is simply absent from both maps.
+	if _, ok := payload.ASNs["198.51.100.7"]; ok {
+		t.Fatalf("asns = %v, want no entry for an unknown address", payload.ASNs)
+	}
+}
+
+// The two databases are independent files. An ASN database with no country
+// database beside it must still answer -- the frontend only stops asking when
+// both flags are false, and that contract starts here.
+func TestGeoIPAnswersASNWithoutCountryDatabase(t *testing.T) {
+	c, dataDir := newGeoTestController(t)
+	writeASNDatabase(t, dataDir, 15169, "Google LLC")
+
+	_, payload := postGeoIP(t, c, `{"ips":["203.0.113.9"]}`)
+	if payload.Available {
+		t.Fatal("available = true with no country database staged")
+	}
+	if !payload.ASNAvailable {
+		t.Fatal("asnAvailable = false with an ASN.mmdb staged")
+	}
+	if got := payload.ASNs["203.0.113.9"]; got.Number != 15169 || got.Org != "Google LLC" {
+		t.Fatalf("asns[203.0.113.9] = %+v, want 15169/Google LLC", got)
+	}
+}
+
+func TestGeoIPWithoutASNDatabase(t *testing.T) {
+	c, dataDir := newGeoTestController(t)
+	writeGeoDatabase(t, dataDir, "NL")
+
+	_, payload := postGeoIP(t, c, `{"ips":["203.0.113.9"]}`)
+	if payload.ASNAvailable {
+		t.Fatal("asnAvailable = true without an ASN database on disk")
+	}
+	if len(payload.ASNs) != 0 {
+		t.Fatalf("asns = %v, want empty", payload.ASNs)
+	}
+	if payload.Countries["203.0.113.9"] != "NL" {
+		t.Fatalf("countries = %v; the country lookup must be unaffected", payload.Countries)
 	}
 }

@@ -74,9 +74,12 @@ type Controller struct {
 	// entry.
 	mihomoProxiesMu sync.Mutex
 	mihomoProxies   map[int]*httputil.ReverseProxy
-	// geo is defined by the geoLookup type in geoip_handler.go, along with
-	// handleGeoIP/geoDatabase, the geo-related consts, and geoDatabaseNames.
+	// geo and asn are defined by the geoLookup type in geoip_handler.go, along
+	// with handleGeoIP/geoDatabase, the geo-related consts, and the two
+	// database name lists. Two independent handles: the databases are separate
+	// files, either can be missing, and each is re-stat'ed on its own schedule.
 	geo geoLookup
+	asn geoLookup
 }
 
 // SetAPISecret configures the bearer token that SecureHandler requires on

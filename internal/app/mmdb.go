@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/netip"
 	"os"
+	"strings"
 )
 
 const (
@@ -27,6 +29,11 @@ const (
 	// and the same 16 is subtracted when turning a record value into a data
 	// section offset.
 	geoDBSeparatorSize = 16
+
+	// Real organisation names run well under this ("Google LLC",
+	// "Cloudflare, Inc."); the cap only bounds what a hostile record can push
+	// into a table cell.
+	asnOrgMaxLen = 120
 
 	// A pointer may legitimately point at another pointer. Real files do not
 	// chain further than that, so a short cap turns a crafted cycle into an
@@ -177,8 +184,76 @@ func parseGeoDB(data []byte) (*geoDB, error) {
 // when the address is absent from the database or its record carries no usable
 // code. It mutates nothing and is safe to call from many goroutines at once.
 func (db *geoDB) lookupCountry(addr netip.Addr) (string, bool) {
-	if db == nil {
+	offset, ok := db.recordOffset(addr)
+	if !ok {
 		return "", false
+	}
+	return db.countryCode(offset)
+}
+
+// ASNRecord is one GeoLite2-ASN row: the autonomous system that announces the
+// address, and the organisation that runs it.
+type ASNRecord struct {
+	Number uint32 `json:"asn"`
+	Org    string `json:"org"`
+}
+
+// lookupASN reads autonomous_system_number/autonomous_system_organization out
+// of an ASN database. Same file format as the country database and so the same
+// reader -- only the record's field names differ, which is why the tree walk
+// lives in recordOffset rather than in either lookup.
+//
+// A record carrying only one of the two fields still counts as a hit: the
+// number alone is useful ("AS15169"), and so is the organisation name alone.
+// Both missing is a miss.
+func (db *geoDB) lookupASN(addr netip.Addr) (ASNRecord, bool) {
+	offset, ok := db.recordOffset(addr)
+	if !ok {
+		return ASNRecord{}, false
+	}
+	var record ASNRecord
+	if numOff, ok, err := db.section.lookupKey(offset, "autonomous_system_number"); err == nil && ok {
+		if value, err := db.section.readUint(numOff); err == nil && value <= math.MaxUint32 {
+			record.Number = uint32(value)
+		}
+	}
+	if orgOff, ok, err := db.section.lookupKey(offset, "autonomous_system_organization"); err == nil && ok {
+		if org, err := db.section.readString(orgOff); err == nil {
+			record.Org = sanitizeASNOrg(org)
+		}
+	}
+	if record.Number == 0 && record.Org == "" {
+		return ASNRecord{}, false
+	}
+	return record, true
+}
+
+// sanitizeASNOrg bounds and cleans an organisation name. Same reasoning as
+// normalizeCountryCode: the database is an arbitrary file the user dropped in
+// and this string is rendered in a browser. Control characters are stripped
+// rather than escaped, and the length cap keeps a hostile record from filling
+// a table cell.
+func sanitizeASNOrg(org string) string {
+	org = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, org)
+	org = strings.TrimSpace(org)
+	if len(org) > asnOrgMaxLen {
+		org = strings.ToValidUTF8(org[:asnOrgMaxLen], "")
+	}
+	return org
+}
+
+// recordOffset walks the search tree for addr and returns the offset of its
+// record inside the data section. Shared by lookupCountry and lookupASN, which
+// differ only in which keys they then read. It mutates nothing and is safe to
+// call from many goroutines at once.
+func (db *geoDB) recordOffset(addr netip.Addr) (int, bool) {
+	if db == nil {
+		return 0, false
 	}
 	// ::ffff:a.b.c.d has to be looked up as a.b.c.d: the IPv4 data lives under
 	// ::/96, and while real databases also alias ::ffff:0:0/96, relying on that
@@ -186,7 +261,7 @@ func (db *geoDB) lookupCountry(addr netip.Addr) (string, bool) {
 	// the address.
 	addr = addr.Unmap()
 	if !addr.IsValid() {
-		return "", false
+		return 0, false
 	}
 	var (
 		ip    []byte
@@ -198,26 +273,26 @@ func (db *geoDB) lookupCountry(addr netip.Addr) (string, bool) {
 		start = db.ipv4Start
 	} else {
 		if db.ipVersion == 4 {
-			return "", false
+			return 0, false
 		}
 		octets := addr.As16()
 		ip = octets[:]
 	}
 	value, err := db.traverse(start, ip)
 	if err != nil {
-		return "", false
+		return 0, false
 	}
 	// value == nodeCount is the format's "no data" record. Below it means the
 	// walk ran out of address bits while still inside the tree, which only a
 	// malformed database does.
 	if value <= db.nodeCount {
-		return "", false
+		return 0, false
 	}
 	offset := int64(value) - int64(db.nodeCount) - geoDBSeparatorSize
 	if offset < 0 || offset >= int64(len(db.section.buf)) {
-		return "", false
+		return 0, false
 	}
-	return db.countryCode(int(offset))
+	return int(offset), true
 }
 
 // countryCode reads country.iso_code, falling back to

@@ -10,8 +10,9 @@
 // identity for free, and the search box below is a plain v-model input, which
 // handles IME composition correctly on its own.
 import { computed, ref, watchEffect } from "vue";
+import DashboardRuleStats from "./DashboardRuleStats.vue";
 import { requestGeo, resolveGeo } from "../../dashboard.ts";
-import type { FleetConnectionRow } from "../../dashboard.ts";
+import type { FleetConnectionRow, GeoEntry } from "../../dashboard.ts";
 import { countryFlag, filterConnections, formatDuration, formatRate, localAddressLabel, sortConnections } from "../../traffic.ts";
 import type { ConnectionSortDirection, ConnectionSortKey } from "../../traffic.ts";
 import { formatBytes } from "../../format.ts";
@@ -38,6 +39,11 @@ import {
 const maxConnectionRows = 500;
 
 const searchQuery = ref("");
+
+// The card shows either the live rows or their aggregate, never both: a sixth
+// dashboard card would break the `.dashboard > *` viewport-fit contract, and
+// the two answer the same question at different zoom levels anyway.
+const showStats = ref(false);
 
 // Column sort for 上传 / 下载 / 时长. Three states per column: first click
 // sorts descending (biggest/longest first — what "which connection is doing
@@ -85,12 +91,26 @@ watchEffect(() => {
 // resolved code cannot invalidate anything by itself. Reading nowTick (which
 // reads the heartbeat) republishes the cache once per tick -- the same cadence
 // at which the pre-Vue innerHTML repaint picked resolutions up.
-const connectionGeo = computed<Record<string, string>>(() => {
+const connectionGeo = computed<Record<string, GeoEntry>>(() => {
   void nowTick.value;
-  const codes: Record<string, string> = {};
-  for (const row of shownConnectionRows.value) codes[row.ip] = resolveGeo(row.ip);
-  return codes;
+  const entries: Record<string, GeoEntry> = {};
+  for (const row of shownConnectionRows.value) entries[row.ip] = resolveGeo(row.ip);
+  return entries;
 });
+
+// The operator's name is the readable half of an ASN record ("Google LLC" says
+// more than "AS15169"), so it is what the cell shows; the number goes in the
+// title alongside it for anyone who wants to look it up.
+function geoNetworkLabel(entry: GeoEntry | undefined): string {
+  if (!entry) return "";
+  if (entry.org) return entry.org;
+  return entry.asn ? `AS${entry.asn}` : "";
+}
+
+function geoNetworkTitle(entry: GeoEntry | undefined): string {
+  if (!entry || (!entry.org && !entry.asn)) return "";
+  return [entry.org, entry.asn ? `AS${entry.asn}` : ""].filter(Boolean).join(" · ");
+}
 
 const connectionsNote = computed(() => {
   const all = allConnectionRows.value;
@@ -144,10 +164,11 @@ function isClosing(row: FleetConnectionRow): boolean {
     <div class="dash-conns-head">
       <div>
         <p class="eyebrow">CONNECTIONS</p>
-        <h3>实时连接</h3>
-        <p class="dash-trend-note">{{ connectionsNote }}</p>
+        <h3>{{ showStats ? "连接统计" : "实时连接" }}</h3>
+        <p v-if="!showStats" class="dash-trend-note">{{ connectionsNote }}</p>
       </div>
       <input
+        v-if="!showStats"
         v-model="searchQuery"
         class="dash-conn-search"
         type="search"
@@ -156,20 +177,23 @@ function isClosing(row: FleetConnectionRow): boolean {
         placeholder="搜索域名 / IP / 进程 / 规则"
         aria-label="搜索连接"
       >
+      <button type="button" :aria-pressed="showStats" @click="showStats = !showStats">{{ showStats ? "看连接" : "看统计" }}</button>
       <button
+        v-if="!showStats"
         type="button"
         :disabled="closingAllConnections || !allConnectionRows.length"
         @click="closeAllConnections"
       >{{ closingAllConnections ? "关闭中…" : "关闭全部连接" }}</button>
     </div>
-    <div v-if="shownConnectionRows.length" class="dash-conn-body">
+    <DashboardRuleStats v-if="showStats" />
+    <div v-else-if="shownConnectionRows.length" class="dash-conn-body">
       <table class="dash-table dash-conn-table">
         <thead>
           <tr>
             <th scope="col">目标</th>
             <th scope="col">实例</th>
             <th scope="col">出口</th>
-            <th scope="col">GEO</th>
+            <th scope="col">GEO / ISP</th>
             <th scope="col" :aria-sort="ariaSort('up')">
               <button type="button" class="dash-sort-btn" :class="{ 'is-active': sortColumn === 'up' }" title="按上传速率排序" @click="toggleSort('up')">上传<span class="dash-sort-marker" aria-hidden="true">{{ sortMarker("up") }}</span></button>
             </th>
@@ -209,11 +233,18 @@ function isClosing(row: FleetConnectionRow): boolean {
               <span class="dash-conn-text">{{ row.node || "—" }}</span>
               <small v-if="connectionRuleText(row)">{{ connectionRuleText(row) }}</small>
             </td>
-            <td class="dash-conn-geo">
+            <td class="dash-conn-geo" :title="geoNetworkTitle(connectionGeo[row.ip])">
               <span v-if="localAddressLabel(row.ip)" class="dash-geo-local">{{ localAddressLabel(row.ip) }}</span>
-              <span v-else-if="connectionGeo[row.ip]" class="dash-geo">
-                <span class="dash-geo-flag" aria-hidden="true">{{ countryFlag(connectionGeo[row.ip]) }}</span>{{ connectionGeo[row.ip] }}
-              </span>
+              <template v-else-if="connectionGeo[row.ip]?.country || geoNetworkLabel(connectionGeo[row.ip])">
+                <span v-if="connectionGeo[row.ip]?.country" class="dash-geo">
+                  <span class="dash-geo-flag" aria-hidden="true">{{ countryFlag(connectionGeo[row.ip]!.country) }}</span>{{ connectionGeo[row.ip]!.country }}
+                </span>
+                <!-- The ISP/operator name, which is the half of an ASN record
+                     worth reading. Its own line, like the target and node cells
+                     already do, rather than a column of its own: this table
+                     scrolls inside its card but the header row does not grow. -->
+                <small v-if="geoNetworkLabel(connectionGeo[row.ip])" class="dash-geo-org">{{ geoNetworkLabel(connectionGeo[row.ip]) }}</small>
+              </template>
               <span v-else class="dash-geo-unknown">—</span>
             </td>
             <td class="num">{{ formatRate(row.up).value }} {{ formatRate(row.up).unit }}<small>{{ formatBytes(row.upload) }}</small></td>

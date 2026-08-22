@@ -474,6 +474,19 @@ body.view-dashboard .dash-conn-body {
   white-space: nowrap;
 }
 
+/* The operator name sits under the country code, so this cell is the one place
+   in the row where the text must be allowed to wrap out of `nowrap` -- an ISP
+   name is long ("China Mobile Communications Corporation") and truncating it
+   to the column width beats widening every row. */
+.dash-geo-org {
+  display: block;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
 .dash-geo {
   display: inline-flex;
   align-items: center;
@@ -537,6 +550,18 @@ body.view-dashboard .dash-conn-body {
   .dash-table td:last-child {
     display: none;
   }
+
+  /* ...except in the statistics table, where the rule above would drop the
+     connection count and the download column and leave "a label and an upload
+     figure", which answers nothing. All four columns stay; the label column
+     gives up the width instead, since it is the only one that can be truncated
+     without losing a number. */
+  .dash-stats-table th:nth-child(2),
+  .dash-stats-table td:nth-child(2),
+  .dash-stats-table th:last-child,
+  .dash-stats-table td:last-child {
+    display: table-cell;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -548,5 +573,72 @@ body.view-dashboard .dash-conn-body {
 
   button:active:not(:disabled) {
     transform: none;
+  }
+}
+
+/* Aggregated view of the connections card (DashboardRuleStats.vue). It reuses
+   .dash-conn-body for the scroll box and .dash-table for the grid, so only the
+   mode switcher and the label column need rules of their own. */
+/* The scroll chain the connection table gets for free: in viewport-fit mode
+   .dash-card is `overflow: hidden` and .dash-conn-body carries `flex: 1 1 auto`,
+   but that only reaches the body if every wrapper between them is a flex column
+   that is allowed to shrink. This wrapper sits in that chain, so without these
+   three declarations the group list is clipped at the card's edge with no way to
+   scroll to the rest. */
+.dash-stats {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+body.view-dashboard .dash-stats {
+  flex: 1 1 auto;
+}
+
+.dash-stats-modes {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.dash-stats-modes .dash-trend-note {
+  margin: 0 0 0 auto;
+}
+
+.dash-stats-mode {
+  min-height: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.dash-stats-mode.is-active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.dash-stats-label strong {
+  font-weight: 600;
+}
+
+/* A rule payload is often a long domain or CIDR list entry; clip it rather than
+   let one row set the column width for the whole table. */
+.dash-stats-label small {
+  display: block;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+/* Placed here, after `.dash-stats-label small` above, on purpose: both selectors
+   have the same specificity, so an override written in the earlier
+   max-width: 760px block further up this file would lose on source order and
+   silently do nothing. */
+@media (max-width: 760px) {
+  .dash-stats-label small {
+    max-width: 16ch;
   }
 }

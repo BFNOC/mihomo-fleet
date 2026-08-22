@@ -12,6 +12,7 @@ import type { GeoLookupResult } from "./dashboard.ts";
 import { api } from "./api.ts";
 import { copyProxyValue } from "./services/clipboard.ts";
 import { startDocumentTitle } from "./services/document-title.ts";
+import { startInstanceAlerts } from "./services/instance-alerts.ts";
 import { refresh } from "./services/fleet-refresh.ts";
 import { startPolling } from "./services/polling.ts";
 import {
@@ -85,3 +86,8 @@ registerActions({
 refresh();
 startPolling();
 startDocumentTitle();
+// After refresh(), deliberately. The watcher treats its first populated
+// snapshot as a baseline, and starting it before the first fetch lands would
+// only move which tick that baseline is taken on -- but starting it here keeps
+// the "boot, then observe" reading obvious.
+startInstanceAlerts();

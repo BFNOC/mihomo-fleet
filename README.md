@@ -121,6 +121,48 @@ Profile 可以有两种来源：
 通过 mihomo external-controller 立即应用选择；实例停止时也可以先从缓存配置里选择，
 下次启动后会自动恢复。
 
+### 开机自启（systemd）
+
+Mihomo Fleet 自己不安装服务、不写开机项，也没有 `-install-service` 之类的参数。
+需要长期后台运行时，交给系统的服务管理器；下面是 Linux 上的 systemd 示例。
+
+```ini
+# /etc/systemd/system/mihomo-fleet.service
+[Unit]
+Description=Mihomo Fleet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mihomo
+WorkingDirectory=/opt/mihomo-fleet
+ExecStart=/opt/mihomo-fleet/mihomo-fleet -data /var/lib/mihomo-fleet -mihomo /opt/mihomo-fleet/mihomo
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mihomo-fleet
+sudo journalctl -u mihomo-fleet -f
+```
+
+几点注意：
+
+- `VERSION` 文件要和二进制放在同一个目录（Release 压缩包本身就是这个结构）。
+  Mihomo Fleet 从工作目录或二进制所在目录读取它；找不到时版本号显示为 `dev`。
+- `-data` 指向的目录会保存实例配置、Profile、控制器密钥和地理数据，需要对
+  `User=` 指定的账号可写，且不应放在 `/tmp`。
+- 服务默认只监听 `127.0.0.1:47890`。要从别的机器访问 WebUI，先读下一节，
+  `-bind` 与 `-api-secret` 必须一起用。
+
+macOS 用 `launchd`、Windows 用任务计划程序或 `sc.exe`，思路相同：由系统拉起
+二进制，不要依赖 Mihomo Fleet 自己做守护。
+
 ## 安全模型与 `-api-secret`
 
 Fleet WebUI 默认绑定 `127.0.0.1`：控制面（读取实例/Profile 配置、启停实例、改代理
