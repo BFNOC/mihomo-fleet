@@ -984,8 +984,11 @@ func TestStoreUpdateKeepsUnchangedPortsWhileTheyAreHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// From here on the instance is "running": nothing binds.
+	// From here on the instance is "running": nothing binds, on either the
+	// loopback probe the controller port uses or the bind-aware probe the mixed
+	// port now uses.
 	free = false
+	withProxyBindProbe(t, func(string) error { return errors.New("bind: address already in use") })
 
 	updated, err := store.Update(item.ID, "改名", "", "", 28001, 29001)
 	if err != nil {

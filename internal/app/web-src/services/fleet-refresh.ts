@@ -45,6 +45,12 @@ let refreshSeq = 0;
 // later entry.
 let lastPollErrorId = 0;
 
+// Identifies this module's claim on a card. The queue merges identical text, so
+// a hand-triggered action failing with the same controller-offline string would
+// otherwise share this id -- and the next successful poll would dismiss that
+// action's error too.
+const pollErrorOwner = "fleet-refresh";
+
 /**
  * Re-pulls system + profiles + instances into the store.
  *
@@ -101,7 +107,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<boolean> {
     // non-error entries), so this success has to clear it explicitly. By id,
     // so it can only ever remove the entry this module raised -- and a no-op
     // if the user already dismissed it by hand.
-    if (lastPollErrorId) dismissNotice(lastPollErrorId);
+    if (lastPollErrorId) dismissNotice(lastPollErrorId, pollErrorOwner);
     lastPollErrorId = 0;
     return true;
   } catch (err) {
@@ -113,7 +119,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<boolean> {
     // Repeated identical failures merge into the one entry the queue already
     // holds (notifications.ts dedups on text+tone), so this id stays stable
     // across a whole outage rather than naming a card per failed poll.
-    lastPollErrorId = showMessage(message, "error");
+    lastPollErrorId = showMessage(message, "error", pollErrorOwner);
     return false;
   }
 }

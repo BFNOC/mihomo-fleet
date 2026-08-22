@@ -2,7 +2,9 @@ package app
 
 import (
 	"errors"
+	"net"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -173,5 +175,47 @@ func TestCheckProxyBindAvailableReportsBusyPortForLocalAddress(t *testing.T) {
 	const want = "mixed proxy port 28001 is already in use"
 	if err.Error() != want {
 		t.Fatalf("error for %q = %q, want %q", addr, err.Error(), want)
+	}
+}
+
+// TCP free but UDP taken must fail the check: a mixed listener serves both, so
+// letting this through starts an instance whose UDP half never comes up while
+// the loopback controller still reports it healthy.
+func TestProxyBindListenProbeRejectsBusyUDPPort(t *testing.T) {
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("cannot bind a udp port here")
+	}
+	defer packet.Close()
+	addr := packet.LocalAddr().String()
+	_, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The TCP half of the same port is deliberately left free.
+	tcp, err := net.Listen("tcp", addr)
+	if err == nil {
+		tcp.Close()
+	} else {
+		t.Skipf("tcp %s is not free, so this would not isolate the udp check", addr)
+	}
+	if err := checkProxyBindAvailable("127.0.0.1", port); err == nil {
+		t.Fatalf("checkProxyBindAvailable(127.0.0.1, %d) = nil, want a conflict for the busy udp half", port)
+	}
+}
+
+// mixedPortFreeOn answers the Store's save-time question, and must not turn an
+// invalid bind string into a port conflict -- that error has its own message.
+func TestMixedPortFreeOnSeparatesUnavailableFromInvalid(t *testing.T) {
+	withProxyBindProbe(t, func(string) error { return errors.New("bind: address already in use") })
+	if mixedPortFreeOn("127.0.0.1", 28001) {
+		t.Fatal("mixedPortFreeOn = true for an address whose port is held")
+	}
+	if !mixedPortFreeOn("not-an-address", 28001) {
+		t.Fatal("mixedPortFreeOn = false for a malformed bind string; that is the address validator's error to report")
 	}
 }

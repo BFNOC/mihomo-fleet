@@ -148,14 +148,20 @@ function raiseAlert(id: string, name: string, lastError: string): void {
   // lookup-or-passthrough, so text it does not recognise survives unchanged.
   const reason = lastError ? localizedMessage(lastError) : "";
   const text = reason ? `实例「${name}」运行出错：${reason}` : `实例「${name}」运行出错。`;
-  openAlerts.set(id, showMessage(text, "error"));
+  openAlerts.set(id, showMessage(text, "error", alertOwner(id)));
   notifyDesktop(id, text);
 }
 
 function clearAlert(id: string): void {
   const noticeId = openAlerts.get(id);
-  if (noticeId) dismissNotice(noticeId);
+  if (noticeId) dismissNotice(noticeId, alertOwner(id));
   openAlerts.delete(id);
+}
+
+// One claim per instance, so a recovering instance releases only its own hold
+// on a card that a second instance may still be sharing.
+function alertOwner(id: string): string {
+  return `instance-alert:${id}`;
 }
 
 /**

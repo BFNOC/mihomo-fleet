@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -127,13 +128,49 @@ func coalesceProxyBindAddresses(addrs []string) []string {
 // isPortFree. It binds and immediately releases, so a successful probe proves
 // only that the address existed and the port was free at that instant -- the
 // same best-effort guarantee isPortFree gives.
+//
+// Both transports, not just TCP: a mixed listener serves UDP too
+// (config.go's generated listeners set `udp: true`, and mihomo's single-address
+// mixed-port path binds both). Probing TCP alone let an instance start against
+// an address whose UDP half was already taken, which is exactly the silent
+// half-broken listener this check exists to prevent -- the controller is on
+// loopback, so the health check would still report the instance running.
+// TCP is held open across the UDP probe so a port free on one transport and
+// busy on the other cannot slip through the gap between the two binds.
 var proxyBindListenProbe = func(address string) error {
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}
-	return ln.Close()
+	defer ln.Close()
+	packet, err := net.ListenPacket("udp", address)
+	if err != nil {
+		return err
+	}
+	return packet.Close()
 }
+
+// mixedPortFreeOn reports whether every address in `bind` can take `port`, for
+// callers that only need a yes/no and supply their own error (Store's save-time
+// port check). checkProxyBindAvailable is the variant that explains itself.
+//
+// A malformed bind string answers true: the address is validated separately and
+// reported with its own message, and failing the port check for it would hide
+// that reason behind a port conflict that is not the actual problem.
+func mixedPortFreeOn(bind string, port int) bool {
+	err := checkProxyBindAvailable(bind, port)
+	if err == nil {
+		return true
+	}
+	var unusable proxyBindUnavailableError
+	return !errors.As(err, &unusable)
+}
+
+// proxyBindUnavailableError marks the failures that mean "this address and port
+// cannot be bound right now", as opposed to "this bind string is not valid".
+type proxyBindUnavailableError struct{ msg string }
+
+func (e proxyBindUnavailableError) Error() string { return e.msg }
 
 // checkProxyBindAvailable verifies every address in an instance's ProxyBind
 // list can actually be bound with its mixed port, before mihomo is launched.
@@ -158,11 +195,11 @@ func checkProxyBindAvailable(bind string, mixedPort int) error {
 			// a different syscall package per GOOS, and this package builds for
 			// Windows too.
 			if !proxyBindAddressOnHost(addr) {
-				return fmt.Errorf("proxy bind address %q is not available on this host", addr)
+				return proxyBindUnavailableError{msg: fmt.Sprintf("proxy bind address %q is not available on this host", addr)}
 			}
 			// Same wording as the loopback check this replaced, so the UI's
 			// existing translation still matches.
-			return fmt.Errorf("mixed proxy port %d is already in use", mixedPort)
+			return proxyBindUnavailableError{msg: fmt.Sprintf("mixed proxy port %d is already in use", mixedPort)}
 		}
 	}
 	return nil

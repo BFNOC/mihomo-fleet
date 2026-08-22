@@ -24,6 +24,20 @@ export interface Notice {
   tone: NoticeTone;
   /** How many times this exact message has arrived; rendered as ×N above 1. */
   count: number;
+  /**
+   * Who is currently keeping this card up.
+   *
+   * Merging on text alone made the card a shared object with no owner: a poll
+   * failure and a hand-triggered action that produce the identical error string
+   * got the same id back, and then the poll's own recovery dismissed a card the
+   * action still needed. An owner releases only its own claim; the card leaves
+   * when the last claim does.
+   *
+   * An anonymous push (no owner) counts as one unnamed claim, which is why the
+   * set can be empty while the card is up.
+   */
+  owners: Set<string>;
+  anonymous: number;
 }
 
 /**
@@ -79,29 +93,65 @@ function scheduleDismiss(notice: Notice): void {
  * Returns the entry's id so a caller that owns a sticky error can take it back
  * down later; ids are never reused.
  */
-export function pushNotice(text: string, tone: NoticeTone): number {
+export function pushNotice(text: string, tone: NoticeTone, owner = ""): number {
   const existing = notices.find((notice) => notice.text === text && notice.tone === tone);
   if (existing) {
     existing.count += 1;
+    if (owner) existing.owners.add(owner);
+    else existing.anonymous += 1;
     scheduleDismiss(existing);
     return existing.id;
   }
-  const notice: Notice = { id: nextId++, text, tone, count: 1 };
+  const notice: Notice = {
+    id: nextId++,
+    text,
+    tone,
+    count: 1,
+    owners: new Set(owner ? [owner] : []),
+    anonymous: owner ? 0 : 1,
+  };
   notices.push(notice);
-  while (notices.length > maxNotices) {
-    // shift() on a non-empty array always yields an element; the assertion is
-    // only there for noUncheckedIndexedAccess.
-    clearTimer(notices.shift()!.id);
-  }
+  while (notices.length > maxNotices) evictOldest();
   scheduleDismiss(notice);
   return notice.id;
 }
 
-/** Removes one entry by id. A stale or already-dismissed id is a no-op. */
-export function dismissNotice(id: number): void {
-  clearTimer(id);
+/**
+ * Evicts the oldest entry that can afford to go: an info message expires on its
+ * own anyway, so it is dropped ahead of any error.
+ *
+ * Errors are only evicted when the queue is nothing but errors. Dropping the
+ * oldest entry unconditionally meant five later messages could silently retire
+ * an error nobody had read -- and in a cascading failure the oldest error is
+ * usually the closest one to the cause.
+ */
+function evictOldest(): void {
+  const index = notices.findIndex((notice) => notice.tone !== "error");
+  const [dropped] = notices.splice(index >= 0 ? index : 0, 1);
+  if (dropped) clearTimer(dropped.id);
+}
+
+/**
+ * Releases a claim on one entry, removing the card once no claim is left.
+ *
+ * `owner` must be passed by code that raised the message on someone's behalf
+ * (services/fleet-refresh.ts, services/instance-alerts.ts). Omitting it is the
+ * user's own dismissal -- the × on the card -- which takes the card down
+ * regardless of who else is holding it, because the person looking at it has
+ * decided they are done with it.
+ *
+ * A stale or already-dismissed id is a no-op.
+ */
+export function dismissNotice(id: number, owner = ""): void {
   const index = notices.findIndex((notice) => notice.id === id);
-  if (index >= 0) notices.splice(index, 1);
+  if (index < 0) return;
+  const notice = notices[index]!;
+  if (owner) {
+    notice.owners.delete(owner);
+    if (notice.owners.size || notice.anonymous) return;
+  }
+  clearTimer(id);
+  notices.splice(index, 1);
 }
 
 /** Removes every entry. Backs bridge.ts's `showMessage("")` clear-all path. */

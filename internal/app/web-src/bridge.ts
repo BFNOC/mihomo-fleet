@@ -148,13 +148,19 @@ export function registerActions(table: Partial<FleetActions>): void {
  * Returns the new entry's id (0 for the dismiss-all case). Almost every caller
  * ignores it; services/fleet-refresh.ts uses it to take its own sticky poll
  * error back down once a poll succeeds again.
+ *
+ * `owner` matters only to a caller that will dismiss its own message later. The
+ * queue merges identical text into one card, so without an owner two unrelated
+ * sources of the same error share an id -- and one of them dismissing it takes
+ * the card out from under the other. Pass a stable string; release with
+ * dismissNotice(id, owner).
  */
-export function showMessage(text: string, kind: string = "info"): number {
+export function showMessage(text: string, kind: string = "info", owner = ""): number {
   if (!text) {
     dismissAllNotices();
     return 0;
   }
-  return pushNotice(text, kind === "error" ? "error" : "info");
+  return pushNotice(text, kind === "error" ? "error" : "info", owner);
 }
 
 // Derived chrome state that the shell renders from but that does NOT live in

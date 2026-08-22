@@ -1101,7 +1101,13 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	// catches it at the only moment it matters, with the clearer
 	// "already in use" wording.
 	if opts.MixedPort > 0 && opts.MixedPort != item.MixedPort {
-		if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
+		// Probed against the instance's own bind addresses, not 127.0.0.1.
+		// isPortFree only ever tries loopback, so a LAN-only instance moving to
+		// a port that some unrelated local service happens to hold on 127.0.0.1
+		// was refused even though the address it would actually bind is free.
+		// manager.go's start path was already fixed to be bind-aware; this is
+		// the same check at save time.
+		if used[opts.MixedPort] || !mixedPortFreeOn(nextProxyBind, opts.MixedPort) {
 			return nil, portUnavailableError{msg: fmt.Sprintf("mixed proxy port %d is unavailable", opts.MixedPort)}
 		}
 		used[opts.MixedPort] = true

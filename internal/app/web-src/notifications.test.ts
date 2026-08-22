@@ -132,6 +132,60 @@ test("a repeat info message restarts its countdown instead of stacking", () => {
   });
 });
 
+// Merging on text alone made a card a shared object with no owner: two sources
+// raising the same string got the same id, and the first to release it took the
+// card away from the other.
+test("an owner releases only its own claim on a shared card", () => {
+  reset();
+  const pollId = pushNotice("controller offline", "error", "fleet-refresh");
+  const actionId = pushNotice("controller offline", "error", "save-profile");
+  assert.equal(actionId, pollId, "still one card -- it is literally the same message");
+  dismissNotice(pollId, "fleet-refresh");
+  assert.equal(notices.length, 1, "the other owner still needs it");
+  dismissNotice(actionId, "save-profile");
+  assert.equal(notices.length, 0);
+});
+
+test("the user's own dismissal beats every outstanding claim", () => {
+  reset();
+  const id = pushNotice("controller offline", "error", "fleet-refresh");
+  pushNotice("controller offline", "error", "save-profile");
+  // The × on the card: whoever is looking at it has decided they are done.
+  dismissNotice(id);
+  assert.equal(notices.length, 0);
+});
+
+test("an anonymous push keeps its card when an owner releases", () => {
+  reset();
+  const id = pushNotice("boom", "error");
+  pushNotice("boom", "error", "someone");
+  dismissNotice(id, "someone");
+  assert.equal(notices.length, 1, "the anonymous claim is still outstanding");
+});
+
+// Errors are contractually sticky, so the cap must not be what retires them.
+test("the cap evicts expiring info before any error", () => {
+  reset();
+  for (let index = 0; index < 3; index += 1) pushNotice(`错误 ${index}`, "error");
+  pushNotice("提示 A", "info");
+  pushNotice("提示 B", "info");
+  pushNotice("错误 3", "error");
+  assert.deepEqual(
+    notices.map((notice) => notice.text),
+    ["错误 0", "错误 1", "错误 2", "提示 B", "错误 3"],
+    "the oldest info goes, not the oldest error",
+  );
+});
+
+test("a queue of nothing but errors still evicts the oldest", () => {
+  reset();
+  for (let index = 0; index < 6; index += 1) pushNotice(`错误 ${index}`, "error");
+  assert.deepEqual(
+    notices.map((notice) => notice.text),
+    ["错误 1", "错误 2", "错误 3", "错误 4", "错误 5"],
+  );
+});
+
 test("dismissAllNotices empties the queue", () => {
   reset();
   pushNotice("A", "info");

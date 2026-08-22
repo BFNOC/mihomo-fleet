@@ -126,7 +126,11 @@
 }
 
 /* Leaving cards are taken out of flow so the survivors slide up over them
-   instead of waiting for the gap to collapse. */
+   instead of waiting for the gap to collapse. `top` is deliberately absent
+   here: NotificationStack.vue's before-leave hook writes the card's own
+   offsetTop inline. An absolutely positioned flex child would otherwise take
+   its static position from the container's content start, so any card but the
+   first would jump to the top of the stack before fading. */
 .notification-leave-active {
   position: absolute;
   right: 0;

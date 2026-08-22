@@ -19,6 +19,21 @@ import { localizedMessage } from "../messages.ts";
 function displayText(notice: Notice): string {
   return localizedMessage(notice.text);
 }
+
+/**
+ * Pins a leaving card to where it already is.
+ *
+ * styles/notifications.css takes leaving cards out of flow so the survivors can
+ * slide up over them, but an absolutely positioned child of a flex container
+ * gets its static position from the container's content-box start -- the top.
+ * Dismissing the second or third card therefore made it jump to the top of the
+ * stack, land on the first card, and fade out from there. Reading offsetTop in
+ * before-leave (while the element is still in flow) and writing it back is what
+ * keeps it in place.
+ */
+function pinLeavingCard(el: Element): void {
+  if (el instanceof HTMLElement) el.style.top = `${el.offsetTop}px`;
+}
 </script>
 
 <template>
@@ -35,7 +50,7 @@ function displayText(notice: Notice): string {
     messages are status updates.
   -->
   <div class="notification-stack" aria-live="polite" aria-relevant="additions">
-    <TransitionGroup name="notification">
+    <TransitionGroup name="notification" @before-leave="pinLeavingCard">
       <article
         v-for="notice in notices"
         :key="notice.id"
