@@ -1,4 +1,6 @@
 import { reactive } from "vue";
+import { dismissAllNotices, pushNotice } from "./notifications.ts";
+import type { NoticeTone } from "./notifications.ts";
 import type { FleetProfile } from "./state.ts";
 
 // Action registry bridging Vue components to the behaviour still implemented in
@@ -59,8 +61,7 @@ export interface FleetActions {
   startAll: () => void;
   stopAll: () => void;
   copyProxyValue: (value: string, success: string | undefined) => void;
-  showMessage: (text: string, tone?: BannerTone) => void;
-  dismissMessage: () => void;
+  showMessage: (text: string, tone?: NoticeTone) => void;
 
   // Create view. These take their payload as an argument because the form
   // fields now live in component state; the app.ts originals read them straight
@@ -114,7 +115,6 @@ export const actions: FleetActions = {
   stopAll: noop,
   copyProxyValue: noop,
   showMessage: noop,
-  dismissMessage: noop,
   // Async actions resolve rather than no-op so a caller that awaits one during
   // the boot gap gets a settled promise instead of hanging forever.
   createInstance: async () => {},
@@ -132,41 +132,29 @@ export function registerActions(table: Partial<FleetActions>): void {
   Object.assign(actions, table);
 }
 
-// Transient UI state that belongs to the chrome rather than to the domain state
-// in store.ts: the message banner's current text and severity.
-//
-// reactive() is load-bearing, not decoration. The banner is written by app.ts's
-// showMessage() and read by the Vue chrome; a plain object would let the write
-// land with no re-render, so the banner would silently never update.
-export type BannerTone = "info" | "error";
-
-export const banner = reactive<{ text: string; tone: BannerTone; seq: number }>({
-  text: "",
-  tone: "info",
-  seq: 0,
-});
-
 /**
- * Writes the raw text into the banner above. Lives here, next to the state it
- * owns, because nearly every service module needs it and routing them all
- * through app.ts was the main thing keeping that file a hub.
+ * Raises a transient message. The one entry point every service module and
+ * component uses; the queue and its timers live in notifications.ts and the
+ * rendering in components/NotificationStack.vue.
  *
- * MessageBanner.vue owns the localizedMessage() translation and the 6s
- * auto-dismiss timer, so neither happens here -- pass the backend's English
- * string through untouched.
+ * Pass the backend's English string through untouched. localizedMessage() runs
+ * at the render boundary, not here, so no call site has to know whether the
+ * text it holds is already Chinese.
  *
- * `seq` is bumped unconditionally on every call, including a call that
- * repeats the exact same `text`/`kind` as last time. Vue's reactive proxy only
- * triggers watchers on an actual value change (Object.is), so writing the
- * identical string into `banner.text` is not a mutation it reports -- without
- * `seq`, MessageBanner.vue's watch(banner, ...) would never re-fire for a
- * repeat message and its 6s dismiss timer would keep counting down from the
- * *first* call instead of restarting.
+ * Empty text dismisses everything currently on screen, which is what the old
+ * single-banner `showMessage("")` meant and what services/navigation.ts still
+ * relies on when it clears the workbench for the create form.
+ *
+ * Returns the new entry's id (0 for the dismiss-all case). Almost every caller
+ * ignores it; services/fleet-refresh.ts uses it to take its own sticky poll
+ * error back down once a poll succeeds again.
  */
-export function showMessage(text: string, kind: string = "info"): void {
-  banner.text = text;
-  banner.tone = kind === "error" ? "error" : "info";
-  banner.seq += 1;
+export function showMessage(text: string, kind: string = "info"): number {
+  if (!text) {
+    dismissAllNotices();
+    return 0;
+  }
+  return pushNotice(text, kind === "error" ? "error" : "info");
 }
 
 // Derived chrome state that the shell renders from but that does NOT live in

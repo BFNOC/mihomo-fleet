@@ -65,7 +65,6 @@ registerActions({
   stopAll: () => runBulkAction("stop-all"),
   copyProxyValue,
   showMessage,
-  dismissMessage: () => showMessage(""),
   createInstance,
   suggestPorts,
   cancelCreate,

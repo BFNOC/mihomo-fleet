@@ -13,6 +13,10 @@
 @import "./styles/profiles.css";
 @import "./styles/ports.css";
 @import "./styles/workbench.css";
+/* Sits here, where the `.message` rules it replaces used to live in
+   workbench.css, and ahead of responsive.css so that file keeps the last word
+   on layout. */
+@import "./styles/notifications.css";
 @import "./styles/fields.css";
 @import "./styles/editor.css";
 @import "./styles/proxies.css";

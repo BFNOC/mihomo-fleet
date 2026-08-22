@@ -164,6 +164,12 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   [/^proxy bind address "(.+)" must not include a port; use the mixed port field instead$/, (match) => `代理绑定地址 ${match[1]} 不要写端口，请使用混合端口字段。`],
   [/^proxy bind address "(.+)" must be an IP address, localhost, all, or \*$/, (match) => `代理绑定地址 ${match[1]} 无效，请填写 IP、localhost、all 或 *。`],
   [/^proxy bind address "(.+)" has invalid IPv6 brackets$/, (match) => `代理绑定地址 ${match[1]} 的 IPv6 方括号不完整。`],
+  // Start-time check (checkProxyBindAvailable). Usually means the instance came
+  // from a backup made on another machine, or this machine's address changed.
+  [
+    /^proxy bind address "(.+)" is not available on this host$/,
+    (match) => `代理绑定地址 ${match[1]} 不属于本机，请在基础信息里改选一个本机地址。`,
+  ],
   // Fleet backup / export-import (feature #7, docs/feature-roadmap-post-1.3.md #7).
   [/^malformed import bundle: (.+)$/, (match) => `导入文件不是合法的备份文件：${match[1]}`],
   [/^unsupported bundle version (\d+) \(expected (\d+)\)$/, (match) => `备份文件版本 ${match[1]} 不受支持（当前程序支持版本 ${match[2]}）。`],

@@ -100,26 +100,16 @@
   margin-top: 6px;
 }
 
-.warning,
-.message {
+/* `.message` used to share this rule; it moved to styles/notifications.css
+   when the in-flow banner became the fixed notification stack. `.warning` is a
+   different element (#systemWarning) and stays here. */
+.warning {
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line));
   background: var(--warn-soft);
   color: var(--warn-text);
   margin-top: 12px;
-}
-
-.message {
-  margin: 0 0 14px;
-}
-
-.message.error {
-  background: var(--danger-soft);
-  border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
-  /* Same text-on-danger-soft pair as .latency-chip.bad, which fails 4.5:1
-     with --danger; --danger-text is the text-safe variant. */
-  color: var(--danger-text);
 }
 
 .panel,

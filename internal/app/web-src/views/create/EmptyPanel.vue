@@ -15,7 +15,7 @@
 // Unlike CreatePanel.vue, there is no form-reset concern here: this panel
 // has no editable field state that could go stale between openings, so it
 // stays a single always-mounted component, same as TopBar/SideBar/
-// MessageBanner (and, now, CreatePanel.vue too).
+// NotificationStack (and, now, CreatePanel.vue too).
 import { computed } from "vue";
 import BrandMark from "../../components/BrandMark.vue";
 import { store } from "../../store.ts";

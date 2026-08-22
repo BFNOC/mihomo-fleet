@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -120,6 +121,69 @@ func coalesceProxyBindAddresses(addrs []string) []string {
 		coalesced = append(coalesced, addr)
 	}
 	return coalesced
+}
+
+// proxyBindListenProbe is the seam tests replace, mirroring util.go's
+// isPortFree. It binds and immediately releases, so a successful probe proves
+// only that the address existed and the port was free at that instant -- the
+// same best-effort guarantee isPortFree gives.
+var proxyBindListenProbe = func(address string) error {
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	return ln.Close()
+}
+
+// checkProxyBindAvailable verifies every address in an instance's ProxyBind
+// list can actually be bound with its mixed port, before mihomo is launched.
+//
+// Without this the failure is silent. mihomo's external-controller is always
+// on 127.0.0.1, so the post-launch health check passes even when the mixed
+// listener never came up -- the instance reports "running" while the proxy it
+// exists to serve refuses every connection. The way in is mundane: a fleet
+// backup restored onto another machine, or a DHCP lease that moved, leaves a
+// stored bind address this host no longer owns.
+func checkProxyBindAvailable(bind string, mixedPort int) error {
+	addrs, err := parseProxyBindAddresses(bind)
+	if err != nil {
+		return err
+	}
+	for _, addr := range addrs {
+		if err := proxyBindListenProbe(net.JoinHostPort(addr, strconv.Itoa(mixedPort))); err != nil {
+			// Two causes, two different fixes: the address is gone from this
+			// host (choose another one) or something else already holds the
+			// port (stop it). Told apart by asking the host what it currently
+			// has, rather than by matching errno -- EADDRNOTAVAIL lives behind
+			// a different syscall package per GOOS, and this package builds for
+			// Windows too.
+			if !proxyBindAddressOnHost(addr) {
+				return fmt.Errorf("proxy bind address %q is not available on this host", addr)
+			}
+			// Same wording as the loopback check this replaced, so the UI's
+			// existing translation still matches.
+			return fmt.Errorf("mixed proxy port %d is already in use", mixedPort)
+		}
+	}
+	return nil
+}
+
+// proxyBindAddressOnHost reports whether addr is still one of this machine's
+// addresses. Only consulted after a failed probe, so the wildcards -- which
+// are never in hostBindAddresses()' interface scan -- answering true here just
+// routes a wildcard failure to the "port in use" branch, which is the only
+// thing a 0.0.0.0 bind can fail for.
+func proxyBindAddressOnHost(addr string) bool {
+	key := canonicalProxyBindHost(addr)
+	if key == "0.0.0.0" || key == "::" {
+		return true
+	}
+	for _, option := range hostBindAddresses() {
+		if canonicalProxyBindHost(option.Address) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalProxyBindHost(host string) string {

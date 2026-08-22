@@ -1,0 +1,151 @@
+/*
+ * Overlay message stack (components/NotificationStack.vue). Replaces the
+ * `.message` rules that used to sit next to `.warning` in workbench.css, back
+ * when a message was one element in the content column's flow.
+ *
+ * The host (#notificationMount) is a direct child of <body> on purpose: the
+ * shell's surfaces use backdrop-filter, which establishes a containing block
+ * for position: fixed and would pin this stack inside the content column.
+ */
+.notification-stack {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  /* Above everything else that stacks: the highest claim elsewhere is the
+     proxy tooltip's 200 (styles/proxies.css). */
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(360px, calc(100vw - 40px));
+  /* The container spans the full stack height even when empty, so it must not
+     swallow clicks aimed at the UI underneath it. Each card opts back in. */
+  pointer-events: none;
+}
+
+.notification {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-card);
+}
+
+.notification-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.notification-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  /* Backend errors can be long single tokens (URLs, YAML fragments); wrap them
+     rather than letting one push the card past its width. */
+  overflow-wrap: anywhere;
+}
+
+.notification-count {
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.notification-dismiss {
+  flex-shrink: 0;
+  min-height: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.notification-dismiss:hover {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* Same danger pair as the old `.message.error`: --danger-text, not --danger,
+   which fails 4.5:1 against --danger-soft. */
+.notification-error {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--line));
+  color: var(--danger-text);
+}
+
+.notification-error .notification-icon {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--danger-text);
+}
+
+.notification-error .notification-count,
+.notification-error .notification-dismiss {
+  color: inherit;
+}
+
+/* TransitionGroup classes. `-move` is what keeps the cards below a dismissed
+   one from jumping up instantly. */
+.notification-enter-active,
+.notification-leave-active,
+.notification-move {
+  transition:
+    transform 0.28s var(--ease),
+    opacity 0.28s var(--ease);
+}
+
+.notification-enter-from,
+.notification-leave-to {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+/* Leaving cards are taken out of flow so the survivors slide up over them
+   instead of waiting for the gap to collapse. */
+.notification-leave-active {
+  position: absolute;
+  right: 0;
+  width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-enter-active,
+  .notification-leave-active,
+  .notification-move {
+    transition: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .notification-stack {
+    top: 12px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+  }
+}

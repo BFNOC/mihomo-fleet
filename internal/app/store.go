@@ -1086,13 +1086,27 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		return nil, validationError{msg: "mixed and controller ports must differ"}
 	}
 	used := s.usedPortsLocked(id)
-	if opts.MixedPort > 0 {
+	// Only a port the request actually *changes* gets probed. A PUT that
+	// echoes the instance's current ports back (the 保存基础信息 form always
+	// submits every field, changed or not) must not be validated against
+	// isPortFree: a running instance's own mihomo already holds that port, so
+	// the probe fails and a pure name/mode edit was rejected with a bogus
+	// "mixed proxy port N is unavailable". usedPortsLocked(id) already excludes
+	// this instance, so the map lookup never saw the self-conflict -- only the
+	// live socket probe did.
+	//
+	// The trade: an unchanged port on a *stopped* instance is no longer
+	// re-checked here, so a foreign process that squatted it meanwhile is not
+	// caught at save time. StartContext's isPortFree check (manager.go) still
+	// catches it at the only moment it matters, with the clearer
+	// "already in use" wording.
+	if opts.MixedPort > 0 && opts.MixedPort != item.MixedPort {
 		if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
 			return nil, portUnavailableError{msg: fmt.Sprintf("mixed proxy port %d is unavailable", opts.MixedPort)}
 		}
 		used[opts.MixedPort] = true
 	}
-	if opts.ControllerPort > 0 {
+	if opts.ControllerPort > 0 && opts.ControllerPort != item.ControllerPort {
 		if used[opts.ControllerPort] || !isPortFree(opts.ControllerPort) {
 			return nil, portUnavailableError{msg: fmt.Sprintf("controller port %d is unavailable", opts.ControllerPort)}
 		}

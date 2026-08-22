@@ -40,7 +40,10 @@ Frontend source is `internal/app/web-src`. The layout that satisfies rule 2:
   behaviour to `app.ts`, it belongs in `services/`.
 - Root-level modules (`api.ts`, `format.ts`, `state.ts`, `traffic.ts`,
   `constants.ts`, `messages.ts`) are framework-free and unit-tested. Pure logic
-  belongs there, not in a component.
+  belongs there, not in a component. `notifications.ts` is the exception that
+  proves the rule: it is root-level but imports `vue`, because it owns the
+  message queue's reactive state and its dismiss timers. Its test therefore
+  needs the `document` stub harness described below, not a plain import.
 - `styles/` — `styles.css` is only an ordered `@import` list. Import order **is**
   the cascade order, since Vite inlines them at build time, so put a new concern
   next to the ones it relates to rather than appending it. `styles/responsive.css`

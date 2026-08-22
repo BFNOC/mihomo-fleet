@@ -134,7 +134,7 @@ function copyUnavailableSuffix(value: string): string {
 
   <!-- Stays mounted and toggles `.hidden` (styles.css: `display: none !important`)
        rather than v-if, matching the same pattern index.html already used for
-       this element and MessageBanner.vue uses for #message. -->
+       this element. -->
   <div id="systemWarning" class="warning" :class="{ hidden: !systemWarningText }">{{ systemWarningText }}</div>
 
   <!-- Bare <label>, no caption: matches DashboardConnections.vue's search box

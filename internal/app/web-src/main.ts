@@ -12,7 +12,7 @@
 import { createApp, watchEffect } from "vue";
 import type { Component } from "vue";
 
-import MessageBanner from "./components/MessageBanner.vue";
+import NotificationStack from "./components/NotificationStack.vue";
 import SideBar from "./components/SideBar.vue";
 import TopBar from "./components/TopBar.vue";
 import DashboardView from "./views/dashboard/DashboardView.vue";
@@ -42,7 +42,7 @@ function mountShell(component: Component, selector: string): HTMLElement {
 
 mountShell(TopBar, ".topbar");
 mountShell(SideBar, ".sidebar");
-mountShell(MessageBanner, "#messageMount");
+mountShell(NotificationStack, "#notificationMount");
 const dashboardPanel = mountShell(DashboardView, "#dashboardPanel");
 const profilePanel = mountShell(ProfileManagerView, "#profilePanel");
 const systemPanel = mountShell(SystemView, "#systemPanel");

@@ -676,8 +676,13 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		m.log(id).Add("start failed: " + err.Error())
 		return err
 	}
-	if !isPortFree(item.MixedPort) {
-		err := fmt.Errorf("mixed proxy port %d is already in use", item.MixedPort)
+	// Bind-address aware, unlike the controller check above: the controller is
+	// always on 127.0.0.1, but the mixed listener goes wherever ProxyBind
+	// points. Probing 127.0.0.1 for it (what this used to do) was wrong in both
+	// directions -- it missed an address this host no longer has, and it
+	// reported a conflict for a loopback squatter that a LAN-only instance
+	// would never have touched.
+	if err := checkProxyBindAvailable(instanceProxyBind(item.ProxyBind), item.MixedPort); err != nil {
 		m.store.SetError(id, err.Error())
 		m.log(id).Add("start failed: " + err.Error())
 		return err

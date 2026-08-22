@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -84,5 +85,93 @@ func TestParseProxyBindAddresses(t *testing.T) {
 				t.Fatalf("parseProxyBindAddresses(%q) = %#v, want %#v", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+// withProxyBindProbe swaps the bind probe for the duration of a test. Same
+// serialization caveat as withPortFree (store_test.go): it replaces a
+// package-level var, so a test using it must not run with t.Parallel().
+func withProxyBindProbe(t *testing.T, fn func(address string) error) {
+	t.Helper()
+	original := proxyBindListenProbe
+	proxyBindListenProbe = fn
+	t.Cleanup(func() { proxyBindListenProbe = original })
+}
+
+func TestCheckProxyBindAvailableProbesEveryAddress(t *testing.T) {
+	var probed []string
+	withProxyBindProbe(t, func(address string) error {
+		probed = append(probed, address)
+		return nil
+	})
+
+	if err := checkProxyBindAvailable("127.0.0.1,::1", 28001); err != nil {
+		t.Fatalf("checkProxyBindAvailable() error = %v, want nil", err)
+	}
+	want := []string{"127.0.0.1:28001", "[::1]:28001"}
+	if !reflect.DeepEqual(probed, want) {
+		t.Fatalf("probed = %#v, want %#v", probed, want)
+	}
+}
+
+// The backup-restored-elsewhere case: the stored address is not one this host
+// has, so the failure must name the address rather than blame the port.
+func TestCheckProxyBindAvailableReportsMissingHostAddress(t *testing.T) {
+	withProxyBindProbe(t, func(string) error {
+		return errors.New("bind: cannot assign requested address")
+	})
+
+	// 192.0.2.0/24 is TEST-NET-1 (RFC 5737): reserved for documentation, so no
+	// real interface can legitimately carry it and hostBindAddresses() will
+	// never list it on the machine running this test.
+	err := checkProxyBindAvailable("192.0.2.10", 28001)
+	if err == nil {
+		t.Fatal("expected an error for an address this host does not have")
+	}
+	const want = `proxy bind address "192.0.2.10" is not available on this host`
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+// A wildcard bind can only ever fail for a busy port, so it must not be
+// reported as a missing address.
+func TestCheckProxyBindAvailableReportsBusyPortForWildcard(t *testing.T) {
+	withProxyBindProbe(t, func(string) error {
+		return errors.New("bind: address already in use")
+	})
+
+	err := checkProxyBindAvailable("0.0.0.0", 28001)
+	if err == nil {
+		t.Fatal("expected an error for a busy wildcard bind")
+	}
+	const want = "mixed proxy port 28001 is already in use"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+// An address the host really does have still routes to the port-conflict
+// message. Sourced from hostBindAddresses() so it holds on any machine.
+func TestCheckProxyBindAvailableReportsBusyPortForLocalAddress(t *testing.T) {
+	withProxyBindProbe(t, func(string) error {
+		return errors.New("bind: address already in use")
+	})
+
+	options := hostBindAddresses()
+	if len(options) == 0 {
+		t.Skip("no host addresses to test against")
+	}
+	addr := options[0].Address
+	if addr == "0.0.0.0" {
+		t.Skip("only the wildcard is available on this host")
+	}
+	err := checkProxyBindAvailable(addr, 28001)
+	if err == nil {
+		t.Fatalf("expected an error for %q", addr)
+	}
+	const want = "mixed proxy port 28001 is already in use"
+	if err.Error() != want {
+		t.Fatalf("error for %q = %q, want %q", addr, err.Error(), want)
 	}
 }

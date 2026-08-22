@@ -6,8 +6,8 @@
 // keydown handler and start/stop/restart/clone/delete button handlers.
 //
 // Self-toggles its own `.hidden` class from `store.view`/`store.creating`/
-// the active instance, the same pattern MessageBanner.vue uses for #message
-// -- rather than having app.ts's renderPanels() keep reaching in to toggle
+// the active instance -- rather than having app.ts's renderPanels() keep
+// reaching in to toggle
 // `el.detailPanel`'s class, which would leave a Vue-owned subtree half
 // managed by vanilla code.
 import { computed, nextTick, ref } from "vue";

@@ -23,10 +23,6 @@
         <aside class="sidebar"></aside>
 
         <section class="content">
-          <!-- Vue mount point: MessageBanner.vue renders the #message element
-               itself, so it needs a host to be mounted into rather than being
-               mounted onto #message directly. -->
-          <div id="messageMount"></div>
           <!-- Every element below is a Vue mount host: main.ts replaces the
                children, so only the wrapper's id/class/aria survives here and
                each panel's markup lives in its component. The `hidden` classes
@@ -45,6 +41,11 @@
         </section>
       </main>
     </div>
+    <!-- Vue mount point: NotificationStack.vue. Deliberately outside .shell and
+         a direct child of <body>: the shell's surfaces use backdrop-filter,
+         which creates a containing block for position: fixed and would trap the
+         stack inside the content column. -->
+    <div id="notificationMount"></div>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>

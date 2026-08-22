@@ -3,7 +3,7 @@
 // (index.html:113-169).
 //
 // Stays mounted for the app's lifetime (main.ts's mountShell() pattern,
-// matching TopBar/SideBar/MessageBanner) rather than being gated behind
+// matching TopBar/SideBar/NotificationStack) rather than being gated behind
 // `v-if`.
 //
 // A previous version of this comment justified that with app.ts's

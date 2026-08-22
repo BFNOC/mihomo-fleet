@@ -965,6 +965,67 @@ func TestStoreUpdateRejectsSameMixedAndControllerPort(t *testing.T) {
 	}
 }
 
+// A PUT that echoes the instance's current ports back must not be probed
+// against isPortFree. The 保存基础信息 form always submits every field, so a
+// running instance -- whose own mihomo holds exactly those ports -- used to
+// fail a pure name edit with "mixed proxy port N is unavailable". The stub
+// below reproduces that: every port reads as occupied, as it would while the
+// instance is running.
+func TestStoreUpdateKeepsUnchangedPortsWhileTheyAreHeld(t *testing.T) {
+	free := true
+	withPortFree(t, func(int) bool { return free })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("Ports", "", defaultUserConfig, 28001, 29001)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// From here on the instance is "running": nothing binds.
+	free = false
+
+	updated, err := store.Update(item.ID, "改名", "", "", 28001, 29001)
+	if err != nil {
+		t.Fatalf("Update() with unchanged ports error = %v, want nil", err)
+	}
+	if updated.Name != "改名" || updated.MixedPort != 28001 || updated.ControllerPort != 29001 {
+		t.Fatalf("Update() = %q mixed=%d controller=%d", updated.Name, updated.MixedPort, updated.ControllerPort)
+	}
+
+	// A genuine port change is still validated against the same stub.
+	if _, err := store.Update(item.ID, "", "", "", 28002, 0); !errors.Is(err, errPortUnavailable) {
+		t.Fatalf("Update() changing mixed port error = %v, want errPortUnavailable", err)
+	}
+	if _, err := store.Update(item.ID, "", "", "", 0, 29002); !errors.Is(err, errPortUnavailable) {
+		t.Fatalf("Update() changing controller port error = %v, want errPortUnavailable", err)
+	}
+}
+
+// An unchanged port still conflicts if another *instance* claims it -- that
+// check comes from usedPortsLocked, not the socket probe, so relaxing the
+// probe must not relax it too.
+func TestStoreUpdateStillRejectsPortTakenByAnotherInstance(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Create("A", "", defaultUserConfig, 28001, 29001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("B", first.ProfileID, "", 28002, 29002); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(first.ID, "", "", "", 28002, 0); !errors.Is(err, errPortUnavailable) {
+		t.Fatalf("Update() onto another instance's port error = %v, want errPortUnavailable", err)
+	}
+}
+
 func TestStorePatchProfileRenamePersistsAcrossReload(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(dir)

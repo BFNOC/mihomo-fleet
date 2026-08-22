@@ -1,5 +1,6 @@
 import { api } from "../api.ts";
-import { banner, chrome, showMessage } from "../bridge.ts";
+import { chrome, showMessage } from "../bridge.ts";
+import { dismissNotice } from "../notifications.ts";
 import { store } from "../store.ts";
 import type { FleetInstance, FleetProfile, FleetSystemStatus } from "../state.ts";
 import { syncProfileBusy } from "./profile-gates.ts";
@@ -34,13 +35,15 @@ export interface RefreshOptions {
 // has been superseded drops its response instead of clobbering fresher data.
 let refreshSeq = 0;
 
-// The exact text this module last wrote into the error banner via the catch
-// below, so a later successful refresh can clear it -- but only if it is
-// still the banner on screen. Error banners never auto-dismiss
-// (MessageBanner.vue), so a poll failure would otherwise stick around forever
-// even after the backend recovers. Cleared back to "" once acted on, so a
-// success right after a fresh (non-poll) message never touches it.
-let lastPollErrorText = "";
+// The queue id of the error this module last raised via the catch below, so a
+// later successful refresh can take that one entry back down. Errors never
+// auto-dismiss (notifications.ts), so a poll failure would otherwise stay on
+// screen forever after the backend recovered. Dismissing by id rather than by
+// matching text is what keeps a message some other action raised in the
+// meantime from being cleared by a poll succeeding underneath it. Reset to 0
+// once acted on; ids are never reused, so a stale one cannot collide with a
+// later entry.
+let lastPollErrorId = 0;
 
 /**
  * Re-pulls system + profiles + instances into the store.
@@ -94,15 +97,12 @@ export async function refresh(options: RefreshOptions = {}): Promise<boolean> {
     }
     localStorage.setItem("activeInstance", store.activeId);
     syncProfileBusy();
-    // A poll failure never auto-dismisses (MessageBanner.vue only auto-clears
-    // non-error banners), so this success has to clear it explicitly -- but
-    // only if it is still exactly the banner this module wrote; some other
-    // action may have written its own message in the meantime and that must
-    // survive a poll succeeding underneath it.
-    if (lastPollErrorText && banner.tone === "error" && banner.text === lastPollErrorText) {
-      showMessage("");
-    }
-    lastPollErrorText = "";
+    // A poll failure never auto-dismisses (notifications.ts only expires
+    // non-error entries), so this success has to clear it explicitly. By id,
+    // so it can only ever remove the entry this module raised -- and a no-op
+    // if the user already dismissed it by hand.
+    if (lastPollErrorId) dismissNotice(lastPollErrorId);
+    lastPollErrorId = 0;
     return true;
   } catch (err) {
     // Same reasoning as the superseded check in the try block above: a newer
@@ -110,8 +110,10 @@ export async function refresh(options: RefreshOptions = {}): Promise<boolean> {
     // to report -- it never wrote the store and never shows a banner either.
     if (seq !== refreshSeq) return true;
     const message = err instanceof Error ? err.message : String(err);
-    showMessage(message, "error");
-    lastPollErrorText = message;
+    // Repeated identical failures merge into the one entry the queue already
+    // holds (notifications.ts dedups on text+tone), so this id stays stable
+    // across a whole outage rather than naming a card per failed poll.
+    lastPollErrorId = showMessage(message, "error");
     return false;
   }
 }
