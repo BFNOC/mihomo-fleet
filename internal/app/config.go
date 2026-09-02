@@ -28,15 +28,16 @@ const (
 )
 
 // writeRuntimeConfig renders item's runtime mihomo config from profile's user
-// config and writes it to item.RuntimeConfigPath. It also returns a shallow
-// copy of the freshly parsed (but not yet cleaned/mutated) config map: L-6
+// config plus item.ConfigOverride and writes it to item.RuntimeConfigPath. It
+// also returns a shallow copy of the parsed-and-overridden (but not yet
+// cleaned/mutated) config map: L-6
 // (docs/review-2026-07-11-go-concurrency-performance.md) -- the start path
 // previously read and YAML-parsed profile.ConfigPath a second time just to
 // compute configGeodataNeeds. Returning this snapshot here lets the caller
-// reuse it instead. The copy is taken before cleanRuntimeConfig/
-// applyGlobalChainConfig/applyRuntimeFields mutate cfg in place (global-chain
-// mode in particular replaces "rules" entirely), so it reflects exactly what
-// a second read-and-parse of profile.ConfigPath would have produced.
+// reuse it instead. The copy is taken after applyConfigOverride (so a GEOSITE
+// rule prepended by the override counts toward geodata needs) but before
+// cleanRuntimeConfig/applyGlobalChainConfig/applyRuntimeFields mutate cfg in
+// place (global-chain mode in particular replaces "rules" entirely).
 func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error) {
 	raw, err := os.ReadFile(profile.ConfigPath)
 	if err != nil {
@@ -51,6 +52,11 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 	if cfg == nil {
 		cfg = make(map[string]any)
 	}
+	override, err := parseConfigOverride(item.ConfigOverride)
+	if err != nil {
+		return nil, err
+	}
+	applyConfigOverride(cfg, override)
 	parsed := make(map[string]any, len(cfg))
 	for key, value := range cfg {
 		parsed[key] = value
@@ -80,6 +86,77 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 		return nil, err
 	}
 	return parsed, nil
+}
+
+// parseConfigOverride parses an instance's ConfigOverride YAML. Blank text is
+// valid and yields nil; anything that is not a YAML mapping is rejected as a
+// validation error so the store refuses it at save time rather than the
+// instance failing at its next start.
+func parseConfigOverride(text string) (map[string]any, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+	var override map[string]any
+	if err := yaml.Unmarshal([]byte(text), &override); err != nil {
+		return nil, validationError{msg: "config override: " + err.Error()}
+	}
+	return override, nil
+}
+
+// applyConfigOverride merges override onto cfg in place, in the shape
+// clash-verge-rev's Merge profile popularised (docs/plan-1.0.md §3.7):
+//
+//   - `prepend-<key>` / `append-<key>` whose value is a list splice it before/
+//     after cfg[<key>] (so `prepend-rules: [NETWORK,udp,节点选择]` wins over a
+//     subscription's `NETWORK,udp,REJECT` by matching first).
+//   - a mapping on both sides merges recursively (`dns: {enable: true}` keeps
+//     the profile's other dns keys).
+//   - anything else replaces the profile's value outright.
+//
+// It runs before cleanRuntimeConfig, so an override cannot smuggle in the
+// per-instance keys (port, listeners, tun, ...) that the fleet owns.
+//
+// Plain keys are applied before any prepend-/append- splice so that an
+// override carrying both `rules:` and `prepend-rules:` is deterministic (map
+// iteration order is not): the replacement lands first, then the splice.
+func applyConfigOverride(cfg, override map[string]any) {
+	for key, value := range override {
+		if isSpliceKey(key, value) {
+			continue
+		}
+		if next, ok := value.(map[string]any); ok {
+			if current, ok := cfg[key].(map[string]any); ok {
+				applyConfigOverride(current, next)
+				continue
+			}
+		}
+		cfg[key] = value
+	}
+	for key, value := range override {
+		if !isSpliceKey(key, value) {
+			continue
+		}
+		list := value.([]any)
+		if base, found := strings.CutPrefix(key, "prepend-"); found {
+			cfg[base] = append(append([]any{}, list...), anyList(cfg[base])...)
+		} else if base, found := strings.CutPrefix(key, "append-"); found {
+			cfg[base] = append(anyList(cfg[base]), list...)
+		}
+	}
+}
+
+func isSpliceKey(key string, value any) bool {
+	if _, ok := value.([]any); !ok {
+		return false
+	}
+	return strings.HasPrefix(key, "prepend-") || strings.HasPrefix(key, "append-")
+}
+
+// anyList returns value as a fresh []any, or an empty one when value is not a
+// list (nil, or a scalar the profile put where a list belongs).
+func anyList(value any) []any {
+	list, _ := value.([]any)
+	return append([]any{}, list...)
 }
 
 // cleanRuntimeConfig strips user-config keys that would otherwise let a

@@ -30,23 +30,29 @@ type Options struct {
 }
 
 type Instance struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	ProfileID         string            `json:"profileId"`
-	MixedPort         int               `json:"mixedPort"`
-	ProxyBind         string            `json:"proxyBind,omitempty"`
-	ControllerPort    int               `json:"controllerPort"`
-	Secret            string            `json:"secret"`
-	UserConfigPath    string            `json:"userConfigPath"`
-	RuntimeConfigPath string            `json:"runtimeConfigPath"`
-	Mode              string            `json:"mode,omitempty"`
-	LocalProxies      string            `json:"localProxies,omitempty"`
-	Chain             []string          `json:"chain,omitempty"`
-	SelectedProxies   map[string]string `json:"selectedProxies,omitempty"`
-	SelectedGroup     string            `json:"selectedGroup,omitempty"`
-	SelectedProxy     string            `json:"selectedProxy,omitempty"`
-	CreatedAt         time.Time         `json:"createdAt"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	ProfileID         string `json:"profileId"`
+	MixedPort         int    `json:"mixedPort"`
+	ProxyBind         string `json:"proxyBind,omitempty"`
+	ControllerPort    int    `json:"controllerPort"`
+	Secret            string `json:"secret"`
+	UserConfigPath    string `json:"userConfigPath"`
+	RuntimeConfigPath string `json:"runtimeConfigPath"`
+	Mode              string `json:"mode,omitempty"`
+	LocalProxies      string `json:"localProxies,omitempty"`
+	// ConfigOverride is per-instance YAML merged onto the profile config
+	// when the runtime config is generated (config.go's applyConfigOverride):
+	// `prepend-<key>`/`append-<key>` splice lists, nested maps merge, any
+	// other key replaces the profile's value. It is what lets two instances
+	// share one subscription profile yet differ in a rule or a dns setting.
+	ConfigOverride  string            `json:"configOverride,omitempty"`
+	Chain           []string          `json:"chain,omitempty"`
+	SelectedProxies map[string]string `json:"selectedProxies,omitempty"`
+	SelectedGroup   string            `json:"selectedGroup,omitempty"`
+	SelectedProxy   string            `json:"selectedProxy,omitempty"`
+	CreatedAt       time.Time         `json:"createdAt"`
+	UpdatedAt       time.Time         `json:"updatedAt"`
 	// ConfigUpdatedAt is the last time a mutation that actually affects the
 	// generated runtime config (Mode, Chain, LocalProxies, Config content,
 	// ports, ProxyBind, ProfileID) touched this instance -- unlike UpdatedAt,
@@ -100,6 +106,7 @@ type InstanceView struct {
 	RuntimeConfigPath string            `json:"runtimeConfigPath"`
 	Mode              string            `json:"mode"`
 	LocalProxies      string            `json:"localProxies,omitempty"`
+	ConfigOverride    string            `json:"configOverride,omitempty"`
 	Chain             []string          `json:"chain,omitempty"`
 	SelectedProxies   map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup     string            `json:"selectedGroup,omitempty"`
@@ -377,6 +384,7 @@ type BundleInstance struct {
 	ControllerPort  int               `json:"controllerPort"`
 	Mode            string            `json:"mode,omitempty"`
 	LocalProxies    string            `json:"localProxies,omitempty"`
+	ConfigOverride  string            `json:"configOverride,omitempty"`
 	Chain           []string          `json:"chain,omitempty"`
 	SelectedProxies map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup   string            `json:"selectedGroup,omitempty"`

@@ -7,6 +7,7 @@ import {
   documentTitle,
   formatBatchMessage,
   formatBytes,
+  proxyCopyActionGroups,
   proxyEndpointText,
   proxyPort,
   restartEvidenceText,
@@ -63,6 +64,29 @@ test("proxyEndpointText joins multi-bind endpoints", () => {
     "127.0.0.1:7890，192.168.1.2:7890",
   );
   assert.equal(proxyEndpointText({ mixedPort: 0 }), "端口未分配");
+});
+
+test("proxyCopyActionGroups yields one single-endpoint row per bind address", () => {
+  const groups = proxyCopyActionGroups({ name: "A", mixedPort: 7890, proxyBind: "127.0.0.1,192.168.1.2" });
+  assert.deepEqual(groups.map((group) => group.host), ["127.0.0.1", "192.168.1.2"]);
+  const second = groups[1]!.actions;
+  assert.equal(second.find((action) => action.id === "addr")?.value, "192.168.1.2:7890");
+  assert.equal(second.find((action) => action.id === "http")?.value, "http://192.168.1.2:7890");
+  assert.equal(second.find((action) => action.id === "socks")?.value, "socks5://192.168.1.2:7890");
+  assert.match(second.find((action) => action.id === "env")?.value ?? "", /^export HTTP_PROXY='http:\/\/192\.168\.1\.2:7890'\n/);
+  assert.equal(second[0]!.message, "已复制 A 地址（192.168.1.2）。");
+  for (const group of groups) {
+    for (const action of group.actions) assert.ok(!action.value.includes("\n") || action.id === "env");
+  }
+
+  const single = proxyCopyActionGroups({ name: "A", mixedPort: 7890 });
+  assert.equal(single.length, 1);
+  assert.equal(single[0]!.host, "");
+  assert.equal(single[0]!.actions[0]!.message, "已复制 A 地址。");
+
+  const none = proxyCopyActionGroups({ name: "A", mixedPort: 0 });
+  assert.equal(none.length, 1);
+  assert.ok(none[0]!.actions.every((action) => action.value === ""));
 });
 
 test("splitProxyLabel peels longest matching source prefix", () => {

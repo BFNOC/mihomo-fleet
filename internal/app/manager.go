@@ -444,6 +444,7 @@ func viewFor(item *Instance, profile *Profile, status string, pid int) InstanceV
 		RuntimeConfigPath: item.RuntimeConfigPath,
 		Mode:              instanceMode(item.Mode),
 		LocalProxies:      item.LocalProxies,
+		ConfigOverride:    item.ConfigOverride,
 		Chain:             append([]string{}, item.Chain...),
 		SelectedProxies:   cloneStringMap(item.SelectedProxies),
 		SelectedGroup:     item.SelectedGroup,

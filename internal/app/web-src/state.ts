@@ -55,6 +55,7 @@ export interface FleetInstance {
   runtimeConfigPath: string;
   mode: InstanceMode;
   localProxies?: string;
+  configOverride?: string;
   chain?: string[];
   selectedProxies?: Record<string, string>;
   selectedGroup?: string;

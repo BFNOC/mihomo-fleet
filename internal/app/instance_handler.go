@@ -37,6 +37,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			ControllerPort        int      `json:"controllerPort"`
 			Mode                  string   `json:"mode"`
 			LocalProxies          string   `json:"localProxies"`
+			ConfigOverride        string   `json:"configOverride"`
 			Chain                 []string `json:"chain"`
 			AutoRestart           bool     `json:"autoRestart"`
 		}
@@ -86,6 +87,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			ControllerPort:         req.ControllerPort,
 			Mode:                   req.Mode,
 			LocalProxies:           req.LocalProxies,
+			ConfigOverride:         req.ConfigOverride,
 			Chain:                  req.Chain,
 			AutoRestart:            req.AutoRestart,
 		})
@@ -219,6 +221,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			ControllerPort    int       `json:"controllerPort"`
 			Mode              string    `json:"mode"`
 			LocalProxies      *string   `json:"localProxies"`
+			ConfigOverride    *string   `json:"configOverride"`
 			Chain             *[]string `json:"chain"`
 			AutoRestart       *bool     `json:"autoRestart"`
 		}
@@ -282,6 +285,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			ControllerPort:    req.ControllerPort,
 			Mode:              req.Mode,
 			LocalProxies:      req.LocalProxies,
+			ConfigOverride:    req.ConfigOverride,
 			Chain:             req.Chain,
 			AutoRestart:       req.AutoRestart,
 		})

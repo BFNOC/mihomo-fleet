@@ -64,6 +64,7 @@ func ExportBundle(store *Store) (*FleetBundle, error) {
 			ControllerPort:  item.ControllerPort,
 			Mode:            item.Mode,
 			LocalProxies:    item.LocalProxies,
+			ConfigOverride:  item.ConfigOverride,
 			Chain:           append([]string{}, item.Chain...),
 			SelectedProxies: cloneStringMap(item.SelectedProxies),
 			SelectedGroup:   item.SelectedGroup,
@@ -189,6 +190,9 @@ func validateBundle(bundle *FleetBundle) error {
 			// altering its message text.
 			return validationError{msg: err.Error()}
 		}
+		if _, err := parseConfigOverride(inst.ConfigOverride); err != nil {
+			return err
+		}
 		if instanceMode(inst.Mode) == InstanceModeGlobalChain {
 			if _, _, err := parseLocalProxyItems(inst.LocalProxies); err != nil {
 				return err
@@ -286,6 +290,7 @@ func createBundle(store *Store, bundle *FleetBundle) (*ImportResult, error) {
 			ControllerPort:  bi.ControllerPort,
 			Mode:            bi.Mode,
 			LocalProxies:    bi.LocalProxies,
+			ConfigOverride:  bi.ConfigOverride,
 			Chain:           append([]string{}, bi.Chain...),
 			SelectedProxies: cloneStringMap(bi.SelectedProxies),
 			SelectedGroup:   bi.SelectedGroup,

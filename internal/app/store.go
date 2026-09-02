@@ -123,6 +123,7 @@ type createInstanceOptions struct {
 	ControllerStart        int
 	Mode                   string
 	LocalProxies           string
+	ConfigOverride         string
 	Chain                  []string
 	SelectedProxies        map[string]string
 	SelectedGroup          string
@@ -140,6 +141,7 @@ type updateInstanceOptions struct {
 	ControllerPort    int
 	Mode              string
 	LocalProxies      *string
+	ConfigOverride    *string
 	Chain             *[]string
 	// AutoRestart is a pointer (like ProxyBind/LocalProxies/Chain above)
 	// rather than a plain bool so UpdateWithOptions can tell "not present in
@@ -827,6 +829,7 @@ func (s *Store) Clone(id, name string, mixedPort, controllerPort int) (*Instance
 		SelectedProxy:   source.SelectedProxy,
 		Mode:            source.Mode,
 		LocalProxies:    source.LocalProxies,
+		ConfigOverride:  source.ConfigOverride,
 		Chain:           append([]string{}, source.Chain...),
 		AutoRestart:     source.AutoRestart,
 	})
@@ -851,6 +854,9 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		if _, _, err := parseLocalProxyItems(opts.LocalProxies); err != nil {
 			return nil, err
 		}
+	}
+	if _, err := parseConfigOverride(opts.ConfigOverride); err != nil {
+		return nil, err
 	}
 	used := s.usedPortsLocked("")
 	if opts.MixedStart == 0 {
@@ -954,6 +960,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
 		Mode:              mode,
 		LocalProxies:      opts.LocalProxies,
+		ConfigOverride:    opts.ConfigOverride,
 		Chain:             normalizeChainNames(opts.Chain),
 		SelectedProxies:   cloneStringMap(opts.SelectedProxies),
 		SelectedGroup:     opts.SelectedGroup,
@@ -1135,6 +1142,13 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 			return nil, err
 		}
 	}
+	nextConfigOverride := item.ConfigOverride
+	if opts.ConfigOverride != nil {
+		nextConfigOverride = *opts.ConfigOverride
+		if _, err := parseConfigOverride(nextConfigOverride); err != nil {
+			return nil, err
+		}
+	}
 	nextChain := item.Chain
 	if opts.Chain != nil {
 		nextChain = normalizeChainNames(*opts.Chain)
@@ -1166,6 +1180,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		(opts.ProxyBind != nil && nextProxyBind != item.ProxyBind) ||
 		(opts.Mode != "" && nextMode != item.Mode) ||
 		(opts.LocalProxies != nil && nextLocalProxies != item.LocalProxies) ||
+		(opts.ConfigOverride != nil && nextConfigOverride != item.ConfigOverride) ||
 		(opts.Chain != nil && !slices.Equal(nextChain, item.Chain))
 	snapshot := *cloneInstance(item)
 	item.Name = nextName
@@ -1181,6 +1196,7 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	item.ControllerPort = nextControllerPort
 	item.Mode = nextMode
 	item.LocalProxies = nextLocalProxies
+	item.ConfigOverride = nextConfigOverride
 	if opts.Chain != nil {
 		item.Chain = nextChain
 	}

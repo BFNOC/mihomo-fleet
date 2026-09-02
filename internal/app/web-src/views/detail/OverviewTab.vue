@@ -33,6 +33,7 @@ import {
 } from "../../format.ts";
 import { refreshInstancesList } from "./instance-refresh.ts";
 import ChainOrderField from "../shared/ChainOrderField.vue";
+import InlineYamlEditor from "../shared/InlineYamlEditor.vue";
 import LocalProxyField from "../shared/LocalProxyField.vue";
 import ProxyBindField from "../shared/ProxyBindField.vue";
 import { useChainCandidates } from "../shared/use-chain-candidates.ts";
@@ -47,6 +48,7 @@ const editMixedPort = ref("");
 const editProxyBind = ref(defaultProxyBind);
 const editControllerPort = ref("");
 const editLocalProxies = ref("");
+const editConfigOverride = ref("");
 // The chain is held as the array the PUT body sends. It used to be newline text
 // because a <textarea> could not hold anything else.
 const editChain = ref<string[]>([]);
@@ -98,6 +100,7 @@ watch(
       editProxyBind.value = instance.proxyBind || defaultProxyBind;
       editControllerPort.value = String(instance.controllerPort);
       editLocalProxies.value = instance.localProxies || "";
+      editConfigOverride.value = instance.configOverride || "";
       editChain.value = Array.isArray(instance.chain) ? [...instance.chain] : [];
       editAutoRestart.value = Boolean(instance.autoRestart);
     }
@@ -134,6 +137,7 @@ async function saveBasics(): Promise<void> {
         controllerPort: Number(editControllerPort.value),
         mode: editMode.value,
         localProxies: editMode.value === instanceModes.globalChain ? editLocalProxies.value : "",
+        configOverride: editConfigOverride.value,
         chain: editMode.value === instanceModes.globalChain ? [...editChain.value] : [],
         autoRestart: editAutoRestart.value,
       }),
@@ -167,6 +171,7 @@ const overviewProfile = computed(() => selected.value?.profileName || selected.v
 const overviewUserConfig = computed(() => selected.value?.profileConfigPath || selected.value?.userConfigPath || "");
 const overviewRuntimeConfig = computed(() => selected.value?.runtimeConfigPath || "");
 const overviewSelection = computed(() => (selected.value ? selectionSummary(selected.value) : ""));
+const overviewConfigOverride = computed(() => (selected.value?.configOverride?.trim() ? "已设置" : "无"));
 // Crash-watchdog status + evidence (#2): a short "开启/关闭" state plus --
 // only when there is anything to report -- restart count and last crash
 // reason, so the operator can tell "armed but never fired" apart from
@@ -202,6 +207,8 @@ const overviewAutoRestart = computed(() => {
         <dd id="overviewRuntimeConfig">{{ overviewRuntimeConfig }}</dd>
         <dt>已保存节点</dt>
         <dd id="overviewSelection">{{ overviewSelection }}</dd>
+        <dt>配置覆盖</dt>
+        <dd id="overviewConfigOverride">{{ overviewConfigOverride }}</dd>
         <dt>崩溃自动重启</dt>
         <dd id="overviewAutoRestart">{{ overviewAutoRestart }}</dd>
       </dl>
@@ -257,6 +264,16 @@ const overviewAutoRestart = computed(() => {
           <span>链路顺序</span>
           <ChainOrderField v-model="editChain" :candidates="chainCandidates.state" @dirty="markDirty" />
         </div>
+      </div>
+      <div class="stacked">
+        <span>配置覆盖 YAML</span>
+        <InlineYamlEditor
+          v-model="editConfigOverride"
+          host-id="editConfigOverride"
+          editor-label="配置覆盖 YAML 编辑器"
+          @dirty="markDirty"
+        />
+        <p class="field-note">叠加在配置档之上生成运行配置：<code>prepend-rules</code> / <code>append-rules</code> 等 <code>prepend-*</code> / <code>append-*</code> 拼接列表，同名映射递归合并，其余键直接替换。例如 <code>prepend-rules: [NETWORK,udp,节点选择]</code> 可放行订阅里被拒绝的 UDP。</p>
       </div>
       <button id="saveBasics" class="save-basics" type="button" :disabled="!selected || saving" @click="saveBasics">保存基础信息</button>
     </section>

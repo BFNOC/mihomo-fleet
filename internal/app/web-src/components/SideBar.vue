@@ -23,7 +23,7 @@ import { store } from "../store.ts";
 import { actions, chrome } from "../bridge.ts";
 import { activeInstance } from "../state.ts";
 import type { FleetInstance } from "../state.ts";
-import { proxyCopyActions, proxyCopyPlaceholders, proxyEndpointText, proxyPort, proxyPortLabel, selectionSummary } from "../format.ts";
+import { proxyCopyActionGroups, proxyEndpointText, proxyPort, proxyPortLabel, selectionSummary } from "../format.ts";
 import { statusClass, statusText } from "../messages.ts";
 
 // Mirrors render()'s `selected` argument, computed the same way app.ts does
@@ -95,11 +95,6 @@ const filteredInstances = computed(() => {
   if (!needle) return store.instances;
   return store.instances.filter((item) => instanceHaystack(item).includes(needle));
 });
-
-// Mirrors renderPortMatrix()'s per-row copy-tool actions (pre-Vue app.ts).
-function copyActionsFor(item: FleetInstance) {
-  return proxyPort(item.mixedPort) ? proxyCopyActions(item) : proxyCopyPlaceholders();
-}
 
 // Mirrors renderPortMatrix()'s aria-label suffix for an unavailable copy
 // action (pre-Vue app.ts).
@@ -205,14 +200,15 @@ function copyUnavailableSuffix(value: string): string {
           </span>
           <span class="port-address">{{ proxyEndpointText(item) }}</span>
         </button>
-        <div class="copy-tools">
+        <div v-for="group in proxyCopyActionGroups(item)" :key="group.host" class="copy-tools">
+          <span v-if="group.host" class="copy-host">{{ group.host }}</span>
           <button
-            v-for="action in copyActionsFor(item)"
+            v-for="action in group.actions"
             :key="action.id"
             type="button"
             :disabled="!action.value"
             :title="action.title"
-            :aria-label="`${action.title}：${item.name}${copyUnavailableSuffix(action.value)}`"
+            :aria-label="`${action.title}：${item.name}${group.host ? `（${group.host}）` : ''}${copyUnavailableSuffix(action.value)}`"
             @click="actions.copyProxyValue(action.value, action.message)"
           >{{ action.label }}</button>
         </div>

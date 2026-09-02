@@ -260,34 +260,51 @@ export function proxyCopyPlaceholders(): ProxyCopyAction[] {
   return proxyCopyDefs.map((action) => ({ ...action, value: "" }));
 }
 
-export function proxyCopyActions(
-  item: Pick<FleetInstance, "name"> & Partial<Pick<FleetInstance, "mixedPort" | "proxyBind">>,
-): ProxyCopyAction[] {
-  const endpoints = proxyEndpoints(item);
-  if (!endpoints.length) return proxyCopyPlaceholders();
-  const httpValues = endpoints.map((endpoint) => `http://${endpoint}`);
-  const socksValues = endpoints.map((endpoint) => `socks5://${endpoint}`);
-  // `endpoints` is non-empty here (checked above), so both mapped arrays
-  // have a first element.
-  const http = httpValues[0]!;
-  const socks = socksValues[0]!;
+/** One row of copy buttons: the endpoint's host (for the row label) plus its actions. */
+export interface ProxyCopyGroup {
+  host: string;
+  actions: ProxyCopyAction[];
+}
+
+function proxyCopyActionsFor(name: string, endpoint: string, suffix: string): ProxyCopyAction[] {
+  const http = `http://${endpoint}`;
+  const socks = `socks5://${endpoint}`;
   const values: Record<ProxyCopyActionId, string> = {
-    addr: endpoints.join("\n"),
-    http: httpValues.join("\n"),
-    socks: socksValues.join("\n"),
+    addr: endpoint,
+    http,
+    socks,
     env: proxyEnvExports(http, socks),
   };
   const messages: Record<ProxyCopyActionId, string> = {
-    addr: `已复制 ${item.name} 地址。`,
-    http: `已复制 ${item.name} HTTP。`,
-    socks: `已复制 ${item.name} SOCKS。`,
-    env: `已复制 ${item.name} 环境变量。`,
+    addr: `已复制 ${name} 地址${suffix}。`,
+    http: `已复制 ${name} HTTP${suffix}。`,
+    socks: `已复制 ${name} SOCKS${suffix}。`,
+    env: `已复制 ${name} 环境变量${suffix}。`,
   };
   return proxyCopyDefs.map((action) => ({
     ...action,
     value: values[action.id],
     message: messages[action.id],
   }));
+}
+
+// One group per bind address, so each button copies exactly one endpoint. The
+// old single row joined every endpoint with "\n", which pasted as one glued
+// string into any single-line field and had to be split by hand.
+export function proxyCopyActionGroups(
+  item: Pick<FleetInstance, "name"> & Partial<Pick<FleetInstance, "mixedPort" | "proxyBind">>,
+): ProxyCopyGroup[] {
+  const hosts = proxyBindAddresses(item);
+  const endpoints = proxyEndpoints(item);
+  if (!endpoints.length) return [{ host: "", actions: proxyCopyPlaceholders() }];
+  const labelled = endpoints.length > 1;
+  return endpoints.map((endpoint, index) => {
+    const host = hosts[index] ?? "";
+    return {
+      host: labelled ? host : "",
+      actions: proxyCopyActionsFor(item.name, endpoint, labelled ? `（${host}）` : ""),
+    };
+  });
 }
 
 export function proxyLabelSources(

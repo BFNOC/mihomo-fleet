@@ -276,6 +276,27 @@ export all_proxy='socks5://127.0.0.1:28001'
 WebUI 会弹窗询问令牌；填入 `-api-secret` 的值后浏览器会记住它，之后自动携带。
 风险边界和令牌保管要求见“安全模型与 `-api-secret`”。
 
+## 实例级配置覆盖
+
+多个实例共用一份订阅配置档时，可以在“概览 → 编辑基础信息 → 配置覆盖 YAML”里给单个实例
+叠加一段 YAML，只影响这个实例生成的运行配置，不改动配置档本身，订阅更新后依然生效。
+合并方式沿用 clash-verge-rev 的 Merge 配置：
+
+- `prepend-<键>` / `append-<键>`：把列表拼到配置档同名列表的前面 / 后面，常用于 `rules`、
+  `proxies`、`proxy-groups`
+- 两边都是映射的键（如 `dns`）递归合并，只改你写的字段
+- 其余键直接替换配置档里的值
+
+例如订阅规则里有 `NETWORK,udp,REJECT`，但这个实例需要放行 UDP：
+
+```yaml
+prepend-rules:
+  - NETWORK,udp,节点选择
+```
+
+端口、`listeners`、`tun` 等由 Fleet 接管的键即使写进覆盖也会被剥离；“全局链式”模式会整体替换
+`rules`，覆盖里的规则改动在该模式下不生效。
+
 ## 全局链式代理模式
 
 实例默认使用“规则分流”模式：运行配置会沿用 Profile 里的 `proxy-groups` 和 `rules`。

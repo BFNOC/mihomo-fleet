@@ -2160,3 +2160,70 @@ func TestStoreLoadRecoversFromCorruptInstancesJSON(t *testing.T) {
 		t.Fatalf("expected a fresh instances.json to exist after recovery: %v", err)
 	}
 }
+
+func TestWriteRuntimeConfigAppliesConfigOverride(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		MixedPort:         28002,
+		ControllerPort:    29002,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		ConfigOverride: "prepend-rules:\n  - NETWORK,udp,节点选择\n" +
+			"append-rules:\n  - GEOSITE,cn,DIRECT\n" +
+			"dns:\n  enable: true\n" +
+			"log-level: debug\n" +
+			"port: 8080\n",
+	}
+	user := "mixed-port: 1\n" +
+		"log-level: info\n" +
+		"dns:\n  listen: 0.0.0.0:1053\n" +
+		"rules:\n  - NETWORK,udp,REJECT\n  - MATCH,节点选择\n"
+	if err := os.WriteFile(item.UserConfigPath, []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	parsed, err := writeRuntimeConfig(item, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
+
+	rules, _ := cfg["rules"].([]any)
+	wantRules := []any{"NETWORK,udp,节点选择", "NETWORK,udp,REJECT", "MATCH,节点选择", "GEOSITE,cn,DIRECT"}
+	if !reflect.DeepEqual(rules, wantRules) {
+		t.Fatalf("rules = %#v, want %#v", rules, wantRules)
+	}
+	for _, key := range []string{"prepend-rules", "append-rules", "port"} {
+		if _, ok := cfg[key]; ok {
+			t.Fatalf("runtime config kept override key %q: %#v", key, cfg[key])
+		}
+	}
+	if cfg["log-level"] != "debug" {
+		t.Fatalf("log-level = %#v, want debug (override replaces scalar)", cfg["log-level"])
+	}
+	dns, _ := cfg["dns"].(map[string]any)
+	if dns["enable"] != true || dns["listen"] != "0.0.0.0:1053" {
+		t.Fatalf("dns = %#v, want enable merged in and listen preserved", dns)
+	}
+	// The returned snapshot feeds configGeodataNeeds, so the override's
+	// GEOSITE rule must be visible there too.
+	if !configGeodataNeeds(parsed).site {
+		t.Fatalf("geodata needs = %+v, want site from override's GEOSITE rule", configGeodataNeeds(parsed))
+	}
+}
+
+func TestParseConfigOverrideRejectsNonMapping(t *testing.T) {
+	for _, text := range []string{"- a\n- b\n", "just a string\n", "rules: [\n"} {
+		if _, err := parseConfigOverride(text); !errors.Is(err, errValidation) {
+			t.Fatalf("parseConfigOverride(%q) error = %v, want errValidation", text, err)
+		}
+	}
+	for _, text := range []string{"", "   \n", "# comment only\n"} {
+		if override, err := parseConfigOverride(text); err != nil || override != nil {
+			t.Fatalf("parseConfigOverride(%q) = %#v, %v, want nil, nil", text, override, err)
+		}
+	}
+}
