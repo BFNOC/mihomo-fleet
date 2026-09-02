@@ -106,6 +106,10 @@ function activeCopyGroup(item: FleetInstance) {
   return groups.find((group) => group.host === copyHost[item.id]) ?? groups[0]!;
 }
 
+function selectCopyHost(item: FleetInstance, event: Event): void {
+  copyHost[item.id] = (event.target as HTMLSelectElement).value;
+}
+
 // Mirrors renderPortMatrix()'s aria-label suffix for an unavailable copy
 // action (pre-Vue app.ts).
 function copyUnavailableSuffix(value: string): string {
@@ -213,8 +217,9 @@ function copyUnavailableSuffix(value: string): string {
         <div class="copy-tools">
           <select
             v-if="proxyCopyActionGroups(item).length > 1"
-            v-model="copyHost[item.id]"
+            :value="activeCopyGroup(item).host"
             class="copy-host"
+            @change="selectCopyHost(item, $event)"
             :aria-label="`选择要复制的 ${item.name} 绑定地址`"
           >
             <option v-for="group in proxyCopyActionGroups(item)" :key="group.host" :value="group.host">{{ group.host }}</option>
