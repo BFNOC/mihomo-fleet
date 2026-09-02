@@ -67,6 +67,12 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 		if err := applyGlobalChainConfig(cfg, item); err != nil {
 			return nil, err
 		}
+		// Global-chain mode replaced "rules" wholesale (NETWORK,UDP,REJECT +
+		// MATCH), dropping whatever the override spliced in above. Re-splice
+		// so `prepend-rules: ['NETWORK,udp,节点选择']` can open UDP here too;
+		// a plain `rules:` override stays ignored in this mode, the fleet
+		// owns the MATCH target.
+		spliceOverrideLists(cfg, override, "rules")
 	}
 	if err := applyRuntimeFields(cfg, item); err != nil {
 		return nil, err
@@ -156,14 +162,22 @@ func applyConfigOverride(cfg, override map[string]any) {
 		}
 		cfg[key] = value
 	}
+	spliceOverrideLists(cfg, override, "")
+}
+
+// spliceOverrideLists applies override's prepend-/append- list keys onto cfg.
+// only == "" applies all of them; otherwise just the ones targeting that base
+// key (writeRuntimeConfig re-splices "rules" after global-chain mode rebuilt
+// them).
+func spliceOverrideLists(cfg, override map[string]any, only string) {
 	for key, value := range override {
 		if !isSpliceKey(key, value) {
 			continue
 		}
 		list := value.([]any)
-		if base, found := strings.CutPrefix(key, "prepend-"); found {
+		if base, found := strings.CutPrefix(key, "prepend-"); found && (only == "" || base == only) {
 			cfg[base] = append(append([]any{}, list...), anyList(cfg[base])...)
-		} else if base, found := strings.CutPrefix(key, "append-"); found {
+		} else if base, found := strings.CutPrefix(key, "append-"); found && (only == "" || base == only) {
 			cfg[base] = append(anyList(cfg[base]), list...)
 		}
 	}
@@ -177,10 +191,20 @@ func isSpliceKey(key string, value any) bool {
 }
 
 // anyList returns value as a fresh []any, or an empty one when value is not a
-// list (nil, or a scalar the profile put where a list belongs).
+// list (nil, or a scalar the profile put where a list belongs). []string is
+// what applyGlobalChainConfig writes for "rules".
 func anyList(value any) []any {
-	list, _ := value.([]any)
-	return append([]any{}, list...)
+	switch list := value.(type) {
+	case []any:
+		return append([]any{}, list...)
+	case []string:
+		out := make([]any, 0, len(list))
+		for _, item := range list {
+			out = append(out, item)
+		}
+		return out
+	}
+	return []any{}
 }
 
 // cleanRuntimeConfig strips user-config keys that would otherwise let a

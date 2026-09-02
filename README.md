@@ -309,7 +309,9 @@ prepend-rules:
 覆盖不能改 `proxies`、`proxy-groups`、`proxy-providers`（含 `prepend-` / `append-` 形式），保存时会拒绝：
 节点列表、订阅刷新时的选择校正、链路校验都按配置档本身解析，覆盖改了节点集合会和运行配置脱节。
 要加节点请改配置档，全局链式模式下用“本地节点 YAML”。端口、`listeners`、`tun` 等由 Fleet 接管的键
-即使写进覆盖也会被剥离；“全局链式”模式会整体替换 `rules`，覆盖里的规则改动在该模式下不生效。
+即使写进覆盖也会被剥离。“全局链式”模式自己生成 `rules`（先 `NETWORK,UDP,REJECT` 再 `MATCH,<链路目标>`，
+默认拒绝 UDP 以免链路承载不了 UDP 时回落直连），覆盖里的 `rules:` 在该模式下不生效，
+但 `prepend-rules` / `append-rules` 仍会拼到生成规则的前后，所以上面的放行 UDP 写法在两种模式下都可用。
 
 ## 全局链式代理模式
 

@@ -2215,6 +2215,37 @@ func TestWriteRuntimeConfigAppliesConfigOverride(t *testing.T) {
 	}
 }
 
+func TestWriteRuntimeConfigGlobalChainKeepsOverrideRuleSplices(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID:                "test",
+		Name:              "Test",
+		Mode:              InstanceModeGlobalChain,
+		MixedPort:         28004,
+		ControllerPort:    29004,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		ConfigOverride: "prepend-rules:\n  - NETWORK,udp,节点选择\n" +
+			"append-rules:\n  - GEOSITE,cn,DIRECT\n" +
+			"rules:\n  - MATCH,DIRECT\n",
+	}
+	user := "proxies:\n  - {name: sg, type: socks5, server: 127.0.0.1, port: 1080}\n"
+	if err := os.WriteFile(item.UserConfigPath, []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := &Profile{ID: "profile", Name: "Profile", ConfigPath: item.UserConfigPath}
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
+	rules, _ := cfg["rules"].([]any)
+	wantRules := []any{"NETWORK,udp,节点选择", "NETWORK,UDP,REJECT", "MATCH," + globalChainSelectGroupName, "GEOSITE,cn,DIRECT"}
+	if !reflect.DeepEqual(rules, wantRules) {
+		t.Fatalf("rules = %#v, want override splices around generated global-chain rules %#v", rules, wantRules)
+	}
+}
+
 func TestParseConfigOverrideRejectsNonMapping(t *testing.T) {
 	for _, text := range []string{
 		"- a\n- b\n", "just a string\n", "rules: [\n",
