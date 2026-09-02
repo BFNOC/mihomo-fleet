@@ -59,6 +59,16 @@ pnpm test:web                               # 纯逻辑单测
 ./scripts/dev.sh --port 47892 --data ~/fleet-dev
 ```
 
+改前端想即时看到效果时，把前后端分开跑：一个终端起后端，另一个终端起 Vite 开发服务器，
+它带热更新，并把 `/api` 转发到后端：
+
+```bash
+./scripts/dev.sh --no-web           # 终端 1：后端，http://127.0.0.1:47891
+pnpm dev:web                        # 终端 2：前端，打开 http://localhost:5173
+```
+
+后端改了 `--port` 时，给 Vite 设同样的 `FLEET_DEV_PORT`。改 Go 代码仍要重跑 `dev.sh`。
+
 版本号会刻成 `dev-<commit>`，WebUI 顶部能直接区分开发版和正式版。数据目录必须分开：
 `instances.json` 没有进程锁，两个 fleet 指向同一目录会互相覆盖写，并抢同一组实例端口
 （脚本会直接拒绝 `--data` 指向正式版目录）。新建实例的端口从 28000/29000 起分配，

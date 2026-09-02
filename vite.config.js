@@ -10,6 +10,22 @@ export default defineConfig({
   root: path.join(projectRoot, "internal/app/web-src"),
   base: "/",
   plugins: [vue()],
+  // `pnpm dev:web` only: Vite serves web-src with HMR and forwards /api to a
+  // fleet started separately (scripts/dev.sh, port 47891 by default). Set
+  // FLEET_DEV_PORT to match a non-default --port. Production never goes
+  // through here: the Go binary embeds the built web/ directory.
+  server: {
+    port: 5173,
+    strictPort: true,
+    proxy: {
+      "/api": {
+        target: `http://127.0.0.1:${process.env.FLEET_DEV_PORT || 47891}`,
+        // Rewrites Host to the target's, which the controller's loopback
+        // allowlist accepts; the browser's "localhost:5173" would not pass.
+        changeOrigin: true,
+      },
+    },
+  },
   // License compliance is handled by web/vendor/THIRD_PARTY_NOTICES.txt, generated
   // from the pnpm dependency tree in scripts/build-web.mjs.
   build: {

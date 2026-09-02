@@ -5,6 +5,7 @@
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
+    "dev:web": "vite",
     "test:web": "node --test internal/app/web-src/*.test.ts",
     "typecheck": "vue-tsc --noEmit"
   },
