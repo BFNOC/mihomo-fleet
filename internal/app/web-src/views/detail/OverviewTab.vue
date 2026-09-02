@@ -273,7 +273,7 @@ const overviewAutoRestart = computed(() => {
           editor-label="配置覆盖 YAML 编辑器"
           @dirty="markDirty"
         />
-        <p class="field-note">叠加在配置档之上生成运行配置：<code>prepend-rules</code> / <code>append-rules</code> 等 <code>prepend-*</code> / <code>append-*</code> 拼接列表，同名映射递归合并，其余键直接替换。例如 <code>prepend-rules: [NETWORK,udp,节点选择]</code> 可放行订阅里被拒绝的 UDP。</p>
+        <p class="field-note">叠加在配置档之上生成运行配置：<code>prepend-*</code> / <code>append-*</code> 拼接列表，同名映射递归合并，其余键直接替换；不能改 <code>proxies</code> / <code>proxy-groups</code> / <code>proxy-providers</code>。例如 <code>prepend-rules: ['NETWORK,udp,节点选择']</code> 可放行订阅里被拒绝的 UDP（规则整条要加引号，否则逗号会被拆成多项）。</p>
       </div>
       <button id="saveBasics" class="save-basics" type="button" :disabled="!selected || saving" @click="saveBasics">保存基础信息</button>
     </section>

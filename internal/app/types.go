@@ -308,11 +308,17 @@ type ProxyInstanceOption struct {
 }
 
 // FleetBundleVersion is FleetBundle's current schema version (feature #7,
-// docs/feature-roadmap-post-1.3.md #7). ImportBundle (export.go) rejects any
-// bundle whose Version does not exactly match this, rather than guessing at
-// forward/backward compatibility -- there is only ever one version today, so
-// "compatible" simply means "equal".
-const FleetBundleVersion = 1
+// docs/feature-roadmap-post-1.3.md #7). ImportBundle (export.go) accepts any
+// version from fleetBundleMinVersion up to this one -- every bump so far has
+// been purely additive, so an older bundle simply loads with the new fields
+// at their zero values -- and rejects anything newer, so an older fleet never
+// silently drops a field it does not know (encoding/json ignores unknown keys).
+//
+//   - 1: initial format.
+//   - 2: BundleInstance.ConfigOverride.
+const FleetBundleVersion = 2
+
+const fleetBundleMinVersion = 1
 
 // FleetBundle is the single-file fleet backup ExportBundle (export.go)
 // produces for GET /api/export and ImportBundle consumes for POST

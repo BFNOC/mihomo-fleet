@@ -120,8 +120,8 @@ const maxBundleImportEntries = 500
 // so handleImport classifies it (errors.Is(err, errValidation)) as 400,
 // matching every other malformed-request rejection in this package.
 func validateBundle(bundle *FleetBundle) error {
-	if bundle.Version != FleetBundleVersion {
-		return validationError{msg: fmt.Sprintf("unsupported bundle version %d (expected %d)", bundle.Version, FleetBundleVersion)}
+	if bundle.Version < fleetBundleMinVersion || bundle.Version > FleetBundleVersion {
+		return validationError{msg: fmt.Sprintf("unsupported bundle version %d (expected %d to %d)", bundle.Version, fleetBundleMinVersion, FleetBundleVersion)}
 	}
 	if len(bundle.Profiles) > maxBundleImportEntries {
 		return validationError{msg: fmt.Sprintf("bundle has too many profiles (%d, max %d)", len(bundle.Profiles), maxBundleImportEntries)}

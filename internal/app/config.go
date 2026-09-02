@@ -88,10 +88,26 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 	return parsed, nil
 }
 
+// overrideNodeSetKeys are the profile keys that define the node set. The
+// static control plane -- ProfileProxyGroups(ForInstance), the subscription
+// refresh's selection reconcile, validateChainStatic and chainCandidates --
+// parses the raw profile config, not the override-merged one, so letting an
+// override alter these would desync it from the runtime config: a node added
+// only by the override could be selected while running and then be dropped
+// as "vanished" on the next subscription refresh. Node changes belong in the
+// profile (or 本地节点 YAML in global-chain mode); the override is for rules,
+// dns and the like.
+//
+// ponytail: blocking the keys is the cheap consistency guarantee. Lifting it
+// means routing every static reader above through an effective-config helper
+// (profile + override) and keying the proxy-group cache by override too.
+var overrideNodeSetKeys = []string{"proxies", "proxy-groups", "proxy-providers"}
+
 // parseConfigOverride parses an instance's ConfigOverride YAML. Blank text is
-// valid and yields nil; anything that is not a YAML mapping is rejected as a
-// validation error so the store refuses it at save time rather than the
-// instance failing at its next start.
+// valid and yields nil; anything that is not a YAML mapping, or that touches a
+// node-set key (see overrideNodeSetKeys), is rejected as a validation error so
+// the store refuses it at save time rather than the instance failing or
+// drifting at its next start.
 func parseConfigOverride(text string) (map[string]any, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, nil
@@ -99,6 +115,14 @@ func parseConfigOverride(text string) (map[string]any, error) {
 	var override map[string]any
 	if err := yaml.Unmarshal([]byte(text), &override); err != nil {
 		return nil, validationError{msg: "config override: " + err.Error()}
+	}
+	for key := range override {
+		base := strings.TrimPrefix(strings.TrimPrefix(key, "prepend-"), "append-")
+		for _, blocked := range overrideNodeSetKeys {
+			if base == blocked {
+				return nil, validationError{msg: fmt.Sprintf("config override cannot change %q; edit the profile or local proxies instead", key)}
+			}
+		}
 	}
 	return override, nil
 }

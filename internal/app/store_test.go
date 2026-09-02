@@ -2216,7 +2216,12 @@ func TestWriteRuntimeConfigAppliesConfigOverride(t *testing.T) {
 }
 
 func TestParseConfigOverrideRejectsNonMapping(t *testing.T) {
-	for _, text := range []string{"- a\n- b\n", "just a string\n", "rules: [\n"} {
+	for _, text := range []string{
+		"- a\n- b\n", "just a string\n", "rules: [\n",
+		// Node-set keys would desync the static control plane from the
+		// runtime config (see overrideNodeSetKeys).
+		"proxies: []\n", "prepend-proxy-groups: []\n", "append-proxy-providers: {}\n",
+	} {
 		if _, err := parseConfigOverride(text); !errors.Is(err, errValidation) {
 			t.Fatalf("parseConfigOverride(%q) error = %v, want errValidation", text, err)
 		}

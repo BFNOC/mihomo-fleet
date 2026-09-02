@@ -347,6 +347,30 @@ func TestImportBundleRejectsMalformedJSON(t *testing.T) {
 
 // TestImportBundleRejectsIncompatibleVersion covers the "versions
 // compatible" validation requirement.
+// A v1 bundle (pre-ConfigOverride) must still import: the bump was purely
+// additive, so the new field simply loads empty.
+func TestImportBundleAcceptsPreviousVersion(t *testing.T) {
+	target, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(&FleetBundle{
+		Version:   fleetBundleMinVersion,
+		Profiles:  []BundleProfile{{ID: "p1", Name: "P1", Config: "mixed-port: 7890\n"}},
+		Instances: []BundleInstance{{Name: "old", ProfileID: "p1", MixedPort: 28100, ControllerPort: 29100}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportBundle(target, data); err != nil {
+		t.Fatalf("v1 bundle import failed: %v", err)
+	}
+	items := target.List()
+	if len(items) != 1 || items[0].ConfigOverride != "" {
+		t.Fatalf("instances = %+v, want one with empty ConfigOverride", items)
+	}
+}
+
 func TestImportBundleRejectsIncompatibleVersion(t *testing.T) {
 	target, err := NewStore(t.TempDir())
 	if err != nil {

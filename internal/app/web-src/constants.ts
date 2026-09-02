@@ -127,6 +127,8 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   [/^profile "(.+)" is not a subscription profile$/, (match) => `配置档 ${match[1]} 不是订阅配置档。`],
   [/^profile "(.+)" subscription update is already running$/, (match) => `配置档 ${match[1]} 正在更新订阅。`],
   [/^profile "(.+)" subscription URL changed during update$/, (match) => `配置档 ${match[1]} 的订阅链接在更新过程中被修改，请重新触发更新。`],
+  [/^config override cannot change "(.+)"; edit the profile or local proxies instead$/, (match) => `配置覆盖不能修改 ${match[1]}，请改配置档或本地节点 YAML。`],
+  [/^config override: (.+)$/, (match) => `配置覆盖 YAML 无效：${match[1]}`],
   [/^instance "(.+)" not found$/, (match) => `实例 ${match[1]} 不存在。`],
   [/^instance "(.+)" is being deleted$/, (match) => `实例 ${match[1]} 正在删除中，请稍后重试。`],
   // Hit routinely: the proxies tab polls an instance during the 1-4s window
