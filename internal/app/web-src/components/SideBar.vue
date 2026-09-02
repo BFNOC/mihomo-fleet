@@ -18,7 +18,7 @@
 // 544-547, 609-620). Those exist only so a full `innerHTML = ""` repaint can
 // fake focus/DOM-identity preservation; Vue's keyed v-for does that natively,
 // so none of that machinery has a job left to do here.
-import { computed, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { store } from "../store.ts";
 import { actions, chrome } from "../bridge.ts";
 import { activeInstance } from "../state.ts";
@@ -95,6 +95,16 @@ const filteredInstances = computed(() => {
   if (!needle) return store.instances;
   return store.instances.filter((item) => instanceHaystack(item).includes(needle));
 });
+
+// Which bind address each multi-bind instance's copy row targets, keyed by
+// instance id. One row of buttons plus a <select> keeps the sidebar the same
+// height however many addresses are bound; unset falls back to the first.
+const copyHost = reactive<Record<string, string>>({});
+
+function activeCopyGroup(item: FleetInstance) {
+  const groups = proxyCopyActionGroups(item);
+  return groups.find((group) => group.host === copyHost[item.id]) ?? groups[0]!;
+}
 
 // Mirrors renderPortMatrix()'s aria-label suffix for an unavailable copy
 // action (pre-Vue app.ts).
@@ -200,15 +210,22 @@ function copyUnavailableSuffix(value: string): string {
           </span>
           <span class="port-address">{{ proxyEndpointText(item) }}</span>
         </button>
-        <div v-for="group in proxyCopyActionGroups(item)" :key="group.host" class="copy-tools">
-          <span v-if="group.host" class="copy-host">{{ group.host }}</span>
+        <div class="copy-tools">
+          <select
+            v-if="proxyCopyActionGroups(item).length > 1"
+            v-model="copyHost[item.id]"
+            class="copy-host"
+            :aria-label="`选择要复制的 ${item.name} 绑定地址`"
+          >
+            <option v-for="group in proxyCopyActionGroups(item)" :key="group.host" :value="group.host">{{ group.host }}</option>
+          </select>
           <button
-            v-for="action in group.actions"
+            v-for="action in activeCopyGroup(item).actions"
             :key="action.id"
             type="button"
             :disabled="!action.value"
             :title="action.title"
-            :aria-label="`${action.title}：${item.name}${group.host ? `（${group.host}）` : ''}${copyUnavailableSuffix(action.value)}`"
+            :aria-label="`${action.title}：${item.name}${activeCopyGroup(item).host ? `（${activeCopyGroup(item).host}）` : ''}${copyUnavailableSuffix(action.value)}`"
             @click="actions.copyProxyValue(action.value, action.message)"
           >{{ action.label }}</button>
         </div>

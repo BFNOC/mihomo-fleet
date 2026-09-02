@@ -103,20 +103,15 @@
   gap: 5px;
 }
 
-.copy-tools + .copy-tools {
-  margin-top: 5px;
-}
-
-/* Bind-address label above a row's buttons; only rendered when an instance
+/* Bind-address picker above a row's buttons; only rendered when an instance
    binds more than one address, so single-address rows look as before. */
 .copy-host {
   grid-column: 1 / -1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-  font: 11px/1.3 var(--mono);
+  min-height: 28px;
+  padding: 0 6px;
+  font: 11px/1.4 var(--mono);
+  box-shadow: none;
 }
 
 .copy-tools button {
