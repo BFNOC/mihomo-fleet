@@ -235,6 +235,10 @@
   padding: 0 2px;
 }
 
+.tab-action {
+  margin-left: auto;
+}
+
 .tab {
   border: 0;
   border-bottom: 2px solid transparent;

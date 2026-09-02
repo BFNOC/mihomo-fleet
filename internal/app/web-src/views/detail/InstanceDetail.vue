@@ -20,6 +20,7 @@ import type { FleetInstance, FleetTab } from "../../state.ts";
 import { proxyPortLabel } from "../../format.ts";
 import { localizedMessage, statusText } from "../../messages.ts";
 import { refreshInstancesList } from "./instance-refresh.ts";
+import { ipCheck, runIpCheck } from "./ip-check.ts";
 import OverviewTab from "./OverviewTab.vue";
 import ProxiesTab from "./ProxiesTab.vue";
 import LogsTab from "./LogsTab.vue";
@@ -68,6 +69,8 @@ const restartDisabled = computed(() => store.bulkRunning || pendingActions.value
 const deleteDisabled = computed(() => store.bulkRunning || pendingActions.value.has("delete"));
 const cloneDisabled = computed(() => store.bulkRunning || store.cloneRunning || !selected.value);
 const reloadDisabled = computed(() => store.bulkRunning || !showPendingRestart.value || pendingActions.value.has("reload"));
+const ipCheckRunning = computed(() => !!selected.value && ipCheck.running.has(selected.value.id));
+const ipCheckDisabled = computed(() => !selected.value || selected.value.status !== "running" || ipCheckRunning.value);
 
 interface TabDef {
   id: FleetTab;
@@ -95,6 +98,8 @@ function setActiveTab(id: FleetTab): void {
 // ArrowLeft/ArrowRight cycles focus (and selection) between tabs.
 function onTabListKeydown(event: KeyboardEvent): void {
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  // 标签行末尾的“测试 IP”不是标签，方向键落在它上面时不切页。
+  if (!(event.target instanceof HTMLElement) || !event.target.dataset.tab) return;
   const currentIndex = tabs.findIndex((tab) => tab.id === store.activeTab);
   if (currentIndex === -1) return;
   event.preventDefault();
@@ -282,6 +287,14 @@ async function deleteInstance(): Promise<void> {
         :tabindex="store.activeTab === tab.id ? 0 : -1"
         @click="setActiveTab(tab.id)"
       >{{ tab.label }}</button>
+      <button
+        id="ipCheckBtn"
+        class="tab tab-action"
+        type="button"
+        :disabled="ipCheckDisabled"
+        title="经这个实例的混合端口请求测试网址，把出口 IP 写到概览"
+        @click="selected && runIpCheck(selected.id)"
+      >{{ ipCheckRunning ? "测试中…" : "测试 IP" }}</button>
     </div>
 
     <div id="tab-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-overview" tabindex="-1" v-show="store.activeTab === 'overview'">

@@ -20,6 +20,15 @@ export const latencyBatchConcurrency: number = 4;
 export const latencyKeySeparator: string = "";
 export const logStickThreshold: number = 24;
 export const defaultProxyBind: string = "127.0.0.1";
+// 出口 IP 检测：返回纯文本 IP 的公共服务，任选其一或自填。
+export const defaultIpCheckUrl: string = "https://api.ip.sb/ip";
+export const ipCheckPresets: string[] = [
+  defaultIpCheckUrl,
+  "https://api.ipify.org",
+  "https://icanhazip.com",
+  "https://ifconfig.me/ip",
+  "https://ipinfo.io/ip",
+];
 export const API_SECRET_STORAGE_KEY: string = "fleetApiSecret";
 export const slowPollIntervalMs: number = 4000;
 export const fastPollIntervalMs: number = 1800;
@@ -99,6 +108,8 @@ export const errorLabels: Record<string, string> = {
   "Content-Type must be application/json": "Content-Type 必须是 application/json。",
   "unable to allocate local ports": "无法自动分配本地端口。",
   "instance must be running to test latency": "请先启动实例再测速。",
+  "instance must be running to check ip": "请先启动实例再测试 IP。",
+  "ip check URL must start with http:// or https://": "测试 IP 的网址必须以 http:// 或 https:// 开头。",
   "proxy is required": "请选择要测速的节点。",
   "proxy is required for real latency": "真延迟需要指定单个节点。",
   "latency kind must be url or real": "测速类型无效。",
@@ -129,6 +140,9 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   [/^profile "(.+)" subscription URL changed during update$/, (match) => `配置档 ${match[1]} 的订阅链接在更新过程中被修改，请重新触发更新。`],
   [/^config override cannot change "(.+)"; edit the profile or local proxies instead$/, (match) => `配置覆盖不能修改 ${match[1]}，请改配置档或本地节点 YAML。`],
   [/^config override: (.+)$/, (match) => `配置覆盖 YAML 无效：${match[1]}`],
+  [/^ip check request failed: (.+)$/, (match) => `测试 IP 请求失败：${match[1]}`],
+  [/^ip check returned HTTP (\d+)$/, (match) => `测试 IP 网址返回 HTTP ${match[1]}。`],
+  [/^ip check response is not an IP: (.+)$/, (match) => `测试 IP 网址没有返回 IP：${match[1]}`],
   [/^instance "(.+)" not found$/, (match) => `实例 ${match[1]} 不存在。`],
   [/^instance "(.+)" is being deleted$/, (match) => `实例 ${match[1]} 正在删除中，请稍后重试。`],
   // Hit routinely: the proxies tab polls an instance during the 1-4s window

@@ -196,6 +196,8 @@ func (c *Controller) handleInstance(w http.ResponseWriter, r *http.Request) {
 		c.handleSelection(w, r, id)
 	case "latency":
 		c.handleLatency(w, r, id)
+	case "ip":
+		c.handleIPCheck(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
