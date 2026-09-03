@@ -32,7 +32,7 @@ import {
   selectionSummary,
 } from "../../format.ts";
 import { refreshInstancesList } from "./instance-refresh.ts";
-import { ipCheck, ipCheckUrl, persistIpCheckUrl } from "./ip-check.ts";
+import { ipCheck, ipCheckPreset, ipCheckUrl, persistIpCheckUrl, pickIpCheckPreset } from "./ip-check.ts";
 import ChainOrderField from "../shared/ChainOrderField.vue";
 import InlineYamlEditor from "../shared/InlineYamlEditor.vue";
 import LocalProxyField from "../shared/LocalProxyField.vue";
@@ -224,13 +224,14 @@ const overviewAutoRestart = computed(() => {
         <dt>出口 IP</dt>
         <dd id="overviewExitIp">{{ overviewExitIp }}</dd>
       </dl>
-      <label class="ip-check-url">
+      <div class="ip-check-url">
         <span>测试 IP 网址</span>
-        <input id="ipCheckUrl" v-model="ipCheckUrl" list="ipCheckPresets" :placeholder="ipCheckPresets[0]" @change="persistIpCheckUrl">
-        <datalist id="ipCheckPresets">
-          <option v-for="preset in ipCheckPresets" :key="preset" :value="preset" />
-        </datalist>
-      </label>
+        <select id="ipCheckPreset" :value="ipCheckPreset" @change="pickIpCheckPreset">
+          <option v-for="preset in ipCheckPresets" :key="preset" :value="preset">{{ preset }}</option>
+          <option value="">自定义…</option>
+        </select>
+        <input id="ipCheckUrl" v-model="ipCheckUrl" :placeholder="ipCheckPresets[0]" @change="persistIpCheckUrl">
+      </div>
       <p class="field-note">点击标签行的“测试 IP”后，经这个实例的混合端口请求该网址，网址需返回纯文本 IP 或带 <code>ip</code> 字段的 JSON。</p>
     </section>
     <section id="editForm" ref="editFormEl" class="panel">

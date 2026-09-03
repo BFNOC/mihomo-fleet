@@ -362,6 +362,7 @@ a:focus-visible {
 }
 
 .selector span,
+.ip-check-url > span,
 label span {
   color: var(--muted);
   font-size: 11.5px;

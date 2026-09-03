@@ -27,7 +27,15 @@ export const ipCheckPresets: string[] = [
   "https://api.ipify.org",
   "https://icanhazip.com",
   "https://ifconfig.me/ip",
+  "https://ifconfig.co/ip",
   "https://ipinfo.io/ip",
+  "https://ident.me",
+  "https://ip.me",
+  "https://ipecho.net/plain",
+  "https://checkip.amazonaws.com",
+  "https://whatismyip.akamai.com",
+  "https://api.seeip.org",
+  "https://wtfismyip.com/text",
 ];
 export const API_SECRET_STORAGE_KEY: string = "fleetApiSecret";
 export const slowPollIntervalMs: number = 4000;

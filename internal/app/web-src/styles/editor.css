@@ -86,11 +86,14 @@
 }
 
 .ip-check-url {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 10px;
   margin-top: 14px;
 }
 
-.ip-check-url input {
-  width: 100%;
+.ip-check-url > span {
+  grid-column: 1 / -1;
 }
 
 .kv dt {

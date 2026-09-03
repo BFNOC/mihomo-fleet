@@ -290,7 +290,7 @@ WebUI 会弹窗询问令牌；填入 `-api-secret` 的值后浏览器会记住�
 
 实例详情的标签行右侧有“测试 IP”按钮：Fleet 经这个实例的混合端口请求一个回显 IP 的网址，
 把结果写到“概览 → 出口 IP”。默认网址是 `https://api.ip.sb/ip`，“概览”里的“测试 IP 网址”
-可以换成下拉里的其他服务（ipify、icanhazip、ifconfig.me、ipinfo）或自填；网址需返回纯文本 IP
+可以换成下拉里的其他服务（ipify、icanhazip、ifconfig.me、ifconfig.co、ipinfo、ident.me、ip.me、ipecho、AWS、Akamai、seeip、wtfismyip）或自填；网址需返回纯文本 IP
 或带 `ip` 字段的 JSON，选择记在浏览器本地。实例必须处于运行中。
 
 ## 实例级配置覆盖

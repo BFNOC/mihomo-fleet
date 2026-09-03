@@ -1,10 +1,10 @@
 // 出口 IP 检测的状态与动作。InstanceDetail.vue 的标签行放触发按钮，
 // OverviewTab.vue 显示结果和测试网址；两边共用这一份模块级状态
 // （同 dashboard-data.ts 的模式：detail 区只挂载一次）。
-import { reactive, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { api } from "../../api.ts";
 import { actions } from "../../bridge.ts";
-import { defaultIpCheckUrl } from "../../constants.ts";
+import { defaultIpCheckUrl, ipCheckPresets } from "../../constants.ts";
 import { localizedMessage } from "../../messages.ts";
 
 export interface IpCheckResult {
@@ -22,6 +22,16 @@ export const ipCheck = reactive({
 });
 
 export const ipCheckUrl = ref(localStorage.getItem(IP_CHECK_URL_KEY) || defaultIpCheckUrl);
+
+// 下拉当前选中项；网址不在预设里时选“自定义”（空串）。
+export const ipCheckPreset = computed(() => (ipCheckPresets.includes(ipCheckUrl.value) ? ipCheckUrl.value : ""));
+
+export function pickIpCheckPreset(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value;
+  if (!value) return;
+  ipCheckUrl.value = value;
+  persistIpCheckUrl();
+}
 
 export function persistIpCheckUrl(): void {
   const value = ipCheckUrl.value.trim();
