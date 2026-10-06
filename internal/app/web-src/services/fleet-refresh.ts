@@ -36,9 +36,9 @@ export interface RefreshOptions {
 let refreshSeq = 0;
 
 // The queue id of the error this module last raised via the catch below, so a
-// later successful refresh can take that one entry back down. Errors never
-// auto-dismiss (notifications.ts), so a poll failure would otherwise stay on
-// screen forever after the backend recovered. Dismissing by id rather than by
+// later successful refresh can take that one entry back down. An error only
+// expires 15s after its last repeat (notifications.ts), so a poll failure
+// would otherwise outlive the backend's recovery. Dismissing by id rather than by
 // matching text is what keeps a message some other action raised in the
 // meantime from being cleared by a poll succeeding underneath it. Reset to 0
 // once acted on; ids are never reused, so a stale one cannot collide with a
@@ -103,8 +103,8 @@ export async function refresh(options: RefreshOptions = {}): Promise<boolean> {
     }
     localStorage.setItem("activeInstance", store.activeId);
     syncProfileBusy();
-    // A poll failure never auto-dismisses (notifications.ts only expires
-    // non-error entries), so this success has to clear it explicitly. By id,
+    // A poll failure lingers up to 15s after its last repeat
+    // (notifications.ts), so this success clears it at once. By id,
     // so it can only ever remove the entry this module raised -- and a no-op
     // if the user already dismissed it by hand.
     if (lastPollErrorId) dismissNotice(lastPollErrorId, pollErrorOwner);

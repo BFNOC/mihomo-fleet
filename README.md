@@ -318,7 +318,13 @@ prepend-rules:
 要加节点请改配置档，全局链式模式下用“本地节点 YAML”。端口、`listeners`、`tun` 等由 Fleet 接管的键
 即使写进覆盖也会被剥离。“全局链式”模式自己生成 `rules`（先 `NETWORK,UDP,REJECT` 再 `MATCH,<链路目标>`，
 默认拒绝 UDP 以免链路承载不了 UDP 时回落直连），覆盖里的 `rules:` 在该模式下不生效，
-但 `prepend-rules` / `append-rules` 仍会拼到生成规则的前后，所以上面的放行 UDP 写法在两种模式下都可用。
+但 `prepend-rules` / `append-rules` 仍会拼到生成规则的前后。
+
+全局链式模式要放行 UDP，请勾选“UDP 也走链路”，不要用上面的覆盖写法：生成规则改为先
+`MATCH,<链路目标>` 再 `NETWORK,UDP,REJECT`，UDP 和 TCP 一样走链路；链路目标不支持 UDP 时
+mihomo 会跳过 MATCH，由后面的拒绝兜底，不会回落直连。链路最后一跳是具体节点时，
+`节点选择` 里的节点不带 `dialer-proxy`，规则指向 `节点选择` 会让 UDP 绕过整条链路直连出去。
+链路中的节点要能转发 UDP，否则这部分 UDP 会失败。
 
 ## 全局链式代理模式
 

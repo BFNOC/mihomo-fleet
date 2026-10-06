@@ -125,6 +125,7 @@ type createInstanceOptions struct {
 	LocalProxies           string
 	ConfigOverride         string
 	Chain                  []string
+	ChainUDP               bool
 	SelectedProxies        map[string]string
 	SelectedGroup          string
 	SelectedProxy          string
@@ -143,6 +144,7 @@ type updateInstanceOptions struct {
 	LocalProxies      *string
 	ConfigOverride    *string
 	Chain             *[]string
+	ChainUDP          *bool
 	// AutoRestart is a pointer (like ProxyBind/LocalProxies/Chain above)
 	// rather than a plain bool so UpdateWithOptions can tell "not present in
 	// this request" (nil, leave unchanged) apart from an explicit false --
@@ -831,6 +833,7 @@ func (s *Store) Clone(id, name string, mixedPort, controllerPort int) (*Instance
 		LocalProxies:    source.LocalProxies,
 		ConfigOverride:  source.ConfigOverride,
 		Chain:           append([]string{}, source.Chain...),
+		ChainUDP:        source.ChainUDP,
 		AutoRestart:     source.AutoRestart,
 	})
 }
@@ -962,6 +965,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		LocalProxies:      opts.LocalProxies,
 		ConfigOverride:    opts.ConfigOverride,
 		Chain:             normalizeChainNames(opts.Chain),
+		ChainUDP:          opts.ChainUDP,
 		SelectedProxies:   cloneStringMap(opts.SelectedProxies),
 		SelectedGroup:     opts.SelectedGroup,
 		SelectedProxy:     opts.SelectedProxy,
@@ -1181,7 +1185,8 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		(opts.Mode != "" && nextMode != item.Mode) ||
 		(opts.LocalProxies != nil && nextLocalProxies != item.LocalProxies) ||
 		(opts.ConfigOverride != nil && nextConfigOverride != item.ConfigOverride) ||
-		(opts.Chain != nil && !slices.Equal(nextChain, item.Chain))
+		(opts.Chain != nil && !slices.Equal(nextChain, item.Chain)) ||
+		(opts.ChainUDP != nil && *opts.ChainUDP != item.ChainUDP)
 	snapshot := *cloneInstance(item)
 	item.Name = nextName
 	if clearSelection {
@@ -1199,6 +1204,9 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	item.ConfigOverride = nextConfigOverride
 	if opts.Chain != nil {
 		item.Chain = nextChain
+	}
+	if opts.ChainUDP != nil {
+		item.ChainUDP = *opts.ChainUDP
 	}
 	if opts.AutoRestart != nil {
 		// Deliberately outside configChanged above: AutoRestart is a

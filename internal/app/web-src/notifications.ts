@@ -41,19 +41,23 @@ export interface Notice {
 }
 
 /**
- * Auto-dismiss delay for info messages, unchanged from the banner's timer.
- * Errors are deliberately absent from this: they stay until dismissed, either
- * by the user or by the code that raised them (services/fleet-refresh.ts
- * clears its own poll failure once a poll succeeds again).
+ * Auto-dismiss delays. Errors get longer to be read, but do expire: a sticky
+ * card for a one-off failure just piled up until closed by hand. That
+ * includes owner-claimed cards. A poll failure stays up while it lasts only
+ * because each repeat push restarts its countdown; an instance alert
+ * (services/instance-alerts.ts) is pushed once per episode, so it goes after
+ * 15s even if the instance is still down -- the instance's own status and
+ * lastError in the detail view are the lasting record.
  */
 const infoDismissMs = 6000;
+const errorDismissMs = 15000;
 
 /**
  * Hard cap on visible entries, oldest evicted first.
  *
- * Errors never expire on their own, so without a cap a backend that stays down
- * would stack one unremovable card per failed poll until they covered the
- * screen. Dedup below handles the common shape of that (the same text
+ * A backend that stays down keeps re-pushing its errors before they expire,
+ * so without a cap it would stack one card per distinct failure until they
+ * covered the screen. Dedup below handles the common shape of that (the same text
  * repeating), and this catches the rest.
  */
 const maxNotices = 5;
@@ -73,10 +77,9 @@ function clearTimer(id: number): void {
 
 function scheduleDismiss(notice: Notice): void {
   clearTimer(notice.id);
-  if (notice.tone === "error") return;
   timers.set(
     notice.id,
-    setTimeout(() => dismissNotice(notice.id), infoDismissMs),
+    setTimeout(() => dismissNotice(notice.id), notice.tone === "error" ? errorDismissMs : infoDismissMs),
   );
 }
 

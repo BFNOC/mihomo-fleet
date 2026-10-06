@@ -57,6 +57,8 @@ export interface FleetInstance {
   localProxies?: string;
   configOverride?: string;
   chain?: string[];
+  /** Global-chain mode only: UDP follows the chain instead of being rejected. */
+  chainUdp?: boolean;
   selectedProxies?: Record<string, string>;
   selectedGroup?: string;
   selectedProxy?: string;

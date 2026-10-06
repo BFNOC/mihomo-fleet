@@ -62,8 +62,8 @@ export async function setDesktopAlerts(enabled: boolean): Promise<boolean> {
  * Instance id -> the queue id of the alert it currently owns, i.e. "this
  * instance is in a failure episode I have already reported".
  *
- * The queue id is what makes recovery clean: the alert is an error, so it never
- * expires on its own, and dismissing it by id can only ever remove this
+ * The queue id is what makes recovery clean: the alert may still be up when
+ * the instance recovers, and dismissing it by id can only ever remove this
  * module's own card -- the same contract services/fleet-refresh.ts uses for its
  * poll failure.
  *

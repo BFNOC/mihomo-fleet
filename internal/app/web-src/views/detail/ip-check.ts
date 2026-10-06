@@ -7,11 +7,13 @@ import { actions } from "../../bridge.ts";
 import { defaultIpCheckUrl, ipCheckPresets } from "../../constants.ts";
 import { localizedMessage } from "../../messages.ts";
 
+// 失败也记一条（error 非空），覆盖上次的成功结果，免得概览继续显示过期的 IP。
 export interface IpCheckResult {
   ip: string;
   url: string;
   elapsedMs: number;
   at: number;
+  error?: string;
 }
 
 const IP_CHECK_URL_KEY = "fleetIpCheckUrl";
@@ -50,7 +52,9 @@ export async function runIpCheck(instanceId: string): Promise<void> {
     ipCheck.results[instanceId] = { ...payload, at: Date.now() };
     actions.showMessage(`出口 IP：${payload.ip}`);
   } catch (err) {
-    actions.showMessage(localizedMessage(err instanceof Error ? err.message : String(err)), "error");
+    const message = localizedMessage(err instanceof Error ? err.message : String(err));
+    ipCheck.results[instanceId] = { ip: "", url: ipCheckUrl.value, elapsedMs: 0, at: Date.now(), error: message };
+    actions.showMessage(message, "error");
   } finally {
     ipCheck.running.delete(instanceId);
   }

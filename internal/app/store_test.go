@@ -362,6 +362,15 @@ rules:
 	if len(rules) != 2 || rules[0] != "NETWORK,UDP,REJECT" || rules[1] != "MATCH,local-hop" {
 		t.Fatalf("rules = %#v, want UDP reject then MATCH local-hop", rules)
 	}
+
+	item.ChainUDP = true
+	if _, err := writeRuntimeConfig(item, profile); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ = readRuntimeConfigMap(t, item.RuntimeConfigPath)["rules"].([]any)
+	if len(rules) != 2 || rules[0] != "MATCH,local-hop" || rules[1] != "NETWORK,UDP,REJECT" {
+		t.Fatalf("ChainUDP rules = %#v, want MATCH local-hop then the UDP reject fallback", rules)
+	}
 	proxies, _ := cfg["proxies"].([]any)
 	if got := proxyMap(t, proxies, "local-hop")["dialer-proxy"]; got != globalChainSelectGroupName {
 		t.Fatalf("local-hop dialer-proxy = %#v, want %s", got, globalChainSelectGroupName)
@@ -871,6 +880,36 @@ func TestStoreCloneCopiesAutoRestart(t *testing.T) {
 	}
 	if !clone.AutoRestart {
 		t.Fatal("expected the clone to inherit AutoRestart from its source")
+	}
+}
+
+// ChainUDP changes the generated rules, so unlike AutoRestart it must bump
+// ConfigUpdatedAt (PendingRestart) and survive a clone.
+func TestStoreChainUDPIsConfigChangeAndCloned(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.Create("US", "", defaultUserConfig, 28010, 29010)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chainUDP := true
+	updated, err := store.UpdateWithOptions(source.ID, updateInstanceOptions{ChainUDP: &chainUDP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.ChainUDP || !updated.ConfigUpdatedAt.After(source.ConfigUpdatedAt) {
+		t.Fatalf("ChainUDP = %v, ConfigUpdatedAt %v -> %v; want true and bumped", updated.ChainUDP, source.ConfigUpdatedAt, updated.ConfigUpdatedAt)
+	}
+	clone, err := store.Clone(source.ID, "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clone.ChainUDP {
+		t.Fatal("expected the clone to inherit ChainUDP from its source")
 	}
 }
 

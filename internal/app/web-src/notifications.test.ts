@@ -100,19 +100,20 @@ function withCapturedTimers(run: (fire: (index: number) => void, delays: number[
   }
 }
 
-test("info entries get a 6s dismiss timer and errors get none", () => {
+test("info entries expire after 6s and errors after 15s", () => {
   reset();
   withCapturedTimers((fire, delays) => {
     pushNotice("start failed", "error");
-    assert.deepEqual(delays, [], "an error must never be scheduled for dismissal");
     pushNotice("已请求启动。", "info");
-    assert.deepEqual(delays, [6000]);
-    fire(0);
+    assert.deepEqual(delays, [15000, 6000]);
+    fire(1);
     assert.deepEqual(
       notices.map((notice) => notice.text),
       ["start failed"],
-      "only the info entry expires",
+      "the info entry expires first",
     );
+    fire(0);
+    assert.equal(notices.length, 0, "the error expires too");
   });
 });
 
@@ -163,7 +164,7 @@ test("an anonymous push keeps its card when an owner releases", () => {
   assert.equal(notices.length, 1, "the anonymous claim is still outstanding");
 });
 
-// Errors are contractually sticky, so the cap must not be what retires them.
+// Errors outlive info, so the cap must not be what retires them first.
 test("the cap evicts expiring info before any error", () => {
   reset();
   for (let index = 0; index < 3; index += 1) pushNotice(`错误 ${index}`, "error");

@@ -46,8 +46,14 @@ type Instance struct {
 	// `prepend-<key>`/`append-<key>` splice lists, nested maps merge, any
 	// other key replaces the profile's value. It is what lets two instances
 	// share one subscription profile yet differ in a rule or a dns setting.
-	ConfigOverride  string            `json:"configOverride,omitempty"`
-	Chain           []string          `json:"chain,omitempty"`
+	ConfigOverride string   `json:"configOverride,omitempty"`
+	Chain          []string `json:"chain,omitempty"`
+	// ChainUDP lets UDP through in global-chain mode: the generated rules put
+	// MATCH before NETWORK,UDP,REJECT, so UDP takes the same MATCH target (and
+	// dialer-proxy chain) as TCP, and is still rejected if that target cannot
+	// carry UDP. Off by default because a middle hop that cannot relay UDP
+	// then fails those flows instead of rejecting them up front.
+	ChainUDP        bool              `json:"chainUdp,omitempty"`
 	SelectedProxies map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup   string            `json:"selectedGroup,omitempty"`
 	SelectedProxy   string            `json:"selectedProxy,omitempty"`
@@ -108,6 +114,7 @@ type InstanceView struct {
 	LocalProxies      string            `json:"localProxies,omitempty"`
 	ConfigOverride    string            `json:"configOverride,omitempty"`
 	Chain             []string          `json:"chain,omitempty"`
+	ChainUDP          bool              `json:"chainUdp,omitempty"`
 	SelectedProxies   map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup     string            `json:"selectedGroup,omitempty"`
 	SelectedProxy     string            `json:"selectedProxy,omitempty"`
@@ -392,6 +399,7 @@ type BundleInstance struct {
 	LocalProxies    string            `json:"localProxies,omitempty"`
 	ConfigOverride  string            `json:"configOverride,omitempty"`
 	Chain           []string          `json:"chain,omitempty"`
+	ChainUDP        bool              `json:"chainUdp,omitempty"`
 	SelectedProxies map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup   string            `json:"selectedGroup,omitempty"`
 	SelectedProxy   string            `json:"selectedProxy,omitempty"`

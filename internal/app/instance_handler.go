@@ -39,6 +39,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			LocalProxies          string   `json:"localProxies"`
 			ConfigOverride        string   `json:"configOverride"`
 			Chain                 []string `json:"chain"`
+			ChainUDP              bool     `json:"chainUdp"`
 			AutoRestart           bool     `json:"autoRestart"`
 		}
 		if err := readJSON(r, &req); err != nil {
@@ -89,6 +90,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			LocalProxies:           req.LocalProxies,
 			ConfigOverride:         req.ConfigOverride,
 			Chain:                  req.Chain,
+			ChainUDP:               req.ChainUDP,
 			AutoRestart:            req.AutoRestart,
 		})
 		if err != nil {
@@ -225,6 +227,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			LocalProxies      *string   `json:"localProxies"`
 			ConfigOverride    *string   `json:"configOverride"`
 			Chain             *[]string `json:"chain"`
+			ChainUDP          *bool     `json:"chainUdp"`
 			AutoRestart       *bool     `json:"autoRestart"`
 		}
 		if err := readJSON(r, &req); err != nil {
@@ -289,6 +292,7 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			LocalProxies:      req.LocalProxies,
 			ConfigOverride:    req.ConfigOverride,
 			Chain:             req.Chain,
+			ChainUDP:          req.ChainUDP,
 			AutoRestart:       req.AutoRestart,
 		})
 		if err != nil {

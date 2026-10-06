@@ -69,9 +69,11 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 		}
 		// Global-chain mode replaced "rules" wholesale (NETWORK,UDP,REJECT +
 		// MATCH), dropping whatever the override spliced in above. Re-splice
-		// so `prepend-rules: ['NETWORK,udp,节点选择']` can open UDP here too;
-		// a plain `rules:` override stays ignored in this mode, the fleet
-		// owns the MATCH target.
+		// so prepend-/append-rules still apply; a plain `rules:` override
+		// stays ignored in this mode, the fleet owns the MATCH target. To let
+		// UDP through use ChainUDP, not a prepend rule: a rule naming 节点选择
+		// skips the chain whenever the chain's last hop is a concrete node,
+		// since only chain members carry dialer-proxy then.
 		spliceOverrideLists(cfg, override, "rules")
 	}
 	if err := applyRuntimeFields(cfg, item); err != nil {
@@ -352,7 +354,15 @@ func applyGlobalChainConfig(cfg map[string]any, item *Instance) error {
 
 	cfg["mode"] = "rule"
 	cfg["proxy-groups"] = []any{selectGroup}
-	cfg["rules"] = []string{"NETWORK,UDP,REJECT", fmt.Sprintf("MATCH,%s", plan.matchTarget)}
+	// ChainUDP moves the UDP reject after MATCH rather than dropping it:
+	// mihomo skips a rule whose target cannot carry UDP and falls back to
+	// DIRECT once the list runs out, so without the trailing reject a tail
+	// node lacking UDP would leak UDP straight out.
+	rules := []string{"NETWORK,UDP,REJECT", fmt.Sprintf("MATCH,%s", plan.matchTarget)}
+	if item.ChainUDP {
+		rules = []string{rules[1], rules[0]}
+	}
+	cfg["rules"] = rules
 	for _, key := range []string{"rule-providers", "sub-rules", "script"} {
 		delete(cfg, key)
 	}

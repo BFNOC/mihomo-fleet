@@ -53,6 +53,7 @@ const editConfigOverride = ref("");
 // The chain is held as the array the PUT body sends. It used to be newline text
 // because a <textarea> could not hold anything else.
 const editChain = ref<string[]>([]);
+const editChainUdp = ref(false);
 const editAutoRestart = ref(false);
 
 const showChainFields = computed(() => editMode.value === instanceModes.globalChain);
@@ -103,6 +104,7 @@ watch(
       editLocalProxies.value = instance.localProxies || "";
       editConfigOverride.value = instance.configOverride || "";
       editChain.value = Array.isArray(instance.chain) ? [...instance.chain] : [];
+      editChainUdp.value = Boolean(instance.chainUdp);
       editAutoRestart.value = Boolean(instance.autoRestart);
     }
   },
@@ -140,6 +142,7 @@ async function saveBasics(): Promise<void> {
         localProxies: editMode.value === instanceModes.globalChain ? editLocalProxies.value : "",
         configOverride: editConfigOverride.value,
         chain: editMode.value === instanceModes.globalChain ? [...editChain.value] : [],
+        chainUdp: editChainUdp.value,
         autoRestart: editAutoRestart.value,
       }),
     });
@@ -184,6 +187,7 @@ const overviewExitIp = computed(() => {
   const result = ipCheck.results[id];
   if (!result) return "未测试";
   const at = new Date(result.at).toLocaleTimeString("zh-CN", { hour12: false });
+  if (result.error) return `测试失败（${at}）：${result.error}`;
   return `${result.ip}（${at}，${result.elapsedMs} ms）`;
 });
 const overviewAutoRestart = computed(() => {
@@ -285,6 +289,10 @@ const overviewAutoRestart = computed(() => {
           <span>链路顺序</span>
           <ChainOrderField v-model="editChain" :candidates="chainCandidates.state" @dirty="markDirty" />
         </div>
+        <label class="checkline">
+          <input id="editChainUdp" v-model="editChainUdp" type="checkbox" @change="markDirty">
+          <span>UDP 也走链路（默认拒绝 UDP；链路中各跳需支持 UDP）</span>
+        </label>
       </div>
       <div class="stacked">
         <span>配置覆盖 YAML</span>
@@ -294,7 +302,7 @@ const overviewAutoRestart = computed(() => {
           editor-label="配置覆盖 YAML 编辑器"
           @dirty="markDirty"
         />
-        <p class="field-note">叠加在配置档之上生成运行配置：<code>prepend-*</code> / <code>append-*</code> 拼接列表，同名映射递归合并，其余键直接替换；不能改 <code>proxies</code> / <code>proxy-groups</code> / <code>proxy-providers</code>。例如 <code>prepend-rules: ['NETWORK,udp,节点选择']</code> 可放行被拒绝的 UDP，订阅规则和全局链式默认的 UDP 拒绝都适用（规则整条要加引号，否则逗号会被拆成多项）。</p>
+        <p class="field-note">叠加在配置档之上生成运行配置：<code>prepend-*</code> / <code>append-*</code> 拼接列表，同名映射递归合并，其余键直接替换；不能改 <code>proxies</code> / <code>proxy-groups</code> / <code>proxy-providers</code>。例如订阅规则拒绝 UDP 时，<code>prepend-rules: ['NETWORK,udp,节点选择']</code> 可放行（规则整条要加引号，否则逗号会被拆成多项）。全局链式模式请用上面的“UDP 也走链路”，规则指向 <code>节点选择</code> 可能绕过链路。</p>
       </div>
       <button id="saveBasics" class="save-basics" type="button" :disabled="!selected || saving" @click="saveBasics">保存基础信息</button>
     </section>
