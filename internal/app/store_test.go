@@ -2548,3 +2548,33 @@ func TestStoreRejectsLocalProxyNameCollisionWithEmptyChain(t *testing.T) {
 		t.Fatal("update to a colliding local proxy was accepted")
 	}
 }
+
+// C10/B3: providers the override defines for its own spliced rules survive
+// global-chain mode; the profile's own providers are still dropped.
+func TestWriteRuntimeConfigGlobalChainKeepsOverrideRuleProviders(t *testing.T) {
+	dir := t.TempDir()
+	item := &Instance{
+		ID: "test", Name: "Test", Mode: InstanceModeGlobalChain, MixedPort: 28005, ControllerPort: 29005,
+		Secret:            "secret-token",
+		UserConfigPath:    filepath.Join(dir, "config.user.yaml"),
+		RuntimeConfigPath: filepath.Join(dir, "config.runtime.yaml"),
+		ConfigOverride: "rule-providers:\n  custom: {type: http, behavior: domain, url: \"https://example.com/r\", path: ./r.yaml}\n" +
+			"prepend-rules:\n  - RULE-SET,custom,DIRECT\n",
+	}
+	user := "proxies:\n  - {name: sg, type: socks5, server: 127.0.0.1, port: 1080}\n" +
+		"rule-providers:\n  profile-only: {type: http, behavior: domain, url: \"https://example.com/p\", path: ./p.yaml}\n"
+	if err := os.WriteFile(item.UserConfigPath, []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeRuntimeConfig(item, &Profile{ID: "p", ConfigPath: item.UserConfigPath}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := readRuntimeConfigMap(t, item.RuntimeConfigPath)
+	providers, _ := cfg["rule-providers"].(map[string]any)
+	if _, ok := providers["custom"]; !ok {
+		t.Fatalf("rule-providers = %#v, want the override's custom provider kept", cfg["rule-providers"])
+	}
+	if _, ok := providers["profile-only"]; ok {
+		t.Fatalf("rule-providers = %#v, profile's own providers should stay dropped", cfg["rule-providers"])
+	}
+}

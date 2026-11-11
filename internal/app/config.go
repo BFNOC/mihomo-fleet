@@ -75,6 +75,14 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 		// skips the chain whenever the chain's last hop is a concrete node,
 		// since only chain members carry dialer-proxy then.
 		spliceOverrideLists(cfg, override, "rules")
+		// Global-chain mode drops the profile's rule-providers, but rules the
+		// override splices back in may reference providers the override itself
+		// defines (`RULE-SET,custom,DIRECT`). Without those the generated config
+		// failed mihomo's own validation. Only the override's providers come
+		// back; the profile's stay dropped along with the profile's rules.
+		if providers, ok := override["rule-providers"].(map[string]any); ok && len(providers) > 0 {
+			cfg["rule-providers"] = providers
+		}
 	}
 	if err := applyRuntimeFields(cfg, item); err != nil {
 		return nil, err
