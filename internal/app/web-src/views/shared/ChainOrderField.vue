@@ -22,7 +22,7 @@ import type { ChainCandidate } from "../../chain-rules.ts";
 import type { ChainCandidatesState } from "./use-chain-candidates.ts";
 
 const props = defineProps<{ modelValue: string[]; candidates: ChainCandidatesState }>();
-const emit = defineEmits<{ "update:modelValue": [value: string[]]; dirty: [] }>();
+const emit = defineEmits<{ "update:modelValue": [value: string[]]; dirty: []; retry: [] }>();
 
 const chain = computed(() => props.modelValue || []);
 const available = computed(() => unusedCandidates(props.candidates.candidates, chain.value));
@@ -78,7 +78,10 @@ function onAdd(event: Event): void {
     <p v-if="candidates.loading" class="field-note">正在读取可用节点…</p>
     <p v-if="problem" class="field-note error">{{ problem }}</p>
     <p v-if="candidates.localError" class="field-note error">{{ candidates.localError }}</p>
-    <p v-if="candidates.error" class="field-note error">{{ candidates.error }}</p>
+    <p v-if="candidates.error" class="field-note error">
+      {{ candidates.error }}
+      <button type="button" class="link-button" @click="emit('retry')">重试</button>
+    </p>
     <p v-if="candidates.truncated" class="field-note">节点过多，仅列出前 5000 个。</p>
   </div>
 </template>

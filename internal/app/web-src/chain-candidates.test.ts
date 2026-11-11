@@ -44,3 +44,27 @@ test("candidates refetch when the selected profile is updated in place", async (
   await settle();
   assert.equal(calls, 2);
 });
+
+test("a response for inputs changed during the debounce wait is dropped", async () => {
+  let release: (body: unknown) => void = () => {};
+  const bodies: string[] = [];
+  g.fetch = (_path: string, init: { body: string }) => {
+    bodies.push(init.body);
+    if (bodies.length === 1) {
+      return new Promise((resolve) => { release = (b) => resolve(new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } })); });
+    }
+    return Promise.resolve(new Response(JSON.stringify({ candidates: [{ name: "new", kind: "local" }] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+  const { ref } = await import("vue");
+  const local = ref("- {name: old}");
+  store.profiles = [{ id: "p2", name: "p2", configPath: "", autoUpdate: false, createdAt: "t0", updatedAt: "t0" }];
+  const { state } = useChainCandidates(() => "p2", () => local.value, () => true);
+  await settle();               // request A (old YAML) is out
+  local.value = "- {name: new}"; // debounce starts; A still pending
+  await nextTick();
+  release({ candidates: [{ name: "old", kind: "local" }] });
+  await settle();
+  assert.deepEqual(state.candidates.map((item) => item.name), [], "stale response must not land");
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.deepEqual(state.candidates.map((item) => item.name), ["new"]);
+});

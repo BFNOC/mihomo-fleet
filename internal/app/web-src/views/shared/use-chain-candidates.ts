@@ -91,7 +91,15 @@ export function useChainCandidates(
 
   function schedule(delay: number): void {
     if (timer) clearTimeout(timer);
-    if (!active()) return;
+    // Inputs changed: whatever is in flight answers for the old ones. Without
+    // this, during the debounce wait an older response was still accepted
+    // (requestId only advanced when the new request actually went out).
+    requestId += 1;
+    if (!active()) {
+      state.loading = false;
+      return;
+    }
+    state.loading = true;
     timer = setTimeout(() => {
       timer = null;
       void fetchNow();

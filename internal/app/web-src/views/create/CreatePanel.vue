@@ -307,7 +307,7 @@ function cancel(): void {
     </div>
     <div class="stacked">
       <span>链路顺序</span>
-      <ChainOrderField v-model="form.chain" :candidates="chainCandidates.state" @dirty="markCreateDirty" />
+      <ChainOrderField v-model="form.chain" :candidates="chainCandidates.state" @dirty="markCreateDirty" @retry="chainCandidates.refresh()" />
     </div>
   </div>
   <div class="actions">

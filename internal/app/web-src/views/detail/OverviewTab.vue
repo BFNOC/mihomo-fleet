@@ -323,7 +323,7 @@ const overviewAutoRestart = computed(() => {
         </div>
         <div class="stacked">
           <span>链路顺序</span>
-          <ChainOrderField v-model="editChain" :candidates="chainCandidates.state" @dirty="markDirty" />
+          <ChainOrderField v-model="editChain" :candidates="chainCandidates.state" @dirty="markDirty" @retry="chainCandidates.refresh()" />
         </div>
         <label class="checkline">
           <input id="editChainUdp" v-model="editChainUdp" type="checkbox" @change="markDirty">
