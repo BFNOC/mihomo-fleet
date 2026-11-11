@@ -323,7 +323,9 @@ type ProxyInstanceOption struct {
 //
 //   - 1: initial format.
 //   - 2: BundleInstance.ConfigOverride.
-const FleetBundleVersion = 2
+//   - 3: BundleInstance.ChainUDP. Added in 1.7.0 without a bump, so 1.6.1
+//     accepted those bundles and dropped the field on re-export.
+const FleetBundleVersion = 3
 
 const fleetBundleMinVersion = 1
 

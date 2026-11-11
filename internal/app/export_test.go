@@ -569,3 +569,15 @@ func TestHandleImportSingleFlightRejectsConcurrent(t *testing.T) {
 		t.Fatal("a rejected concurrent import must not create anything")
 	}
 }
+
+// C8: ChainUDP needs its own bundle version so a release that predates it
+// refuses the bundle instead of silently dropping the field; v2 bundles
+// (no ChainUDP) still import.
+func TestFleetBundleVersionCoversChainUDP(t *testing.T) {
+	if FleetBundleVersion < 3 {
+		t.Fatalf("FleetBundleVersion = %d, want >= 3 since BundleInstance.ChainUDP", FleetBundleVersion)
+	}
+	if err := validateBundle(&FleetBundle{Version: 2}); err != nil {
+		t.Fatalf("v2 bundle rejected: %v", err)
+	}
+}
