@@ -36,6 +36,8 @@ export interface DashboardSampler {
   connectionRows: ConnectionRow[];
   connectionTotals: Map<string, ConnectionTotals>;
   sampledAt: number;
+  /** Latest sampleInstance() call; an older one finishing later is dropped. */
+  requestSeq: number;
 }
 
 // Raw JSON body of GET /api/mihomo/{id}/connections -- the controller's direct
@@ -64,6 +66,7 @@ function emptySampler(): DashboardSampler {
     connectionRows: [],
     connectionTotals: new Map<string, ConnectionTotals>(),
     sampledAt: 0,
+    requestSeq: 0,
   };
 }
 
@@ -146,13 +149,18 @@ export function fleetConnectionRows(instances: Pick<FleetInstance, "id" | "name"
 // giant delta.
 export async function sampleInstance(instanceId: string, fetchConnections: FetchConnections, now: number): Promise<void> {
   const entry = sampler(instanceId);
+  // The periodic sample and an on-demand one (after closing a connection) can
+  // overlap. Without this, the older response landing second restored the
+  // connection just closed and appended an out-of-order timestamp.
+  const seq = ++entry.requestSeq;
   let payload: ConnectionsFetchPayload | null | undefined = null;
   try {
     payload = await fetchConnections(instanceId);
   } catch {
-    resetConnectionState(entry);
+    if (seq === entry.requestSeq) resetConnectionState(entry);
     return;
   }
+  if (seq !== entry.requestSeq) return;
   const current: TrafficCounterSample = {
     at: now,
     uploadTotal: Number(payload?.uploadTotal) || 0,

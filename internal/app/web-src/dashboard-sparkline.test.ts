@@ -54,3 +54,15 @@ test("per-instance series seen by a computed advances on every heartbeat", async
     assert.equal(length.value, tick, `sample ${tick} must reach the chart`);
   }
 });
+
+test("an older connections sample finishing last does not overwrite a newer one", async () => {
+  const { instanceConnections, instanceSeries } = await import("./dashboard.ts");
+  let releaseOld: (value: unknown) => void = () => {};
+  const old = sampleInstance("i2", () => new Promise((resolve) => { releaseOld = resolve; }) as never, 1000);
+  await sampleInstance("i2", async () => ({ uploadTotal: 10, downloadTotal: 10, connections: [] }), 2000);
+  releaseOld({ uploadTotal: 5, downloadTotal: 5, connections: [{ id: "c1", metadata: {} }] });
+  await old;
+  assert.equal(instanceConnections("i2"), 0, "the closed connection must not come back");
+  const ats = instanceSeries("i2")!.samples.map((sample) => sample.at);
+  assert.deepEqual(ats, [...ats].sort((a, b) => a - b), "timestamps must stay ordered");
+});
