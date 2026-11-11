@@ -60,3 +60,8 @@ test("summarizeImportResult leads with a count line and one line per item", () =
 test("summarizeImportResult reports the count line even for an empty bundle", () => {
   assert.deepEqual(summarizeImportResult({ profiles: [], instances: [] }), ["已导入 0 个配置档、0 个实例。"]);
 });
+
+test("the backend's bundle-version error is localized", async () => {
+  const { localizedMessage } = await import("./messages.ts");
+  assert.equal(localizedMessage("unsupported bundle version 4 (expected 1 to 3)"), "备份文件版本 4 不受支持（当前程序支持版本 1–3）。");
+});

@@ -198,7 +198,7 @@ export const errorPatterns: readonly ErrorPatternEntry[] = [
   ],
   // Fleet backup / export-import (feature #7, docs/feature-roadmap-post-1.3.md #7).
   [/^malformed import bundle: (.+)$/, (match) => `导入文件不是合法的备份文件：${match[1]}`],
-  [/^unsupported bundle version (\d+) \(expected (\d+)\)$/, (match) => `备份文件版本 ${match[1]} 不受支持（当前程序支持版本 ${match[2]}）。`],
+  [/^unsupported bundle version (\d+) \(expected (\d+) to (\d+)\)$/, (match) => `备份文件版本 ${match[1]} 不受支持（当前程序支持版本 ${match[2]}–${match[3]}）。`],
   [/^import bundle is larger than (\d+) bytes$/, (match) => `导入文件超过 ${match[1]} 字节限制。`],
   [/^instance "(.+)" references unknown profile "(.+)"$/, (match) => `实例 ${match[1]} 引用了备份文件中不存在的配置档 ${match[2]}。`],
   [/^create profile "(.+)": (.+)$/, (match) => `创建配置档 ${match[1]} 失败：${match[2]}`],
