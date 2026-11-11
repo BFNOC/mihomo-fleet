@@ -6,7 +6,7 @@ import { formatBatchMessage } from "../format.ts";
 import type { BatchActionPayload } from "../format.ts";
 import { store } from "../store.ts";
 import type { FleetInstance } from "../state.ts";
-import { refresh } from "./fleet-refresh.ts";
+import { refresh, supersedePendingRefresh } from "./fleet-refresh.ts";
 import { clearActiveDetailCache } from "./navigation.ts";
 
 // Instance lifecycle: create one, or act on the whole fleet at once.
@@ -69,6 +69,7 @@ export async function runBulkAction(action: string): Promise<void> {
   try {
     store.bulkRunning = true;
     const payload = await api<BatchActionPayload>(`/api/instances?action=${encodeURIComponent(action)}`, { method: "POST" });
+    supersedePendingRefresh();
     store.instances = payload.instances || store.instances;
     showMessage(formatBatchMessage(action, payload), payload.failed ? "error" : "info");
   } catch (err) {

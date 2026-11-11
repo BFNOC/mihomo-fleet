@@ -35,6 +35,15 @@ export interface RefreshOptions {
 // has been superseded drops its response instead of clobbering fresher data.
 let refreshSeq = 0;
 
+/**
+ * For writers of store.instances outside refresh() (post-action list reloads,
+ * bulk results): makes any refresh already in flight drop its result instead
+ * of landing after this write and reverting it to the pre-action state.
+ */
+export function supersedePendingRefresh(): void {
+  refreshSeq += 1;
+}
+
 // The queue id of the error this module last raised via the catch below, so a
 // later successful refresh can take that one entry back down. An error only
 // expires 15s after its last repeat (notifications.ts), so a poll failure

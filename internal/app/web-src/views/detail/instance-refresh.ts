@@ -1,4 +1,5 @@
 import { api } from "../../api.ts";
+import { supersedePendingRefresh } from "../../services/fleet-refresh.ts";
 import type { FleetInstance, FleetState } from "../../state.ts";
 
 /**
@@ -14,6 +15,7 @@ import type { FleetInstance, FleetState } from "../../state.ts";
 export async function refreshInstancesList(state: FleetState): Promise<void> {
   try {
     const payload = await api<{ instances?: FleetInstance[] }>("/api/instances");
+    supersedePendingRefresh();
     state.instances = payload.instances || state.instances;
     if (!state.activeId && state.instances.length) state.activeId = state.instances[0]!.id;
     if (state.activeId && !state.instances.some((item) => item.id === state.activeId)) {
