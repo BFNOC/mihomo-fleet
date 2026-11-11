@@ -23,6 +23,19 @@ registerActions({
   showMessage: () => 1,
 });
 
+test("creating a subscription profile without a URL is refused locally", async () => {
+  sent.length = 0;
+  chrome.profileBusy = false;
+  store.profileCreating = true;
+  store.profileCreateSource = "subscription";
+  ctx.populateProfileForm(null);
+  ctx.profileNameInput.value = "Sub";
+  ctx.subscriptionUrlInput.value = "  ";
+  await saveProfile();
+  assert.equal(sent.length, 0);
+  assert.equal(configEditorErrorText.value, "请填写订阅链接。");
+});
+
 test("a rename of a manual profile does not resend the clean YAML", async () => {
   sent.length = 0;
   store.profileCreating = false;

@@ -94,6 +94,13 @@ export async function saveProfile(): Promise<void> {
     setConfigEditorError("配置档已变化，请重新选择后再保存。");
     return;
   }
+  // The backend reads an empty subscriptionUrl on create as "manual profile",
+  // so a forgotten URL used to silently produce a manual profile holding the
+  // default YAML while the UI reported success.
+  if (creating && source === "subscription" && !subscriptionUrlInput.value.trim()) {
+    setConfigEditorError("请填写订阅链接。");
+    return;
+  }
   setConfigEditorError("");
   const operationContext = captureOperationContext(savedProfileId);
   // Only what the user changed: an untouched field must not overwrite a newer
