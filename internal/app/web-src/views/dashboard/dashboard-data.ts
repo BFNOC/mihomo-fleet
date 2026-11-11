@@ -128,8 +128,13 @@ const perInstanceSamples = computed<Map<string, InstanceSample>>(() => {
   void heartbeat.value;
   const map = new Map<string, InstanceSample>();
   for (const item of store.instances) {
+    // instanceSeries() hands back the sampler's own object, which pushSample()
+    // mutates in place. Passing it straight through gives DashboardSparkline the
+    // same prop identity every tick, so its computeds never re-ran and the
+    // per-instance charts froze. A per-tick copy is a new identity each time.
+    const series = instanceSeries(item.id);
     map.set(item.id, {
-      series: instanceSeries(item.id) ?? createSeries(),
+      series: series ? { capacity: series.capacity, samples: series.samples.slice() } : createSeries(),
       connections: instanceConnections(item.id),
     });
   }
