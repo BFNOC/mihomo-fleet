@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -200,5 +202,39 @@ func TestHandleProfilePutStaleExpectedConfigReturnsConflict(t *testing.T) {
 	}
 	if got, _ := c.store.ReadProfileConfig(profile.ID); got != defaultUserConfig {
 		t.Fatalf("conflicting PUT wrote config: %q", got)
+	}
+}
+
+// B2: a fetch that succeeds but cannot be applied is still a failed update:
+// it must be recorded and back off, not retry every minute silently.
+func TestControllerRefreshProfileSubscriptionApplyFailureRecordsError(t *testing.T) {
+	withSubscriptionTargetAllowed(t)
+	c := newBatchTestController(t)
+	c.subscriptionClient = &http.Client{Timeout: 5 * time.Second}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(subscriptionConfig))
+	}))
+	defer server.Close()
+
+	profile, err := c.store.CreateSubscriptionProfile("Provider", server.URL, true, 15, &subscriptionFetchResult{Config: defaultUserConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Make the config write fail: the profile directory becomes read-only.
+	dir := filepath.Dir(profile.ConfigPath)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if _, _, err := c.refreshProfileSubscription(context.Background(), profile.ID); err == nil {
+		t.Fatal("expected the apply to fail on a read-only profile directory")
+	}
+	updated, _ := c.store.GetProfile(profile.ID)
+	if updated.LastUpdateError == "" {
+		t.Fatal("apply failure was not recorded in LastUpdateError")
+	}
+	if profileSubscriptionDue(updated, time.Now().UTC()) {
+		t.Fatal("apply failure must back off like a fetch failure")
 	}
 }

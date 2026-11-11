@@ -628,3 +628,25 @@ func TestNormalizeSubscriptionIntervalClampsAutoUpdate(t *testing.T) {
 		t.Fatalf("normalizeSubscriptionInterval(1, false) = %d, want 1", got)
 	}
 }
+
+// B2: a home-page header the store would reject must not fail the update.
+func TestSubscriptionHomeURLDropsOrNormalizesBadHeader(t *testing.T) {
+	cases := map[string]string{
+		"example.com":              "",
+		"HTTPS://Example.com/home": "https://Example.com/home",
+		"ftp://example.com":        "",
+		" https://example.com/x ":  "https://example.com/x",
+		"javascript:alert(1)":      "",
+	}
+	for raw, want := range cases {
+		h := http.Header{}
+		h.Set("profile-web-page-url", raw)
+		got := subscriptionHomeURL(h)
+		if got != want {
+			t.Errorf("subscriptionHomeURL(%q) = %q, want %q", raw, got, want)
+		}
+		if err := validateHomeURL(got); err != nil {
+			t.Errorf("subscriptionHomeURL(%q) = %q, which the store rejects: %v", raw, got, err)
+		}
+	}
+}

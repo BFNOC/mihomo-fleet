@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -88,7 +89,7 @@ func fetchSubscription(ctx context.Context, client *http.Client, subscriptionURL
 		Config:                config,
 		Name:                  subscriptionName(res.Header, parsed),
 		UpdateIntervalMinutes: subscriptionUpdateInterval(res.Header),
-		HomeURL:               strings.TrimSpace(res.Header.Get("profile-web-page-url")),
+		HomeURL:               subscriptionHomeURL(res.Header),
 		Info:                  subscriptionInfo(res.Header),
 	}, nil
 }
@@ -471,4 +472,27 @@ func subscriptionSelectionSet(config string) map[string]map[string]bool {
 		valid[group.Name] = nil
 	}
 	return valid
+}
+
+// subscriptionHomeURL reads the optional profile-web-page-url header. It is
+// decoration: a provider that sends it without a scheme (`example.com`) or in
+// another case (`HTTPS://...`) used to fail the whole update via
+// validateHomeURL -- on every scheduled retry, since apply failures were not
+// recorded either. Normalize what is usable and drop the rest.
+func subscriptionHomeURL(header http.Header) string {
+	raw := strings.TrimSpace(header.Get("profile-web-page-url"))
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		log.Printf("subscription: ignoring profile-web-page-url %q: not an absolute http(s) URL", raw)
+		return ""
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		log.Printf("subscription: ignoring profile-web-page-url %q: scheme %q is not http(s)", raw, parsed.Scheme)
+		return ""
+	}
+	return parsed.String()
 }

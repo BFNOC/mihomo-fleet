@@ -31,7 +31,20 @@ func (c *Controller) refreshProfileSubscription(ctx context.Context, id string) 
 		c.store.SetProfileUpdateError(id, err.Error())
 		return nil, nil, err
 	}
-	return c.store.ApplySubscriptionFetchForURL(id, profile.SubscriptionURL, fetched)
+	updated, changes, err := c.store.ApplySubscriptionFetchForURL(id, profile.SubscriptionURL, fetched)
+	if err != nil {
+		// A fetched-but-not-applied update is a failed update too. Without
+		// recording it LastUpdateError stayed empty and the scheduler, seeing
+		// the profile still due, retried every minute with nothing in the UI.
+		// A URL changed mid-update is not this profile's error: the new URL has
+		// its own refresh coming.
+		log.Printf("subscription: apply update for profile %s failed: %v", id, err)
+		if current, ok := c.store.GetProfile(id); ok && current.SubscriptionURL == profile.SubscriptionURL {
+			c.store.SetProfileUpdateError(id, err.Error())
+		}
+		return nil, nil, err
+	}
+	return updated, changes, nil
 }
 
 func (c *Controller) beginSubscriptionUpdate(id string) bool {
