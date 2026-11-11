@@ -168,12 +168,25 @@ async function cloneInstance(): Promise<void> {
   const instance = selected.value;
   if (!instance || store.cloneRunning) return;
   if (store.editDirty && !window.confirm("有未保存的修改。确定放弃并克隆并切换到新实例吗？")) return;
+  // Navigation and editing stay available while the clone request is out. Only
+  // jump to the clone if the user is still where they clicked; otherwise the
+  // switch below would throw away whatever they moved on to (and clear its
+  // dirty flag without asking).
+  const startedOn = { activeId: store.activeId, view: store.view, editVersion: store.editVersion };
   try {
     store.cloneRunning = true;
     const created = await api<FleetInstance>(`/api/instances/${instance.id}/clone`, {
       method: "POST",
       body: JSON.stringify({}),
     });
+    const stillHere = store.activeId === startedOn.activeId
+      && store.view === startedOn.view
+      && store.editVersion === startedOn.editVersion;
+    if (!stillHere) {
+      actions.showMessage(`已克隆 ${instance.name}，新实例为 ${created.name}。`);
+      await refreshInstancesList(store);
+      return;
+    }
     store.activeId = created.id;
     localStorage.setItem("activeInstance", created.id);
     store.creating = false;
