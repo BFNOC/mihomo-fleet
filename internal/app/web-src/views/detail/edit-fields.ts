@@ -78,36 +78,44 @@ export function resyncEditFields(form: EditFields, base: EditFields, next: EditF
   return { form: merged, conflicts };
 }
 
-/** The full PUT body the form represents, mode-dependent fields resolved. */
+/**
+ * The full PUT body the form represents. In rule mode the chain-only fields
+ * are left out rather than sent empty: they do nothing there, and clearing
+ * them meant switching back to global-chain found the local proxies and chain
+ * gone (while chainUdp, always sent, survived the same round trip).
+ */
 export function editPutBody(fields: EditFields): Record<string, unknown> {
-  const chainMode = fields.mode === instanceModes.globalChain;
-  return {
+  const body: Record<string, unknown> = {
     name: fields.name.trim(),
     profileId: fields.profileId,
     mixedPort: Number(fields.mixedPort),
     proxyBind: fields.proxyBind.trim(),
     controllerPort: Number(fields.controllerPort),
     mode: fields.mode,
-    localProxies: chainMode ? fields.localProxies : "",
     configOverride: fields.configOverride,
-    chain: chainMode ? [...fields.chain] : [],
     chainUdp: fields.chainUdp,
     autoRestart: fields.autoRestart,
   };
+  if (fields.mode === instanceModes.globalChain) {
+    body.localProxies = fields.localProxies;
+    body.chain = [...fields.chain];
+  }
+  return body;
 }
 
 /**
- * Only the body keys whose resolved value differs from the baseline's. Diffed
- * after editPutBody() so mode-dependent clearing still goes out: switching
- * global-chain -> rule sends `localProxies: ""` and `chain: []` exactly as the
- * full body did.
+ * Only the body keys whose resolved value differs from the baseline's. Keys
+ * absent from the form's body (chain-only fields in rule mode) are never sent.
  */
 export function changedEditBody(form: EditFields, base: EditFields): Record<string, unknown> {
   const wanted = editPutBody(form);
   const original = editPutBody(base);
   const body: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(wanted)) {
-    if (!sameValue(value, original[key])) body[key] = value;
+    // A key the baseline's body leaves out (chain-only fields while it was in
+    // rule mode) is still stored on the server; compare against that value.
+    const was = key in original ? original[key] : (base as unknown as Record<string, unknown>)[key];
+    if (!sameValue(value, was)) body[key] = value;
   }
   return body;
 }

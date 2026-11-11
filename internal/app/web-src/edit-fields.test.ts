@@ -24,8 +24,11 @@ test("an untouched form sends nothing; one edit sends one key", () => {
   assert.deepEqual(changedEditBody({ ...base, chain: ["节点选择", "a"] }, base), { chain: ["节点选择", "a"] });
 });
 
-test("switching to rule mode still clears the chain-only fields", () => {
-  assert.deepEqual(changedEditBody({ ...base, mode: "rule" }, base), { mode: "rule", localProxies: "", chain: [] });
+test("switching to rule mode keeps the chain-only fields stored", () => {
+  assert.deepEqual(changedEditBody({ ...base, mode: "rule" }, base), { mode: "rule" });
+  // Back to global-chain from a rule-mode baseline that still holds them: nothing to resend.
+  const ruleBase = { ...base, mode: "rule" };
+  assert.deepEqual(changedEditBody({ ...ruleBase, mode: "global-chain" }, ruleBase), { mode: "global-chain" });
 });
 
 test("a profile fallback on the form counts as a change against a dangling baseline", () => {
