@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { localizedMessage } from "../../messages.ts";
+import { resetGeoLookups } from "../../dashboard.ts";
 import {
   applyGeoUpdateSSE,
   fetchGeoUpdateStatus,
@@ -101,6 +102,8 @@ async function onApplyGeoUpdate(): Promise<void> {
   } catch (err) {
     geoError.value = localizedMessage(err instanceof Error ? err.message : String(err));
   } finally {
+    // Also on failure: a multi-file update can replace some files before erroring.
+    resetGeoLookups();
     geoApplying.value = false;
     geoProgress.value = null;
   }

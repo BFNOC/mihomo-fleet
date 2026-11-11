@@ -211,6 +211,23 @@ const emptyGeoEntry: GeoEntry = { country: "", asn: 0, org: "" };
 const geoCache = new Map<string, GeoEntry>();
 const geoPending = new Set<string>();
 let geoAvailable = true;
+// Bumped by resetGeoLookups(); a lookup started before the reset must not write
+// answers from the replaced database back into the fresh cache.
+let geoGeneration = 0;
+
+/**
+ * Forget every cached answer and the "no database" latch. "Kept for the
+ * session" above holds only while the database files stay the same: installing
+ * or updating them through the system view otherwise left the country/ASN
+ * columns blank (or old) until a full page reload. The backend reopens the
+ * files by mtime, so clearing this side is enough.
+ */
+export function resetGeoLookups(): void {
+  geoGeneration += 1;
+  geoCache.clear();
+  geoPending.clear();
+  geoAvailable = true;
+}
 
 // JSON body POST /api/geoip resolves to. `available: false` means the
 // controller has no country database staged at all (a deployment choice, not a
@@ -240,8 +257,10 @@ export function requestGeo(rows: Pick<FleetConnectionRow, "ip">[]): void {
     wanted.push(ip);
   }
   if (!wanted.length) return;
+  const generation = geoGeneration;
   geoFetch(wanted)
     .then((result) => {
+      if (generation !== geoGeneration) return;
       // Stop asking only when the controller has NEITHER database. One present
       // without the other is a normal deployment, and blanking both columns
       // over it would throw away the half that works.
@@ -262,6 +281,7 @@ export function requestGeo(rows: Pick<FleetConnectionRow, "ip">[]): void {
       // lookup should not permanently blank the column.
     })
     .finally(() => {
+      if (generation !== geoGeneration) return;
       for (const ip of wanted) geoPending.delete(ip);
     });
 }
