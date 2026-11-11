@@ -203,11 +203,13 @@ func (s *Store) load() error {
 		// "degrade, don't die" contract the rest of the store already gives
 		// individual save failures.
 		corruptPath := fmt.Sprintf("%s.corrupt-%d", s.storePath, time.Now().Unix())
+		// If the corrupt file cannot be moved aside, starting empty would save
+		// straight over it and destroy the only recoverable copy. Refuse to
+		// start instead; the error names both paths so it can be fixed by hand.
 		if renameErr := os.Rename(s.storePath, corruptPath); renameErr != nil {
-			log.Printf("WARNING: mihomo-fleet: %s is corrupt (%v) and could not be preserved as %s (%v); starting with an empty store -- the corrupt file is still at %s, back it up before it gets overwritten", s.storePath, err, corruptPath, renameErr, s.storePath)
-		} else {
-			log.Printf("WARNING: mihomo-fleet: %s was corrupt (%v) and has been preserved as %s; starting with an empty store. Inspect that file if you need to recover instances/profiles by hand.", s.storePath, err, corruptPath)
+			return fmt.Errorf("%s is corrupt (%v) and could not be preserved as %s (%v); refusing to start with an empty store over it -- move or repair the file by hand", s.storePath, err, corruptPath, renameErr)
 		}
+		log.Printf("WARNING: mihomo-fleet: %s was corrupt (%v) and has been preserved as %s; starting with an empty store. Inspect that file if you need to recover instances/profiles by hand.", s.storePath, err, corruptPath)
 		return s.saveLocked()
 	}
 	for _, item := range data.Instances {

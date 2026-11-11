@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -2454,5 +2456,31 @@ func TestStoreLegacyMigratedProfileSurvivesInstanceDelete(t *testing.T) {
 	}
 	if got, err := store.ReadProfileConfig(clone.ProfileID); err != nil || got != defaultUserConfig {
 		t.Fatalf("clone's profile config after deleting the original: %q, %v", got, err)
+	}
+}
+
+// When the corrupt file cannot be moved aside, NewStore must fail rather than
+// save an empty store over the only recoverable copy.
+func TestStoreLoadRefusesToOverwriteUnpreservedCorruptStore(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "instances.json")
+	corrupt := []byte("{not json")
+	if err := os.WriteFile(storePath, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Occupy every backup name NewStore could pick in the next few seconds
+	// with a non-empty directory, so the rename fails.
+	now := time.Now().Unix()
+	for ts := now; ts <= now+3; ts++ {
+		blocker := filepath.Join(storePath+".corrupt-"+strconv.FormatInt(ts, 10), "x")
+		if err := os.MkdirAll(blocker, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := NewStore(dir); err == nil {
+		t.Fatal("NewStore succeeded although the corrupt store could not be preserved")
+	}
+	if raw, _ := os.ReadFile(storePath); string(raw) != string(corrupt) {
+		t.Fatalf("corrupt store was overwritten: %q", raw)
 	}
 }
