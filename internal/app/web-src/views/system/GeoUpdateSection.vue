@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref, watch } from "vue";
+import { store } from "../../store.ts";
 import { localizedMessage } from "../../messages.ts";
 import { resetGeoLookups } from "../../dashboard.ts";
 import {
@@ -58,10 +59,17 @@ async function refreshGeoStatus(): Promise<void> {
   }
 }
 
+let proxyInstancesSeq = 0;
+
 async function refreshProxyInstances(): Promise<void> {
+  const seq = ++proxyInstancesSeq;
   try {
-    proxyInstances.value = await fetchProxyInstances();
-  } catch {
+    const list = await fetchProxyInstances();
+    if (seq !== proxyInstancesSeq) return;
+    proxyInstances.value = list;
+  } catch (err) {
+    if (seq !== proxyInstancesSeq) return;
+    console.warn("Unable to load proxy instances for geo download.", err);
     proxyInstances.value = [];
   }
   if (!proxyInstances.value.some((instance) => instance.id === selectedProxyInstanceId.value)) {
@@ -108,6 +116,15 @@ async function onApplyGeoUpdate(): Promise<void> {
     geoProgress.value = null;
   }
 }
+
+// The list is "running instances that can proxy the download". It used to be
+// fetched only on entering the view, so starting or stopping an instance while
+// the view was open left a stopped one selectable (or a new one missing).
+const runningIdsKey = computed(() =>
+  store.instances.filter((item) => item.status === "running").map((item) => item.id).sort().join("\n"));
+watch(runningIdsKey, () => {
+  if (store.view === "system") void refreshProxyInstances();
+});
 
 defineExpose({ refreshGeoStatus, refreshProxyInstances, geoLoading });
 </script>
