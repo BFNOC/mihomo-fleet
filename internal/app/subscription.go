@@ -438,3 +438,37 @@ func normalizeSubscriptionInterval(minutes int, autoUpdate bool) int {
 	}
 	return minutes
 }
+
+// subscriptionSelectionSet is profileSelectionSet for a refreshed config, plus
+// the groups whose members the static YAML cannot list: anything pulling from
+// `use:` providers or `include-all*`. Those map to a nil set, meaning "cannot
+// judge, keep the selection" -- otherwise every refresh deleted a provider node
+// the user had picked through the live controller, because the static parse
+// never sees provider nodes (and skips use-only groups entirely).
+func subscriptionSelectionSet(config string) map[string]map[string]bool {
+	groups, _ := parseProfileProxyGroups(config, nil)
+	valid := profileSelectionSet(groups)
+	var cfg struct {
+		ProxyGroups []struct {
+			Name                string   `yaml:"name"`
+			Use                 []string `yaml:"use"`
+			IncludeAll          bool     `yaml:"include-all"`
+			IncludeAllProxies   bool     `yaml:"include-all-proxies"`
+			IncludeAllProviders bool     `yaml:"include-all-providers"`
+		} `yaml:"proxy-groups"`
+	}
+	if err := yaml.Unmarshal([]byte(config), &cfg); err != nil {
+		return valid
+	}
+	for _, group := range cfg.ProxyGroups {
+		name := strings.TrimSpace(group.Name)
+		if name == "" || (len(group.Use) == 0 && !group.IncludeAll && !group.IncludeAllProxies && !group.IncludeAllProviders) {
+			continue
+		}
+		if valid == nil {
+			valid = make(map[string]map[string]bool)
+		}
+		valid[group.Name] = nil
+	}
+	return valid
+}

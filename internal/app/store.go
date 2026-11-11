@@ -502,11 +502,10 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 	// mirrors the one further below so a nil fetched still surfaces the same
 	// "profile not found"/URL-mismatch errors first when both conditions
 	// apply, matching the original error precedence.
-	var groups []ProfileProxyGroup
+	var validSelections map[string]map[string]bool
 	if fetched != nil {
-		groups, _ = parseProfileProxyGroups(fetched.Config, nil)
+		validSelections = subscriptionSelectionSet(fetched.Config)
 	}
-	validSelections := profileSelectionSet(groups)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -605,8 +604,7 @@ func (s *Store) ReplaceProfileSubscription(id, expectedURL, newURL string, fetch
 	// See ApplySubscriptionFetchForURL's matching comment above: the YAML
 	// parse is independent of Store state and the most expensive step of a
 	// refresh, so it runs before the lock is taken.
-	groups, _ := parseProfileProxyGroups(fetched.Config, nil)
-	validSelections := profileSelectionSet(groups)
+	validSelections := subscriptionSelectionSet(fetched.Config)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1524,6 +1522,16 @@ func profileSelectionSet(groups []ProfileProxyGroup) map[string]map[string]bool 
 	return out
 }
 
+// selectionStillValid: a group absent from valid has vanished; a group present
+// with a nil set has members the static config cannot enumerate.
+func selectionStillValid(valid map[string]map[string]bool, group, proxy string) bool {
+	names, ok := valid[group]
+	if ok && names == nil {
+		return true
+	}
+	return names[proxy]
+}
+
 // SelectionReconciliation reports that a subscription refresh silently moved
 // an instance's active proxy selection because the node it had selected
 // (SelectedGroup/SelectedProxy) no longer exists in the refreshed content.
@@ -1557,12 +1565,12 @@ func reconcileInstanceSelection(item *Instance, valid map[string]map[string]bool
 		return nil
 	}
 	for group, proxy := range item.SelectedProxies {
-		if !valid[group][proxy] {
+		if !selectionStillValid(valid, group, proxy) {
 			delete(item.SelectedProxies, group)
 		}
 	}
 	var change *SelectionReconciliation
-	if item.SelectedGroup != "" && !valid[item.SelectedGroup][item.SelectedProxy] {
+	if item.SelectedGroup != "" && !selectionStillValid(valid, item.SelectedGroup, item.SelectedProxy) {
 		change = &SelectionReconciliation{
 			InstanceID:    item.ID,
 			InstanceName:  item.Name,

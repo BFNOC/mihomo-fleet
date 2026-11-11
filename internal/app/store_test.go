@@ -2366,3 +2366,51 @@ func TestStoreReplaceProfileSubscriptionRejectsStaleExpectedURL(t *testing.T) {
 		t.Fatalf("stale replace overwrote config")
 	}
 }
+
+// A refresh must not drop selections it cannot judge: provider nodes never
+// appear in the static YAML, and a use-only group is not even parsed.
+func TestStoreSubscriptionRefreshKeepsProviderBackedSelections(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := `proxies:
+  - {name: a, type: socks5, server: 127.0.0.1, port: 1080}
+proxy-providers:
+  p: {type: http, url: "https://example.com/p", path: ./p.yaml}
+proxy-groups:
+  - {name: Static, type: select, proxies: [a, DIRECT]}
+  - {name: Prov, type: select, use: [p]}
+  - {name: Mixed, type: select, proxies: [a], use: [p]}
+  - {name: All, type: select, include-all: true}
+rules:
+  - MATCH,Static
+`
+	profile, err := store.CreateSubscriptionProfile("Sub", "https://example.com/s", false, 0, &subscriptionFetchResult{Config: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("I", profile.ID, "", 28101, 29101)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for group, proxy := range map[string]string{"Static": "a", "Prov": "p-node", "Mixed": "p-node-2", "All": "x", "Gone": "y"} {
+		if _, err := store.SetSelection(item.ID, group, proxy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := store.ApplySubscriptionFetchForURL(profile.ID, "https://example.com/s", &subscriptionFetchResult{Config: config}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Get(item.ID)
+	want := map[string]string{"Static": "a", "Prov": "p-node", "Mixed": "p-node-2", "All": "x"}
+	if len(got.SelectedProxies) != len(want) {
+		t.Fatalf("SelectedProxies = %v, want %v", got.SelectedProxies, want)
+	}
+	for group, proxy := range want {
+		if got.SelectedProxies[group] != proxy {
+			t.Fatalf("SelectedProxies = %v, want %v", got.SelectedProxies, want)
+		}
+	}
+}
