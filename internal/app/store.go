@@ -1396,7 +1396,13 @@ func (s *Store) Delete(id string) error {
 			return nil
 		}
 	}
-	return os.RemoveAll(dir)
+	// The record is already gone and saved, so the delete has happened. A
+	// leftover directory is logged, not returned: returning it made the API
+	// answer 500 and skip the log/watchdog cleanup for a deleted instance.
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("WARNING: mihomo-fleet: instance %s deleted but its directory %s could not be removed: %v", id, dir, err)
+	}
+	return nil
 }
 
 // DeleteProfile removes a profile record and its on-disk config directory

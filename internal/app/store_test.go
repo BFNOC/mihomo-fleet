@@ -2484,3 +2484,35 @@ func TestStoreLoadRefusesToOverwriteUnpreservedCorruptStore(t *testing.T) {
 		t.Fatalf("corrupt store was overwritten: %q", raw)
 	}
 }
+
+// B8: once the record is removed and saved, a directory that cannot be
+// removed must not turn the delete into an error.
+func TestStoreDeleteSucceedsWhenDirectoryRemovalFails(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create("A", "", "", 28141, 29141)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instDir := filepath.Join(dir, "instances", item.ID)
+	if err := os.MkdirAll(filepath.Join(instDir, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instDir, "sub", "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(instDir, "sub"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(instDir, "sub"), 0o700) })
+	if err := store.Delete(item.ID); err != nil {
+		t.Fatalf("Delete() = %v, want nil once the record is gone", err)
+	}
+	if _, ok := store.Get(item.ID); ok {
+		t.Fatal("record still present")
+	}
+}
