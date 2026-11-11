@@ -2,6 +2,7 @@ import { onUnmounted, reactive, watch } from "vue";
 
 import { api } from "../../api.ts";
 import { localizedMessage } from "../../messages.ts";
+import { store } from "../../store.ts";
 import type { ChainCandidate } from "../../chain-rules.ts";
 
 /*
@@ -100,7 +101,14 @@ export function useChainCandidates(
   // Becoming active or switching profile is a discrete user action, so it fetches
   // straight away; keystrokes in the YAML box debounce, because every character
   // would otherwise re-read and re-parse a possibly multi-MB subscription config.
-  watch([active, profileId], () => schedule(0), { immediate: true });
+  //
+  // A subscription refresh or config edit rewrites the profile's YAML without
+  // touching profileId, so the profile's updatedAt is part of the key too;
+  // without it the picker kept offering the pre-refresh nodes until the tab was
+  // left and re-entered.
+  const profileStamp = (): string =>
+    store.profiles.find((item) => item.id === profileId())?.updatedAt ?? "";
+  watch([active, profileId, profileStamp], () => schedule(0), { immediate: true });
   watch(localProxies, () => schedule(debounceMs));
 
   onUnmounted(() => {
