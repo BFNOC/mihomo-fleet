@@ -9,13 +9,12 @@
 //
 // EDIT FORM DIRTY-STATE CONTRACT: `store.editDirty`/`store.editInstanceId`/
 // `store.editVersion` are shared FleetState fields (state.ts), not local to
-// this component. TopBar.vue's instance selector still depends on them via
-// app.ts's selectInstance()/confirmDiscardChanges(), which is unchanged by
-// this migration -- so the population watcher below reproduces the exact
-// same guard app.ts used ("only repopulate the form from fresh instance data
-// when it is not dirty, or the dirty edits belong to a *different*
-// instance -- and never while the form still has focus") rather than
-// simplifying it, to keep that cross-component contract intact.
+// this component; navigation reads them to confirm before discarding. The
+// population watcher below reseeds the whole form for a different instance or
+// a clean form, and resyncs untouched fields of a dirty one (edit-fields.ts).
+// It no longer waits for the form to lose focus: that gate froze the form on
+// edits made elsewhere and, in browsers that keep focus in the input when a
+// sidebar button is clicked, left one instance's values under another's name.
 import { computed, ref, watch } from "vue";
 import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
@@ -32,6 +31,8 @@ import {
   selectionSummary,
 } from "../../format.ts";
 import { refreshInstancesList } from "./instance-refresh.ts";
+import { changedEditBody, editFieldLabel, editFieldsFromInstance, editPutBody, resyncEditFields } from "./edit-fields.ts";
+import type { EditFields } from "./edit-fields.ts";
 import { ipCheck, ipCheckPreset, ipCheckUrl, persistIpCheckUrl, pickIpCheckPreset } from "./ip-check.ts";
 import ChainOrderField from "../shared/ChainOrderField.vue";
 import InlineYamlEditor from "../shared/InlineYamlEditor.vue";
@@ -41,7 +42,6 @@ import { useChainCandidates } from "../shared/use-chain-candidates.ts";
 
 const selected = computed(() => activeInstance(store));
 
-const editFormEl = ref<HTMLElement | null>(null);
 const editName = ref("");
 const editProfile = ref("");
 const editMode = ref<string>(instanceModes.rule);
@@ -70,10 +70,6 @@ const chainCandidates = useChainCandidates(
   () => showChainFields.value && store.activeTab === "overview",
 );
 
-function formHasFocus(): boolean {
-  return Boolean(editFormEl.value && editFormEl.value.contains(document.activeElement));
-}
-
 // Mirrors markEditFormDirty() (pre-Vue app.ts) exactly.
 function markDirty(): void {
   store.editInstanceId = selected.value?.id || store.editInstanceId;
@@ -81,31 +77,75 @@ function markDirty(): void {
   store.editVersion += 1;
 }
 
+// What the backend held when the form was last seeded or resynced. Never the
+// form's own fallbacks: comparing against it is how resync and save tell an
+// untouched field from an edited one (edit-fields.ts).
+let editBase: EditFields | null = null;
+
+function currentForm(): EditFields {
+  return {
+    name: editName.value,
+    profileId: editProfile.value,
+    mode: editMode.value,
+    mixedPort: editMixedPort.value,
+    proxyBind: editProxyBind.value,
+    controllerPort: editControllerPort.value,
+    localProxies: editLocalProxies.value,
+    configOverride: editConfigOverride.value,
+    chain: [...editChain.value],
+    chainUdp: editChainUdp.value,
+    autoRestart: editAutoRestart.value,
+  };
+}
+
+function applyForm(fields: EditFields): void {
+  editName.value = fields.name;
+  editProfile.value = fields.profileId;
+  editMode.value = fields.mode;
+  editMixedPort.value = fields.mixedPort;
+  editProxyBind.value = fields.proxyBind;
+  editControllerPort.value = fields.controllerPort;
+  editLocalProxies.value = fields.localProxies;
+  editConfigOverride.value = fields.configOverride;
+  editChain.value = [...fields.chain];
+  editChainUdp.value = fields.chainUdp;
+  editAutoRestart.value = fields.autoRestart;
+}
+
+// Fall back to the first profile when the instance points at one that no
+// longer exists, so a save does not submit an empty profileId. Applied to the
+// form only; the baseline keeps the dangling id, so the fallback counts as a
+// change and is actually sent.
+function withProfileFallback(fields: EditFields): EditFields {
+  const exists = store.profiles.some((profile) => profile.id === fields.profileId);
+  return exists ? fields : { ...fields, profileId: store.profiles[0]?.id ?? "" };
+}
+
+// A different instance, or a clean form, always reseeds; navigation has already
+// asked before discarding unsaved edits. A dirty form on the same instance
+// resyncs field by field instead of freezing entirely -- the
+// old focus gate also blocked the reseed on an instance switch in browsers that
+// do not move focus to a clicked button, leaving A's values under B's header.
 watch(
   selected,
   (instance) => {
     if (!instance) return;
-    if ((!store.editDirty || store.editInstanceId !== instance.id) && !formHasFocus()) {
+    const next = editFieldsFromInstance(instance);
+    // Not dirty also covers navigation's "discard changes" (clearActiveDetailCache
+    // and friends clear the flag): the form must snap back to the server copy.
+    if (!editBase || store.editInstanceId !== instance.id || !store.editDirty) {
       store.editInstanceId = instance.id;
       store.editDirty = false;
       store.editVersion = 0;
-      editName.value = instance.name;
-      // Fall back to the first profile when the instance points at one that no
-      // longer exists. The old renderProfileOptions() did this while rebuilding
-      // the <option> list; with v-model the select would instead show nothing
-      // selected, and a save from that state would submit an empty profileId.
-      editProfile.value = store.profiles.some((profile) => profile.id === instance.profileId)
-        ? instance.profileId
-        : (store.profiles[0]?.id ?? "");
-      editMode.value = instanceMode(instance);
-      editMixedPort.value = String(instance.mixedPort);
-      editProxyBind.value = instance.proxyBind || defaultProxyBind;
-      editControllerPort.value = String(instance.controllerPort);
-      editLocalProxies.value = instance.localProxies || "";
-      editConfigOverride.value = instance.configOverride || "";
-      editChain.value = Array.isArray(instance.chain) ? [...instance.chain] : [];
-      editChainUdp.value = Boolean(instance.chainUdp);
-      editAutoRestart.value = Boolean(instance.autoRestart);
+      editBase = next;
+      applyForm(withProfileFallback(next));
+      return;
+    }
+    const { form, conflicts } = resyncEditFields(currentForm(), editBase, next);
+    editBase = next;
+    applyForm(form);
+    if (conflicts.length) {
+      actions.showMessage(`实例「${instance.name}」的${conflicts.map(editFieldLabel).join("、")}已在别处修改，保存会用你的修改覆盖。`, "error");
     }
   },
   { immediate: true },
@@ -126,25 +166,21 @@ async function saveBasics(): Promise<void> {
     actions.showMessage("请先创建配置档，再保存实例。", "error");
     return;
   }
+  // Only what differs from the server copy the form was seeded from, so an
+  // untouched field cannot overwrite a newer value (edit-fields.ts).
+  const body = editBase ? changedEditBody(currentForm(), editBase) : editPutBody(currentForm());
+  if (!Object.keys(body).length) {
+    store.editDirty = false;
+    actions.showMessage("没有需要保存的修改。");
+    return;
+  }
   if (!saveGate.begin()) return;
   saving.value = true;
   const editVersion = store.editVersion;
   try {
     await api(`/api/instances/${instance.id}`, {
       method: "PUT",
-      body: JSON.stringify({
-        name: editName.value.trim(),
-        profileId: editProfile.value,
-        mixedPort: Number(editMixedPort.value),
-        proxyBind: editProxyBind.value.trim(),
-        controllerPort: Number(editControllerPort.value),
-        mode: editMode.value,
-        localProxies: editMode.value === instanceModes.globalChain ? editLocalProxies.value : "",
-        configOverride: editConfigOverride.value,
-        chain: editMode.value === instanceModes.globalChain ? [...editChain.value] : [],
-        chainUdp: editChainUdp.value,
-        autoRestart: editAutoRestart.value,
-      }),
+      body: JSON.stringify(body),
     });
     if (store.editInstanceId === instance.id && store.editVersion === editVersion) {
       store.editDirty = false;
@@ -238,7 +274,7 @@ const overviewAutoRestart = computed(() => {
       </div>
       <p class="field-note">点击标签行的“测试 IP”后，经这个实例的混合端口请求该网址，网址需返回纯文本 IP 或带 <code>ip</code> 字段的 JSON。</p>
     </section>
-    <section id="editForm" ref="editFormEl" class="panel">
+    <section id="editForm" class="panel">
       <h3>编辑基础信息</h3>
       <label class="stacked">
         <span>名称</span>
