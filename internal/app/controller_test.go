@@ -1574,3 +1574,46 @@ func instanceStatuses(views []InstanceView) map[string]string {
 	}
 	return out
 }
+
+// C5: a port edit must not interleave with a Start. While a start holds the
+// instance's lifecycle lock, the PUT waits; once that start has made the
+// instance busy, the PUT is rejected instead of rewriting ports the running
+// process never bound.
+func TestHandleInstanceUpdateWaitsForStartAndThenRejectsPortChange(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	c := newBatchTestController(t)
+	first := postInstanceJSON(t, c, `{"name":"First","mixedPort":28010,"controllerPort":29010}`, http.StatusCreated)
+
+	lock := c.manager.lifecycleLock(first.ID)
+	lock.Lock() // a Start in its locked phase
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPut, "/api/instances/"+first.ID, strings.NewReader(`{"mixedPort":28012}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		c.handleInstance(rec, req)
+		done <- rec
+	}()
+	select {
+	case rec := <-done:
+		lock.Unlock()
+		t.Fatalf("PUT completed while a start held the lifecycle lock: %d %s", rec.Code, rec.Body.String())
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.manager.mu.Lock()
+	c.manager.starting[first.ID] = true // the start is now running
+	c.manager.mu.Unlock()
+	t.Cleanup(func() {
+		c.manager.mu.Lock()
+		delete(c.manager.starting, first.ID)
+		c.manager.mu.Unlock()
+	})
+	lock.Unlock()
+	rec := <-done
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
+	}
+	if got, _ := c.store.Get(first.ID); got.MixedPort != 28010 {
+		t.Fatalf("mixedPort = %d, want unchanged 28010", got.MixedPort)
+	}
+}

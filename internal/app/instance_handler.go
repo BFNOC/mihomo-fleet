@@ -234,6 +234,22 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		// The running-state checks below and the store write must be one step
+		// with respect to Start: otherwise a Start can slip in between them,
+		// launch on the old ports, and leave the store pointing at new ones the
+		// process never bound. Holding the instance's lifecycle lock makes a
+		// racing Start either finish first (so Busy rejects this edit) or wait
+		// and then fail its own "ports changed while starting" check.
+		// Taken before reading `current`, so the checks see what the write sees;
+		// the existence check first keeps an unknown id from allocating a
+		// lifecycle entry (see lifecycleLock).
+		if _, ok := c.store.Get(id); !ok {
+			http.NotFound(w, r)
+			return
+		}
+		lifecycle := c.manager.lifecycleLock(id)
+		lifecycle.Lock()
+		defer lifecycle.Unlock()
 		current, ok := c.store.Get(id)
 		if !ok {
 			http.NotFound(w, r)
