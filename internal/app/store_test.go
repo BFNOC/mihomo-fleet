@@ -2414,3 +2414,45 @@ rules:
 		}
 	}
 }
+
+// Legacy state (no profiles, config inside the instance dir) migrates into a
+// profile; deleting that instance afterwards must not take the profile's YAML
+// with it while a clone still uses the profile.
+func TestStoreLegacyMigratedProfileSurvivesInstanceDelete(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	dir := t.TempDir()
+	legacyDir := filepath.Join(dir, "instances", "a")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyConfig := filepath.Join(legacyDir, "config.yaml")
+	if err := os.WriteFile(legacyConfig, []byte(defaultUserConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(storedData{Instances: []*Instance{{
+		ID: "a", Name: "A", UserConfigPath: legacyConfig, MixedPort: 28111, ControllerPort: 29111,
+	}}})
+	if err := os.WriteFile(filepath.Join(dir, "instances.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := store.Get("a")
+	profile, ok := store.GetProfile(a.ProfileID)
+	if !ok || strings.HasPrefix(profile.ConfigPath, filepath.Join(dir, "instances")) {
+		t.Fatalf("migrated profile config still inside an instance dir: %+v", profile)
+	}
+	clone, err := store.Clone("a", "B", 28112, 29112)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete("a"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ReadProfileConfig(clone.ProfileID); err != nil || got != defaultUserConfig {
+		t.Fatalf("clone's profile config after deleting the original: %q, %v", got, err)
+	}
+}

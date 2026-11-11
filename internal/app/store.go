@@ -238,9 +238,66 @@ func (s *Store) load() error {
 			item.ProfileID = id
 			s.profiles[id] = profile
 		}
+		s.relocateInstanceOwnedProfileConfigsLocked()
+		return s.saveLocked()
+	}
+	if s.relocateInstanceOwnedProfileConfigsLocked() {
 		return s.saveLocked()
 	}
 	return nil
+}
+
+// instanceDirOwning reports which instance directory a path lives under, if any.
+func (s *Store) instanceDirOwning(path string) string {
+	root := filepath.Join(s.dataDir, "instances") + string(filepath.Separator)
+	clean := filepath.Clean(path)
+	if !strings.HasPrefix(clean, root) {
+		return ""
+	}
+	id, _, _ := strings.Cut(strings.TrimPrefix(clean, root), string(filepath.Separator))
+	return filepath.Join(root, id)
+}
+
+// relocateInstanceOwnedProfileConfigsLocked moves profile configs that still
+// live inside an instance directory -- what the legacy migration above has
+// always produced -- into profiles/<id>/. Delete() removes an instance's whole
+// directory, so a profile left there lost its YAML with the first instance
+// deleted, even while a clone still referenced it. The file is copied, not
+// moved: the old copy goes away with its instance directory, and a failed copy
+// leaves everything as it was (Delete also refuses to remove a directory a
+// profile still points into). Reports whether anything changed.
+func (s *Store) relocateInstanceOwnedProfileConfigsLocked() bool {
+	changed := false
+	for _, profile := range s.profiles {
+		if s.instanceDirOwning(profile.ConfigPath) == "" {
+			continue
+		}
+		oldPath := profile.ConfigPath
+		data, err := os.ReadFile(oldPath)
+		if err != nil {
+			log.Printf("WARNING: mihomo-fleet: profile %s config %s is inside an instance directory and could not be read for relocation: %v", profile.ID, oldPath, err)
+			continue
+		}
+		dir := filepath.Join(s.dataDir, "profiles", profile.ID)
+		newPath := filepath.Join(dir, "config.yaml")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			log.Printf("WARNING: mihomo-fleet: relocating profile %s config: create %s: %v", profile.ID, dir, err)
+			continue
+		}
+		if err := writeFileAtomic(newPath, data, 0o600); err != nil {
+			log.Printf("WARNING: mihomo-fleet: relocating profile %s config to %s: %v", profile.ID, newPath, err)
+			continue
+		}
+		profile.ConfigPath = newPath
+		for _, item := range s.items {
+			if item.ProfileID == profile.ID && filepath.Clean(item.UserConfigPath) == filepath.Clean(oldPath) {
+				item.UserConfigPath = newPath
+			}
+		}
+		log.Printf("mihomo-fleet: relocated profile %s config from %s to %s", profile.ID, oldPath, newPath)
+		changed = true
+	}
+	return changed
 }
 
 func (s *Store) ListProfiles() []*Profile {
@@ -1323,12 +1380,21 @@ func (s *Store) Delete(id string) error {
 	if !ok {
 		return nil
 	}
+	dir := filepath.Join(s.dataDir, "instances", id)
 	delete(s.items, id)
 	if err := s.saveLocked(); err != nil {
 		s.items[id] = item
 		return err
 	}
-	return os.RemoveAll(filepath.Join(s.dataDir, "instances", id))
+	for _, profile := range s.profiles {
+		if s.instanceDirOwning(profile.ConfigPath) == filepath.Clean(dir) {
+			// Relocation at load failed for this one; keep the directory rather
+			// than delete a profile's only copy of its YAML.
+			log.Printf("WARNING: mihomo-fleet: kept %s after deleting instance %s: profile %s config %s still lives there", dir, id, profile.ID, profile.ConfigPath)
+			return nil
+		}
+	}
+	return os.RemoveAll(dir)
 }
 
 // DeleteProfile removes a profile record and its on-disk config directory
