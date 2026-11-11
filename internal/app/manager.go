@@ -772,23 +772,36 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 	m.mu.Unlock()
 
 	buf.Add(fmt.Sprintf("started mihomo pid=%d", cmd.Process.Pid))
-	go captureLines(buf, "stdout", stdout)
-	go captureLines(buf, "stderr", stderr)
+	// os/exec: Wait closes the pipes once the process exits, so it must not
+	// run before the readers are done -- otherwise the last lines a crashing
+	// mihomo prints (usually the reason) can be cut off.
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go func() { defer readers.Done(); captureLines(buf, "stdout", stdout) }()
+	go func() { defer readers.Done(); captureLines(buf, "stderr", stderr) }()
 	go func() {
+		readers.Wait()
 		err := cmd.Wait()
-		if err != nil {
-			m.store.SetError(id, err.Error())
-			buf.Add("exited: " + err.Error())
-		} else {
-			m.store.SetError(id, "")
-			buf.Add("exited cleanly")
-		}
 		m.mu.Lock()
 		stopRequested := ps.stopRequested
 		if m.procs[id] == ps {
 			delete(m.procs, id)
 		}
 		m.mu.Unlock()
+		switch {
+		case err != nil && stopRequested:
+			// Kill() on Windows, or SIGKILL after the SIGTERM grace on Unix,
+			// always yields a non-zero exit. The stop was asked for, so it is
+			// not an error state -- but keep the exit status in the log.
+			m.store.SetError(id, "")
+			buf.Add("exited after stop: " + err.Error())
+		case err != nil:
+			m.store.SetError(id, err.Error())
+			buf.Add("exited: " + err.Error())
+		default:
+			m.store.SetError(id, "")
+			buf.Add("exited cleanly")
+		}
 		close(ps.done)
 
 		// Crash watchdog: decide whether this exit was unexpected (not a

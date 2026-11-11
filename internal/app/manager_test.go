@@ -1341,3 +1341,66 @@ func TestManagerFailedRelaunchConsumesAttemptAndReachesGiveUp(t *testing.T) {
 		t.Fatalf("consecutive = %d, want > watchdogMaxRestarts (%d) once repeated relaunch failures give up", consecutive, watchdogMaxRestarts)
 	}
 }
+
+// A force-killed stop exits non-zero, but it was asked for: the instance must
+// not end up in an error state (on Windows every stop takes this path).
+func TestManagerRequestedForceKillIsNotAnError(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store := newManagerTestStore(t)
+	manager := NewManager(store, writeFakeMihomo(t, false, 0))
+	item := createManagerTestInstance(t, store, "StubbornStop", 28131, 29131)
+	t.Cleanup(func() { _ = manager.Stop(item.ID) })
+	if err := manager.Start(item.ID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	waitForFakeMihomoReady(t, item)
+	if err := manager.Stop(item.ID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	got, _ := store.Get(item.ID)
+	if got.LastError != "" {
+		t.Fatalf("LastError = %q after a requested stop, want empty", got.LastError)
+	}
+}
+
+// The last thing a crashing core prints is usually why; it must reach the log
+// even though the process is already gone by the time Wait returns. This is a
+// guard, not a reproduction: the old Wait-before-reads order lost lines only
+// under scheduling luck and passed this test too. The fix rests on the os/exec
+// contract ("it is incorrect to call Wait before all reads from the pipe have
+// completed").
+func TestManagerKeepsLastLinesOfCrashingProcess(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "mihomo")
+	script := `#!/bin/sh
+for arg in "$@"; do [ "$arg" = "-t" ] && exit 0; done
+i=0
+while [ $i -lt 200 ]; do echo "noise $i"; i=$((i+1)); done
+echo "FATAL-REASON-LAST-LINE" >&2
+exit 1
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := newManagerTestStore(t)
+	manager := NewManager(store, bin)
+	item := createManagerTestInstance(t, store, "Crashy", 28132, 29132)
+	t.Cleanup(func() { _ = manager.Stop(item.ID) })
+	if err := manager.Start(item.ID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, _ := store.Get(item.ID); got.LastError != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, line := range manager.Logs(item.ID) {
+		if strings.Contains(line, "FATAL-REASON-LAST-LINE") {
+			return
+		}
+	}
+	t.Fatalf("crash reason missing from logs: %v", manager.Logs(item.ID))
+}
