@@ -48,6 +48,30 @@ type processState struct {
 	// StartContext call always creates a brand-new processState rather than
 	// reusing this one.
 	stopRequested bool
+
+	// selectionMu serializes live selection changes on this process between
+	// restoreSelection and a user's explicit pick (applyUserSelection), so a
+	// restore retry can never re-apply an old snapshot over a newer choice.
+	// selectionGen identifies the current restore run (a reload starts a new
+	// one); userPicked holds the groups the user set during that run.
+	selectionMu  sync.Mutex
+	selectionGen int
+	userPicked   map[string]bool
+}
+
+// applyUserSelection pushes an explicit user pick to the live controller and,
+// on success, tells any restore run still in progress to leave that group alone.
+func (ps *processState) applyUserSelection(ctx context.Context, item *Instance, group, proxy string) error {
+	ps.selectionMu.Lock()
+	defer ps.selectionMu.Unlock()
+	if err := putMihomoProxy(ctx, item, group, proxy); err != nil {
+		return err
+	}
+	if ps.userPicked == nil {
+		ps.userPicked = make(map[string]bool)
+	}
+	ps.userPicked[group] = true
+	return nil
 }
 
 // startAttempt tracks an in-flight StartContext call so a concurrent Stop/Delete
@@ -1893,11 +1917,43 @@ func (m *Manager) testConfig(ctx context.Context, item *Instance) error {
 // docs/review-2026-07-11-go-concurrency-performance.md) instead of spending
 // the rest of the 5s window firing requests at a port nothing is listening
 // on anymore.
+type restoreOutcome int
+
+const (
+	restoreFailed restoreOutcome = iota
+	restoreApplied
+	restoreUserPicked
+	restoreSuperseded
+)
+
+// restoreOne applies one saved selection under selectionMu, unless the user
+// picked that group since this run began or a newer run replaced this one.
+func (ps *processState) restoreOne(ctx context.Context, item *Instance, gen int, group, proxy string) restoreOutcome {
+	ps.selectionMu.Lock()
+	defer ps.selectionMu.Unlock()
+	if ps.selectionGen != gen {
+		return restoreSuperseded
+	}
+	if ps.userPicked[group] {
+		return restoreUserPicked
+	}
+	if err := putMihomoProxy(ctx, item, group, proxy); err != nil {
+		return restoreFailed
+	}
+	return restoreApplied
+}
+
 func (m *Manager) restoreSelection(ctx context.Context, item *Instance, ps *processState, buf *logBuffer) {
 	selections := normalizeSelections(item.SelectedProxies, item.SelectedGroup, item.SelectedProxy)
 	if len(selections) == 0 {
 		return
 	}
+	ps.selectionMu.Lock()
+	ps.selectionGen++
+	gen := ps.selectionGen
+	ps.userPicked = nil
+	ps.selectionMu.Unlock()
+
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -1909,11 +1965,19 @@ func (m *Manager) restoreSelection(ctx context.Context, item *Instance, ps *proc
 		}
 		pending := 0
 		for group, proxy := range selections {
-			if err := putMihomoProxy(ctx, item, group, proxy); err != nil {
-				pending++
-			} else {
+			outcome := ps.restoreOne(ctx, item, gen, group, proxy)
+			switch outcome {
+			case restoreSuperseded:
+				buf.Add("proxy selection restore superseded by a newer reload")
+				return
+			case restoreUserPicked:
+				buf.Add(fmt.Sprintf("skipped restoring %s -> %s: changed by the user meanwhile", group, proxy))
+				delete(selections, group)
+			case restoreApplied:
 				buf.Add(fmt.Sprintf("restored proxy selection %s -> %s", group, proxy))
 				delete(selections, group)
+			default:
+				pending++
 			}
 		}
 		if pending == 0 {

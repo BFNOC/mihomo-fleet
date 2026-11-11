@@ -2,9 +2,13 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1403,4 +1407,58 @@ exit 1
 		}
 	}
 	t.Fatalf("crash reason missing from logs: %v", manager.Logs(item.ID))
+}
+
+// C6: a restore retry must not re-apply the saved snapshot over a selection
+// the user made while the controller was still coming up.
+func TestManagerRestoreSelectionYieldsToUserPick(t *testing.T) {
+	var mu sync.Mutex
+	failures := 3
+	var live string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Name string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		defer mu.Unlock()
+		if body.Name == "A" && failures > 0 {
+			failures--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		live = body.Name
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	port, _ := strconv.Atoi(srv.URL[strings.LastIndex(srv.URL, ":")+1:])
+
+	store := newManagerTestStore(t)
+	manager := NewManager(store, "")
+	item := createManagerTestInstance(t, store, "RestoreRace", 28133, 29133)
+	if _, err := store.SetSelection(item.ID, "G", "A"); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := store.Get(item.ID)
+	fresh.ControllerPort = port
+	ps := &processState{done: make(chan struct{})}
+	buf := newLogBuffer(100)
+
+	returned := make(chan struct{})
+	go func() {
+		manager.restoreSelection(context.Background(), fresh, ps, buf)
+		close(returned)
+	}()
+	time.Sleep(50 * time.Millisecond) // first restore attempt has failed by now
+	if err := ps.applyUserSelection(context.Background(), fresh, "G", "B"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-returned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("restoreSelection did not finish")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if live != "B" {
+		t.Fatalf("live selection = %q after restore, want the user's B (log: %v)", live, buf.Lines())
+	}
 }

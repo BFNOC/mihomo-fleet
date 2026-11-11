@@ -431,7 +431,7 @@ func (c *Controller) handleSelection(w http.ResponseWriter, r *http.Request, id 
 	// state that already moved).
 	if ps := c.manager.state(id); ps != nil {
 		if req.Apply {
-			if err := putMihomoProxy(r.Context(), item, req.Group, req.Proxy); err != nil {
+			if err := ps.applyUserSelection(r.Context(), item, req.Group, req.Proxy); err != nil {
 				// mihomo's own rejection (unknown group/node, or any other
 				// PUT /proxies/{group} failure) is surfaced as a 400 the same
 				// way the stopped-instance static-validation path below
