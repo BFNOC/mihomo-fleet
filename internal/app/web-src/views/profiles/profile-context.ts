@@ -54,14 +54,10 @@ export function clearProfileFormDirty(): void {
   store.profileConfigDirty = false;
 }
 
-export function hasUnsavedChanges(): boolean {
-  return store.editDirty || store.profileFormDirty || store.profileConfigDirty;
-}
-
-export function confirmDiscardChanges(action: string): boolean {
-  if (!hasUnsavedChanges()) return true;
-  return window.confirm(`有未保存的修改。确定放弃并${action}吗？`);
-}
+// One definition, in services/navigation.ts. This copy used to omit
+// store.createDirty, so opening the profile manager discarded a half-filled
+// create-instance form without asking.
+export { confirmDiscardChanges, hasUnsavedChanges } from "../../services/navigation.ts";
 
 // ---------------------------------------------------------------------------
 // Derived selection

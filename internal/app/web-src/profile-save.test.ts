@@ -51,3 +51,12 @@ test("a rename of a manual profile does not resend the clean YAML", async () => 
   assert.equal(sent[0]!.name, "B");
   assert.equal(sent[0]!.config, undefined, "clean YAML must not be resent over a possibly newer file");
 });
+
+test("the profile area's unsaved-changes check includes the create form", () => {
+  store.editDirty = false;
+  store.profileFormDirty = false;
+  store.profileConfigDirty = false;
+  store.createDirty = true;
+  assert.equal(ctx.hasUnsavedChanges(), true);
+  store.createDirty = false;
+});
