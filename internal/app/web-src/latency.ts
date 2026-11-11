@@ -105,6 +105,34 @@ export function createLatencyController({
     return state.activeId === instanceId && (batchToken === undefined || state.latencyBatchToken === batchToken);
   }
 
+  // Which request currently owns each (instance, group, proxy, kind) slot.
+  // Navigation clears the running flags, so after leaving and returning to an
+  // instance a second request can start while the first is still out; without
+  // an owner, the older response then passed shouldApplyResult and replaced
+  // the newer result, and its finally cleared the newer request's spinner.
+  const latencyOwners = new Map<string, number>();
+  let latencyOwnerSeq = 0;
+
+  function latencyKey(instanceId: string, groupName: string, proxyName: string, kind: LatencyKind): string {
+    return [instanceId, groupName, proxyName, kind].join("\u0000");
+  }
+
+  function claimLatency(key: string): number {
+    latencyOwnerSeq += 1;
+    latencyOwners.set(key, latencyOwnerSeq);
+    return latencyOwnerSeq;
+  }
+
+  function ownsLatency(key: string, token: number): boolean {
+    return latencyOwners.get(key) === token;
+  }
+
+  function releaseLatency(key: string, token: number): boolean {
+    if (!ownsLatency(key, token)) return false;
+    latencyOwners.delete(key);
+    return true;
+  }
+
   // One request for either kind. `kind` reaches the backend as a field and is
   // otherwise opaque here, so the url/real split that used to be two 39-line
   // near-identical functions is a single parameter.
@@ -117,13 +145,15 @@ export function createLatencyController({
   ): Promise<void> {
     const { url, timeoutMs } = latencySettings();
     const { batchToken, notifyErrors } = options;
+    const key = latencyKey(selected.id, groupName, proxyName, kind);
+    const owner = claimLatency(key);
     setLatencyRunning(state, selected.id, groupName, proxyName, kind, true);
     try {
       const payload = await api<LatencyTestResponse>(`/api/instances/${selected.id}/latency`, {
         method: "POST",
         body: JSON.stringify({ group: groupName, proxy: proxyName, kind, url, timeoutMs }),
       });
-      if (shouldApplyResult(selected.id, batchToken)) {
+      if (ownsLatency(key, owner) && shouldApplyResult(selected.id, batchToken)) {
         setLatencyResult(state, selected.id, groupName, proxyName, kind, {
           delay: Number(payload.delay) || 0,
           error: "",
@@ -135,7 +165,7 @@ export function createLatencyController({
       // Error subtype), so this narrowing covers every real call site here;
       // the fallback keeps `message` a plain string without resorting to `any`.
       const message = err instanceof Error ? err.message : String(err);
-      if (shouldApplyResult(selected.id, batchToken)) {
+      if (ownsLatency(key, owner) && shouldApplyResult(selected.id, batchToken)) {
         setLatencyResult(state, selected.id, groupName, proxyName, kind, {
           delay: 0,
           error: localizedMessage(message),
@@ -143,7 +173,7 @@ export function createLatencyController({
       }
       if (notifyErrors) showMessage(message, "error");
     } finally {
-      setLatencyRunning(state, selected.id, groupName, proxyName, kind, false);
+      if (releaseLatency(key, owner)) setLatencyRunning(state, selected.id, groupName, proxyName, kind, false);
     }
   }
 
@@ -196,6 +226,10 @@ export function createLatencyController({
     // per-node.
     if (isLatencyRunning(state, selected.id, group.name, names[0]!, "url")) return;
     const { url, timeoutMs } = latencySettings();
+    const owners = names.map((name) => {
+      const key = latencyKey(selected.id, group.name, name, "url");
+      return { name, key, token: claimLatency(key) };
+    });
     for (const name of names) setLatencyRunning(state, selected.id, group.name, name, "url", true);
     try {
       const payload = await api<GroupLatencyTestResponse>(`/api/instances/${selected.id}/latency`, {
@@ -204,7 +238,8 @@ export function createLatencyController({
       });
       if (shouldApplyResult(selected.id, undefined)) {
         const delays = payload.delays || {};
-        for (const name of names) {
+        for (const { name, key, token } of owners) {
+          if (!ownsLatency(key, token)) continue;
           setLatencyResult(state, selected.id, group.name, name, "url", { delay: Number(delays[name]) || 0, error: "" });
         }
       }
@@ -212,13 +247,16 @@ export function createLatencyController({
       const message = err instanceof Error ? err.message : String(err);
       if (shouldApplyResult(selected.id, undefined)) {
         const localized = localizedMessage(message);
-        for (const name of names) {
+        for (const { name, key, token } of owners) {
+          if (!ownsLatency(key, token)) continue;
           setLatencyResult(state, selected.id, group.name, name, "url", { delay: 0, error: localized });
         }
       }
       showMessage(message, "error");
     } finally {
-      for (const name of names) setLatencyRunning(state, selected.id, group.name, name, "url", false);
+      for (const { name, key, token } of owners) {
+        if (releaseLatency(key, token)) setLatencyRunning(state, selected.id, group.name, name, "url", false);
+      }
     }
   }
 
