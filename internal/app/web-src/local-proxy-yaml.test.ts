@@ -89,3 +89,12 @@ test("string fields YAML could retype are quoted (yaml.v3 resolves these)", () =
   const { yaml } = buildLocalProxyYaml("ss", { name: "a", server: "127.0.0.1", port: "1", cipher: "aes-128-gcm", password: "plain_pw" });
   assert.ok(yaml.includes("server: 127.0.0.1") && yaml.includes("password: plain_pw"));
 });
+
+test("switching protocol drops a select value the new protocol does not offer", async () => {
+  const { carryLocalProxyValues } = await import("./local-proxy-yaml.ts");
+  const fromVmess = { name: "a", server: "1.1.1.1", port: "443", cipher: "auto", uuid: "u" };
+  const ss = carryLocalProxyValues(fromVmess, "ss");
+  assert.equal(ss.server, "1.1.1.1");
+  assert.equal(ss.port, "443");
+  assert.notEqual(ss.cipher, "auto");
+});

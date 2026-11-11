@@ -118,6 +118,22 @@ export function localProxyTypeDef(type: string): LocalProxyTypeDef | undefined {
   return localProxyTypes.find((def) => def.type === type);
 }
 
+/**
+ * Values to keep when the form switches protocol: anything the new protocol
+ * also has, except a select value the new protocol does not offer -- VMess's
+ * `cipher: auto` carried into Shadowsocks produced a node mihomo rejects.
+ */
+export function carryLocalProxyValues(values: Record<string, string>, nextType: string): Record<string, string> {
+  const fresh = localProxyFormDefaults(nextType);
+  for (const field of localProxyTypeDef(nextType)?.fields || []) {
+    const carried = values[field.key];
+    if (!carried) continue;
+    if (field.kind === "select" && field.options && !field.options.includes(carried)) continue;
+    fresh[field.key] = carried;
+  }
+  return fresh;
+}
+
 /** Field defaults for a freshly opened form. */
 export function localProxyFormDefaults(type: string): Record<string, string> {
   const def = localProxyTypeDef(type);

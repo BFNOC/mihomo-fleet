@@ -14,6 +14,7 @@ import { computed, onMounted, ref, watch } from "vue";
 
 import {
   buildLocalProxyYaml,
+  carryLocalProxyValues,
   localProxyFormDefaults,
   localProxyTypeDef,
   localProxyTypes,
@@ -36,12 +37,7 @@ const fields = computed(() => localProxyTypeDef(type.value)?.fields || []);
 // Switching protocol keeps what every protocol has in common -- retyping the
 // server and port because trojan turned out to be the right guess is pure friction.
 watch(type, (next) => {
-  const carried = { ...values.value };
-  const fresh = localProxyFormDefaults(next);
-  for (const key of Object.keys(fresh)) {
-    if (carried[key]) fresh[key] = carried[key] as string;
-  }
-  values.value = fresh;
+  values.value = carryLocalProxyValues(values.value, next);
   error.value = "";
 });
 
