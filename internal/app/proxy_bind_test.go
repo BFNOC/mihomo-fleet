@@ -219,3 +219,18 @@ func TestMixedPortFreeOnSeparatesUnavailableFromInvalid(t *testing.T) {
 		t.Fatal("mixedPortFreeOn = false for a malformed bind string; that is the address validator's error to report")
 	}
 }
+
+// A zone travels into URLs and the shell exports the UI copies; an imported
+// backup must not be able to smuggle quotes or separators through it.
+func TestNormalizeProxyBindRejectsUnsafeIPv6Zone(t *testing.T) {
+	for _, raw := range []string{"::1%';echo${IFS}x;#", "fe80::1%a'b", "fe80::1%a;b", "fe80::1%$(id)"} {
+		if got, err := normalizeProxyBind(raw); err == nil {
+			t.Errorf("normalizeProxyBind(%q) = %q, want error", raw, got)
+		}
+	}
+	for _, raw := range []string{"fe80::1%en0", "fe80::1%12", "fe80::1%br-lan.10"} {
+		if _, err := normalizeProxyBind(raw); err != nil {
+			t.Errorf("normalizeProxyBind(%q) error = %v, want ok", raw, err)
+		}
+	}
+}

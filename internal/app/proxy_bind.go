@@ -89,6 +89,12 @@ func normalizeProxyBindAddress(raw string) (string, error) {
 	}
 	if ip := net.ParseIP(stripIPv6Zone(addr)); ip != nil {
 		if zone := ipv6Zone(addr); zone != "" {
+			// Zones are interface names or indexes. Anything else is refused: the
+			// value ends up in URLs and in the shell exports the UI copies, and
+			// an imported backup is not trusted input.
+			if !validIPv6Zone(zone) {
+				return "", fmt.Errorf("proxy bind address %q has an invalid IPv6 zone", raw)
+			}
 			return ip.String() + "%" + zone, nil
 		}
 		return ip.String(), nil
@@ -263,4 +269,13 @@ func mihomoBindAddress(addr string) string {
 		return "[" + addr + "]"
 	}
 	return addr
+}
+
+func validIPv6Zone(zone string) bool {
+	for _, r := range zone {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return zone != ""
 }

@@ -155,3 +155,12 @@ test("mihomo version keeps only the build number from the banner", () => {
   assert.equal(shortMihomoVersion(""), "");
   assert.equal(shortMihomoVersion(null), "");
 });
+
+test("shellQuote keeps a hostile value inside one shell word", async () => {
+  const { shellQuote } = await import("./format.ts");
+  const { execFileSync } = await import("node:child_process");
+  const hostile = "http://[::1%';echo${IFS}PWNED;#]:7890";
+  const out = execFileSync("sh", ["-c", `printf %s ${shellQuote(hostile)}`]).toString();
+  assert.equal(out, hostile, "the shell must see exactly the original value, nothing executed");
+  assert.equal(shellQuote("plain"), "'plain'");
+});

@@ -239,14 +239,23 @@ export function proxyEndpointText(
   return endpoints.length ? endpoints.join("，") : "端口未分配";
 }
 
+// POSIX single-quoting: close, emit an escaped quote, reopen. The backend now
+// refuses unsafe IPv6 zones, but a value already stored (or arriving some other
+// way) must still never be able to end the quoted string in a pasted command.
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function proxyEnvExports(http: string, socks: string): string {
+  const h = shellQuote(http);
+  const s = shellQuote(socks);
   return [
-    `export HTTP_PROXY='${http}'`,
-    `export HTTPS_PROXY='${http}'`,
-    `export ALL_PROXY='${socks}'`,
-    `export http_proxy='${http}'`,
-    `export https_proxy='${http}'`,
-    `export all_proxy='${socks}'`,
+    `export HTTP_PROXY=${h}`,
+    `export HTTPS_PROXY=${h}`,
+    `export ALL_PROXY=${s}`,
+    `export http_proxy=${h}`,
+    `export https_proxy=${h}`,
+    `export all_proxy=${s}`,
   ].join("\n");
 }
 
