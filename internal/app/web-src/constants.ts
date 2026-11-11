@@ -128,6 +128,7 @@ export const errorLabels: Record<string, string> = {
   "profile is in use by existing instances": "配置档仍被实例使用，无法删除。",
   "profile changed while configuration was being edited": "配置档已被改绑，未保存的 YAML 没有写入。请重新加载后再编辑。",
   "profile config changed since it was loaded": "这个配置档的 YAML 已在别处更新，本次修改没有写入。请先复制你的修改，放弃后重新加载再改。",
+  "subscription URL changed while the new one was being fetched": "订阅链接在拉取期间已被另一次修改替换，本次修改没有写入。请刷新后确认。",
   "subscriptionUrl requires a new profile": "订阅链接只能用于创建新配置档。",
   "home URL must start with http:// or https://": "主页链接必须以 http:// 或 https:// 开头。",
   "unknown proxy group or node": "节点组或节点不存在，请刷新后重试。",

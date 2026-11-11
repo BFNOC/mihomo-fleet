@@ -1912,7 +1912,7 @@ func TestStoreReplaceProfileSubscriptionPersistsURLAndConfig(t *testing.T) {
 		HomeURL: "https://example.com/new-home",
 		Info:    &SubscriptionInfo{Total: 500},
 	}
-	updated, _, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/new", fetched)
+	updated, _, err := store.ReplaceProfileSubscription(profile.ID, profile.SubscriptionURL, "https://example.com/new", fetched)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1988,7 +1988,7 @@ func TestStoreReplaceProfileSubscriptionRollsBackOnSaveFailure(t *testing.T) {
 	breakStoreSaves(t, dir)
 
 	fetched := &subscriptionFetchResult{Config: subscriptionConfig, HomeURL: "https://example.com/new-home"}
-	if _, _, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/new", fetched); err == nil {
+	if _, _, err := store.ReplaceProfileSubscription(profile.ID, profile.SubscriptionURL, "https://example.com/new", fetched); err == nil {
 		t.Fatal("expected ReplaceProfileSubscription to fail when saveLocked cannot persist instances.json")
 	}
 
@@ -2337,5 +2337,32 @@ func TestStorePatchProfileRejectsConfigChangedSinceLoad(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(got.ConfigPath); string(data) != mine {
 		t.Fatalf("matching save did not write config: %q", data)
+	}
+}
+
+// Two URL changes in flight: the one that finishes last must not replace the
+// one that already landed, since its fetch started from an older URL.
+func TestStoreReplaceProfileSubscriptionRejectsStaleExpectedURL(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateSubscriptionProfile("Provider", "https://example.com/old", true, 360, &subscriptionFetchResult{Config: defaultUserConfig})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ReplaceProfileSubscription(profile.ID, "https://example.com/old", "https://example.com/b", &subscriptionFetchResult{Config: subscriptionConfig}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = store.ReplaceProfileSubscription(profile.ID, "https://example.com/old", "https://example.com/a", &subscriptionFetchResult{Config: defaultUserConfig})
+	if !errors.Is(err, errConflict) {
+		t.Fatalf("stale replace: err = %v, want errConflict", err)
+	}
+	got, _ := store.GetProfile(profile.ID)
+	if got.SubscriptionURL != "https://example.com/b" {
+		t.Fatalf("stale replace overwrote URL: %q", got.SubscriptionURL)
+	}
+	if data, _ := os.ReadFile(got.ConfigPath); string(data) != subscriptionConfig {
+		t.Fatalf("stale replace overwrote config")
 	}
 }

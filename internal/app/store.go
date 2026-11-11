@@ -586,7 +586,11 @@ func (s *Store) ApplySubscriptionFetchForURL(id, expectedURL string, fetched *su
 // (refreshProfileSubscription / the subscription scheduler) does not touch
 // the URL or reset metadata the same way, so it keeps calling
 // ApplySubscriptionFetchForURL directly.
-func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscriptionFetchResult) (*Profile, []SelectionReconciliation, error) {
+//
+// expectedURL is the URL the caller saw before it started fetching. The fetch
+// runs outside the lock and can take many seconds; if another URL change
+// completed meanwhile, this one is stale and must not replace it.
+func (s *Store) ReplaceProfileSubscription(id, expectedURL, newURL string, fetched *subscriptionFetchResult) (*Profile, []SelectionReconciliation, error) {
 	if fetched == nil {
 		return nil, nil, errors.New("fetched subscription is required")
 	}
@@ -610,6 +614,9 @@ func (s *Store) ReplaceProfileSubscription(id, newURL string, fetched *subscript
 	profile, ok := s.profiles[id]
 	if !ok {
 		return nil, nil, profileNotFoundError{id: id}
+	}
+	if profile.SubscriptionURL != strings.TrimSpace(expectedURL) {
+		return nil, nil, conflictError{msg: "subscription URL changed while the new one was being fetched"}
 	}
 	originalProfile := cloneProfile(profile)
 	previousConfig, err := os.ReadFile(profile.ConfigPath)

@@ -213,9 +213,13 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 			// two-call PatchProfile-then-ApplySubscriptionFetchForURL
 			// sequence could partially apply and diverge on the second
 			// call's failure).
-			profile, selectionChanges, err = c.store.ReplaceProfileSubscription(id, nextURL, fetched)
+			profile, selectionChanges, err = c.store.ReplaceProfileSubscription(id, current.SubscriptionURL, nextURL, fetched)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				status := http.StatusBadRequest
+				if errors.Is(err, errConflict) {
+					status = http.StatusConflict
+				}
+				writeError(w, status, err)
 				return
 			}
 			// Name/AutoUpdate/UpdateIntervalMinutes are independent of the
