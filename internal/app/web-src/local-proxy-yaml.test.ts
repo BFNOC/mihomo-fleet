@@ -80,3 +80,12 @@ test("appending keeps the box parseable as one sequence", () => {
   assert.equal(appendLocalProxyYaml("", "- name: a"), "- name: a\n");
   assert.equal(appendLocalProxyYaml("- name: a\n\n\n", "- name: b"), "- name: a\n- name: b\n");
 });
+
+test("string fields YAML could retype are quoted (yaml.v3 resolves these)", () => {
+  for (const password of ["1_234", "-0x1f", "2026-11-11", "443", "0o17", "+1", ".5", "1e3", "Yes"]) {
+    const { yaml } = buildLocalProxyYaml("ss", { name: "a", server: "1.1.1.1", port: "1", cipher: "aes-128-gcm", password });
+    assert.ok(yaml.includes(`password: "${password}"`), `${password} must be quoted:\n${yaml}`);
+  }
+  const { yaml } = buildLocalProxyYaml("ss", { name: "a", server: "127.0.0.1", port: "1", cipher: "aes-128-gcm", password: "plain_pw" });
+  assert.ok(yaml.includes("server: 127.0.0.1") && yaml.includes("password: plain_pw"));
+});

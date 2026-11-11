@@ -135,16 +135,18 @@ export function localProxyFormDefaults(type: string): Record<string, string> {
 // `item["name"].(string)` assertion then rejects.
 const plainScalar = /^[A-Za-z0-9_.@/+-]+$/;
 const reservedScalars = new Set(["y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"]);
-// Only values YAML would actually retype need quoting. `127.0.0.1` has two dots
-// and is a string either way, so it stays bare; `443`, `0x1f` and `.inf` do not.
-const numberLike = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
-const specialNumberLike = /^([-+]?\.(inf|nan)|0[xob][0-9a-fA-F_]+)$/i;
+// Bare only when YAML cannot retype it. Enumerating number shapes proved
+// leaky -- the backend's yaml.v3 also reads `1_234`, `-0x1f` and date-shaped
+// `2026-11-11` as non-strings, so a password like that silently changed -- so
+// the rule is now positive: start with a letter (and not be a reserved word),
+// or be a dotted address like `127.0.0.1`, which no YAML resolver retypes.
+const startsWithLetter = /^[A-Za-z]/;
+const dottedAddress = /^\d+(\.\d+){2,}$/;
 
 function yamlScalar(value: string): string {
   const bare = plainScalar.test(value)
     && !reservedScalars.has(value.toLowerCase())
-    && !numberLike.test(value)
-    && !specialNumberLike.test(value);
+    && (startsWithLetter.test(value) || dottedAddress.test(value));
   if (bare) return value;
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
