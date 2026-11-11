@@ -60,3 +60,15 @@ test("the profile area's unsaved-changes check includes the create form", () => 
   assert.equal(ctx.hasUnsavedChanges(), true);
   store.createDirty = false;
 });
+
+test("clearing an existing subscription profile's URL is refused locally", async () => {
+  sent.length = 0;
+  store.profileCreating = false;
+  store.profiles = [{ id: "p1", name: "S", configPath: "", subscriptionUrl: "https://x", autoUpdate: true, createdAt: "t", updatedAt: "t0" }];
+  store.activeProfileId = "p1";
+  ctx.populateProfileForm(store.profiles[0]!);
+  ctx.subscriptionUrlInput.value = "";
+  await saveProfile();
+  assert.equal(sent.length, 0);
+  assert.equal(configEditorErrorText.value, "请填写订阅链接。");
+});

@@ -94,10 +94,12 @@ export async function saveProfile(): Promise<void> {
     setConfigEditorError("配置档已变化，请重新选择后再保存。");
     return;
   }
-  // The backend reads an empty subscriptionUrl on create as "manual profile",
-  // so a forgotten URL used to silently produce a manual profile holding the
-  // default YAML while the UI reported success.
-  if (creating && source === "subscription" && !subscriptionUrlInput.value.trim()) {
+  // The backend reads an empty subscriptionUrl as "manual profile": on create
+  // a forgotten URL silently produced a manual profile with the default YAML,
+  // and on edit clearing the box converted the profile and dropped its
+  // auto-update, both reported as success. The conversion stays a backend
+  // capability; the form does not trigger it.
+  if (source === "subscription" && !subscriptionUrlInput.value.trim()) {
     setConfigEditorError("请填写订阅链接。");
     return;
   }
