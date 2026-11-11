@@ -29,12 +29,18 @@ func uniqueSlug[T any](name, fallback string, existing map[string]T) string {
 	}
 	id := base
 	for i := 2; ; i++ {
-		if _, ok := existing[id]; !ok {
+		if _, ok := existing[id]; !ok && !reservedSlugs[id] {
 			return id
 		}
 		id = fmt.Sprintf("%s-%d", base, i)
 	}
 }
+
+// reservedSlugs are path segments under /api/instances/ that the mux routes
+// to their own handler, so an instance with that id could never be read,
+// edited or deleted (see RegisterRoutes). An instance named "Chain Candidates"
+// becomes chain-candidates-2 instead.
+var reservedSlugs = map[string]bool{"chain-candidates": true}
 
 func uniqueID(name string, existing map[string]*Instance) string {
 	return uniqueSlug(name, "instance", existing)
