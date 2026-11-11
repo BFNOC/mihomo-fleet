@@ -24,6 +24,7 @@ interface SaveProfileBody {
   autoUpdate?: boolean;
   updateIntervalMinutes?: number;
   config?: string;
+  expectedConfig?: string;
 }
 
 // Every mutation below opens with this. Returning (rather than queueing) is
@@ -51,6 +52,7 @@ export async function saveProfile(payload: SaveProfilePayload): Promise<FleetPro
       body.updateIntervalMinutes = payload.updateIntervalMinutes;
     } else {
       body.config = payload.config;
+      body.expectedConfig = payload.expectedConfig;
     }
     const saved = await api<FleetProfile>(payload.creating ? "/api/profiles" : `/api/profiles/${payload.profileId}`, {
       method: payload.creating ? "POST" : "PUT",

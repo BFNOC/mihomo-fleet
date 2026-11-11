@@ -32,6 +32,8 @@ export interface SaveProfilePayload {
   name: string;
   source: "manual" | "subscription";
   config?: string;
+  /** The YAML `config` was edited from; the backend answers 409 if the file moved on. */
+  expectedConfig?: string;
   subscriptionUrl?: string;
   autoUpdate?: boolean;
   updateIntervalMinutes?: number;

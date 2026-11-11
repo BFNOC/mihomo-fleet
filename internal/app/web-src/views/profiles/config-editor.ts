@@ -28,12 +28,26 @@ export const editorLoadErrorText = ref("");
 // since-typed edit.
 let profileConfigLoadSeq = 0;
 
+// The YAML exactly as last loaded from (or saved to) the backend. A save sends it
+// as `expectedConfig`, so the backend refuses to write over a file that changed
+// since -- the editor's own dirty flag cannot see edits made in another tab.
+let loadedProfileConfig: string | null = null;
+
+export function profileConfigBaseline(): string | null {
+  return loadedProfileConfig;
+}
+
+export function markProfileConfigSaved(config: string): void {
+  loadedProfileConfig = config;
+}
+
 export function setConfigEditorError(message: string): void {
   configEditorErrorText.value = message ? localizedMessage(message) : "";
 }
 
 export function resetConfigEditor(): void {
   profileConfigLoadSeq += 1;
+  loadedProfileConfig = null;
   editorRef.value?.setValue("");
   editorRef.value?.setReadOnly(true);
   store.profileConfigOwnerId = "";
@@ -44,6 +58,7 @@ export function resetConfigEditor(): void {
 export function loadDefaultConfig(): void {
   editorRef.value?.setValue(defaultConfig);
   editorRef.value?.setReadOnly(false);
+  loadedProfileConfig = null;
   store.profileConfigOwnerId = "__new__";
 }
 
@@ -62,6 +77,7 @@ export async function loadProfileConfig(profileId: string): Promise<void> {
       dirty: store.profileConfigDirty,
     })) return;
     editorRef.value?.setValue(config || "");
+    loadedProfileConfig = config || "";
     editorRef.value?.setReadOnly(Boolean(profile.subscriptionUrl));
     store.profileConfigOwnerId = profile.id;
     store.profileConfigDirty = false;

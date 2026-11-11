@@ -2302,3 +2302,40 @@ func TestParseConfigOverrideRejectsNonMapping(t *testing.T) {
 		}
 	}
 }
+
+func TestStorePatchProfileRejectsConfigChangedSinceLoad(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Manual", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another editor saves first.
+	elsewhere := subscriptionConfig
+	if _, err := store.PatchProfile(profile.ID, ProfilePatch{Config: &elsewhere}); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := defaultUserConfig
+	mine := defaultUserConfig + "\n# mine\n"
+	_, err = store.PatchProfile(profile.ID, ProfilePatch{Name: "Renamed", Config: &mine, ExpectedConfig: &stale})
+	if !errors.Is(err, errConflict) {
+		t.Fatalf("stale ExpectedConfig: err = %v, want errConflict", err)
+	}
+	got, _ := store.GetProfile(profile.ID)
+	if data, _ := os.ReadFile(got.ConfigPath); string(data) != elsewhere {
+		t.Fatalf("rejected save still wrote config: %q", data)
+	}
+	if got.Name != "Manual" {
+		t.Fatalf("rejected save still renamed profile: %q", got.Name)
+	}
+
+	if _, err := store.PatchProfile(profile.ID, ProfilePatch{Config: &mine, ExpectedConfig: &elsewhere}); err != nil {
+		t.Fatalf("matching ExpectedConfig: %v", err)
+	}
+	if data, _ := os.ReadFile(got.ConfigPath); string(data) != mine {
+		t.Fatalf("matching save did not write config: %q", data)
+	}
+}

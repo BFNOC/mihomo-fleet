@@ -165,6 +165,7 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Name                  string  `json:"name"`
 			Config                *string `json:"config"`
+			ExpectedConfig        *string `json:"expectedConfig"`
 			SubscriptionURL       *string `json:"subscriptionUrl"`
 			AutoUpdate            *bool   `json:"autoUpdate"`
 			UpdateIntervalMinutes *int    `json:"updateIntervalMinutes"`
@@ -236,12 +237,17 @@ func (c *Controller) handleProfile(w http.ResponseWriter, r *http.Request) {
 			profile, err = c.store.PatchProfile(id, ProfilePatch{
 				Name:                  req.Name,
 				Config:                req.Config,
+				ExpectedConfig:        req.ExpectedConfig,
 				SubscriptionURL:       req.SubscriptionURL,
 				AutoUpdate:            req.AutoUpdate,
 				UpdateIntervalMinutes: req.UpdateIntervalMinutes,
 			})
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				status := http.StatusBadRequest
+				if errors.Is(err, errConflict) {
+					status = http.StatusConflict
+				}
+				writeError(w, status, err)
 				return
 			}
 		}

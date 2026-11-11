@@ -62,3 +62,20 @@ test("profile option label stays compact while exposing reference count", () => 
   assert.equal(profileOptionLabel({ id: "local-3", name: "local配置档" }, 1), "local配置档 · 1 个实例");
   assert.equal(profileOptionLabel({ id: "local-2", name: "local配置档" }, 0), "local配置档 · 未使用");
 });
+
+test("changedProfileFields sends only fields that differ from the baseline", async () => {
+  const { changedProfileFields } = await import("./app-logic.ts");
+  const base = { name: "A", subscriptionUrl: "https://x", autoUpdate: true, updateIntervalMinutes: 60 };
+  const same = { name: "A", subscriptionUrl: "https://x", autoUpdate: true, interval: "60" };
+  assert.deepEqual(changedProfileFields(base, same), { name: "" });
+  assert.deepEqual(changedProfileFields(base, { ...same, name: "B" }), { name: "B" });
+  assert.deepEqual(changedProfileFields(base, { ...same, interval: "120", autoUpdate: false }), {
+    name: "", autoUpdate: false, updateIntervalMinutes: 120,
+  });
+  // An unset interval is displayed as "360"; leaving that box alone is no change.
+  assert.deepEqual(changedProfileFields({ name: "A", autoUpdate: false }, { name: "A", subscriptionUrl: "", autoUpdate: false, interval: "360" }), { name: "" });
+  // Creating: no baseline, everything goes.
+  assert.deepEqual(changedProfileFields(null, same), {
+    name: "A", subscriptionUrl: "https://x", autoUpdate: true, updateIntervalMinutes: 60,
+  });
+});

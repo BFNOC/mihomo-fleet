@@ -178,3 +178,27 @@ func TestControllerRefreshProfileSubscriptionFailureRecordsErrorAndBacksOff(t *t
 		t.Fatal("expected the just-failed profile to back off rather than immediately be due again")
 	}
 }
+
+// A PUT whose expectedConfig no longer matches the file answers 409 with the
+// message the UI maps, and leaves the file alone.
+func TestHandleProfilePutStaleExpectedConfigReturnsConflict(t *testing.T) {
+	c := newBatchTestController(t)
+	profile, err := c.store.CreateProfile("Main", defaultUserConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{
+		"config":         defaultUserConfig + "\n# mine\n",
+		"expectedConfig": "mode: rule\n",
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/profiles/"+profile.ID, strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c.handleProfile(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "profile config changed since it was loaded") {
+		t.Fatalf("status = %d body = %s, want 409 with conflict message", rec.Code, rec.Body.String())
+	}
+	if got, _ := c.store.ReadProfileConfig(profile.ID); got != defaultUserConfig {
+		t.Fatalf("conflicting PUT wrote config: %q", got)
+	}
+}

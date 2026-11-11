@@ -22,7 +22,17 @@ export const subscriptionUrlInput = ref("");
 export const subscriptionAutoUpdateInput = ref(true);
 export const subscriptionIntervalInput = ref("360");
 
+// The profile the inputs were last populated from. saveProfile() sends only the
+// fields that differ from it, so a dirty form cannot write back a field it never
+// touched over a newer value saved elsewhere.
+let formBaseline: FleetProfile | null = null;
+
+export function profileFormBaseline(): FleetProfile | null {
+  return formBaseline;
+}
+
 export function populateProfileForm(profile: FleetProfile | null): void {
+  formBaseline = profile;
   store.profileFormOwnerId = profile?.id || "__new__";
   profileNameInput.value = profile?.name || "";
   profileIdDisplay.value = profile?.id || "创建后自动生成";

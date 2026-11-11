@@ -100,8 +100,12 @@ type Store struct {
 }
 
 type ProfilePatch struct {
-	Name                  string
-	Config                *string
+	Name   string
+	Config *string
+	// ExpectedConfig, when set, is the YAML the editor loaded before the user
+	// changed it. The write is refused if the file no longer holds exactly that,
+	// so a stale editor cannot silently replace an edit saved elsewhere.
+	ExpectedConfig        *string
 	SubscriptionURL       *string
 	AutoUpdate            *bool
 	UpdateIntervalMinutes *int
@@ -429,6 +433,9 @@ func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
 		previousConfig, err = os.ReadFile(profile.ConfigPath)
 		if err != nil {
 			return nil, err
+		}
+		if patch.ExpectedConfig != nil && !bytes.Equal(previousConfig, []byte(*patch.ExpectedConfig)) {
+			return nil, conflictError{msg: "profile config changed since it was loaded"}
 		}
 		if err := writeFileAtomic(profile.ConfigPath, []byte(*patch.Config), 0o600); err != nil {
 			return nil, err

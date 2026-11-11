@@ -102,3 +102,46 @@ export function profileOptionLabel(profile: ProfileLabelSource | null | undefine
   const count = Math.max(0, Number(referenceCount) || 0);
   return `${name} · ${count > 0 ? `${count} 个实例` : "未使用"}`;
 }
+
+export interface ProfileFormBaseline {
+  name: string;
+  subscriptionUrl?: string;
+  autoUpdate: boolean;
+  updateIntervalMinutes?: number;
+}
+
+export interface ProfileFormInputs {
+  name: string;
+  subscriptionUrl: string;
+  autoUpdate: boolean;
+  interval: string;
+}
+
+export interface ProfileFieldChanges {
+  /** "" means "keep": the backend's PUT ignores an empty name. */
+  name: string;
+  subscriptionUrl?: string;
+  autoUpdate?: boolean;
+  updateIntervalMinutes?: number;
+}
+
+/**
+ * The profile PUT fields the user actually changed relative to the profile the
+ * form was populated from. Omitted fields keep whatever the backend holds now,
+ * so a field the user never touched cannot overwrite a newer value saved in
+ * another tab or set by a subscription refresh. With no baseline (creating),
+ * every field is sent.
+ */
+export function changedProfileFields(base: ProfileFormBaseline | null, input: ProfileFormInputs): ProfileFieldChanges {
+  const interval = Number(input.interval) || 0;
+  if (!base) {
+    return { name: input.name, subscriptionUrl: input.subscriptionUrl, autoUpdate: input.autoUpdate, updateIntervalMinutes: interval };
+  }
+  const changes: ProfileFieldChanges = { name: input.name !== base.name ? input.name : "" };
+  if (input.subscriptionUrl !== (base.subscriptionUrl || "")) changes.subscriptionUrl = input.subscriptionUrl;
+  if (input.autoUpdate !== Boolean(base.autoUpdate)) changes.autoUpdate = input.autoUpdate;
+  // Compared as the form displays it: populateProfileForm() shows "360" for an
+  // unset interval, so an untouched box must not count as a change.
+  if (input.interval !== String(base.updateIntervalMinutes || "360")) changes.updateIntervalMinutes = interval;
+  return changes;
+}

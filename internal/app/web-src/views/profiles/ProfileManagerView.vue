@@ -31,6 +31,9 @@ import {
 } from "./config-editor.ts";
 import { startNewProfile } from "./profile-navigation.ts";
 import { deleteProfile, saveProfile } from "./profile-operations.ts";
+import { watchActiveProfileUpdates } from "./profile-sync.ts";
+
+watchActiveProfileUpdates();
 
 // `activeProfile`, not `store.activeProfileId`: the id can point at a profile
 // that is no longer in the list (transiently, mid-delete), and both buttons must

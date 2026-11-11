@@ -3,7 +3,7 @@ import { actions, chrome } from "../../bridge.ts";
 import type { SaveProfilePayload } from "../../bridge.ts";
 import { profileReferenceCount } from "../../state.ts";
 import type { FleetProfile, ProfileCreateSource } from "../../state.ts";
-import { canClearSavedProfileConfig } from "../../app-logic.ts";
+import { canClearSavedProfileConfig, changedProfileFields } from "../../app-logic.ts";
 import {
   activeProfile,
   advanceProfileContext,
@@ -11,6 +11,7 @@ import {
   clearProfileFormDirty,
   operationContextMatches,
   populateProfileForm,
+  profileFormBaseline,
   profileNameInput,
   subscriptionAutoUpdateInput,
   subscriptionIntervalInput,
@@ -20,6 +21,8 @@ import {
   deleting,
   editorRef,
   loadProfileConfig,
+  markProfileConfigSaved,
+  profileConfigBaseline,
   refreshingSub,
   resetConfigEditor,
   saving,
@@ -93,23 +96,36 @@ export async function saveProfile(): Promise<void> {
   }
   setConfigEditorError("");
   const operationContext = captureOperationContext(savedProfileId);
+  // Only what the user changed: an untouched field must not overwrite a newer
+  // value saved elsewhere (see changedProfileFields).
+  const changes = changedProfileFields(creating ? null : profileFormBaseline(), {
+    name: profileNameInput.value.trim(),
+    subscriptionUrl: subscriptionUrlInput.value.trim(),
+    autoUpdate: subscriptionAutoUpdateInput.value,
+    interval: subscriptionIntervalInput.value,
+  });
   const payload: SaveProfilePayload = {
     creating,
     profileId: creating ? "" : profile!.id,
-    name: profileNameInput.value.trim(),
+    name: changes.name,
     source,
   };
   if (source === "subscription") {
-    payload.subscriptionUrl = subscriptionUrlInput.value.trim();
-    payload.autoUpdate = subscriptionAutoUpdateInput.value;
-    payload.updateIntervalMinutes = Number(subscriptionIntervalInput.value) || 0;
-  } else {
+    payload.subscriptionUrl = changes.subscriptionUrl;
+    payload.autoUpdate = changes.autoUpdate;
+    payload.updateIntervalMinutes = changes.updateIntervalMinutes;
+  } else if (creating || store.profileConfigDirty) {
+    // A clean editor is not resent: the file may have moved on since it loaded.
+    // A dirty one carries the YAML it was based on, and the backend refuses the
+    // write (409) if the file no longer matches.
     payload.config = editorRef.value?.getValue() ?? "";
+    if (!creating) payload.expectedConfig = profileConfigBaseline() ?? undefined;
   }
   saving.value = true;
   try {
     const saved = await actions.saveProfile(payload) as ProfileWithSelectionChanges;
     if (!operationContextMatches(operationContext)) return;
+    if (payload.config !== undefined) markProfileConfigSaved(payload.config);
     if (creating) advanceProfileContext();
     store.profileCreating = false;
     store.activeProfileId = saved.id;
