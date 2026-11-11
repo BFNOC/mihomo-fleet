@@ -1228,7 +1228,10 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	if opts.Chain != nil {
 		nextChain = normalizeChainNames(*opts.Chain)
 	}
-	if nextMode == InstanceModeGlobalChain && len(nextChain) > 0 {
+	// A non-empty chain is validated as before; an edit to the local proxies
+	// is too, even with an empty chain, for the name-collision check (B4).
+	chainInputsChanged := len(nextChain) > 0 || opts.LocalProxies != nil
+	if nextMode == InstanceModeGlobalChain && chainInputsChanged {
 		// L6 (docs/review-2026-07-11-go-architecture.md): validate the
 		// candidate chain against the (possibly also-changing) profile and
 		// local proxies now, at update time, instead of only when the
@@ -1542,12 +1545,18 @@ func validateHomeURL(raw string) error {
 // for cases this static check cannot see, e.g. the profile config changing
 // between this validation and the instance actually starting.
 func validateChainStatic(configPath, localProxies string, chain []string) error {
-	if len(normalizeChainNames(chain)) == 0 {
-		return nil
-	}
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
+	}
+	// An empty chain means "use the default chain"; whether that plan works is
+	// still left to start. A local proxy named like a profile proxy breaks
+	// start whatever the chain, so that collision is refused at save time.
+	if len(normalizeChainNames(chain)) == 0 {
+		if err := globalChainLocalNameConflict(string(raw), localProxies); err != nil {
+			return validationError{msg: err.Error()}
+		}
+		return nil
 	}
 	if _, err := parseGlobalChainProxyGroups(string(raw), &Instance{LocalProxies: localProxies, Chain: chain}); err != nil {
 		return validationError{msg: err.Error()}

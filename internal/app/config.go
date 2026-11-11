@@ -314,16 +314,8 @@ func applyGlobalChainConfig(cfg map[string]any, item *Instance) error {
 		return fmt.Errorf("global-chain mode requires proxies, proxy-providers, or local proxies")
 	}
 
-	for _, name := range inlineNames {
-		if name == globalChainSelectGroupName || name == globalChainRelayGroupName {
-			return fmt.Errorf("proxy name %q conflicts with generated global-chain group", name)
-		}
-	}
-	inlineKnown := stringSet(inlineNames)
-	for _, name := range localNames {
-		if inlineKnown[name] {
-			return fmt.Errorf("local proxy name %q conflicts with profile proxy", name)
-		}
+	if err := globalChainNameConflict(inlineNames, localNames); err != nil {
+		return err
 	}
 	plan, err := buildGlobalChainPlan(item, inlineNames, localNames, providerNames)
 	if err != nil {
@@ -490,6 +482,41 @@ func applyProviderDialerProxy(value any, dialer string) {
 	}
 }
 
+// globalChainNameConflict is the name-collision half of applyGlobalChainConfig's
+// checks, shared with parseGlobalChainProxyGroups so save-time validation
+// (validateChainStatic) refuses what start would refuse, instead of the
+// instance saving fine and then failing to start.
+func globalChainNameConflict(inlineNames, localNames []string) error {
+	for _, name := range inlineNames {
+		if name == globalChainSelectGroupName || name == globalChainRelayGroupName {
+			return fmt.Errorf("proxy name %q conflicts with generated global-chain group", name)
+		}
+	}
+	inlineKnown := stringSet(inlineNames)
+	for _, name := range localNames {
+		if inlineKnown[name] {
+			return fmt.Errorf("local proxy name %q conflicts with profile proxy", name)
+		}
+	}
+	return nil
+}
+
+func globalChainLocalNameConflict(config, localProxies string) error {
+	var cfg map[string]any
+	if err := yaml.Unmarshal([]byte(config), &cfg); err != nil {
+		return fmt.Errorf("parse profile config: %w", err)
+	}
+	_, inlineNames, err := proxyItemsAndNames(cfg["proxies"])
+	if err != nil {
+		return err
+	}
+	_, localNames, err := parseLocalProxyItems(localProxies)
+	if err != nil {
+		return err
+	}
+	return globalChainNameConflict(inlineNames, localNames)
+}
+
 func parseGlobalChainProxyGroups(config string, item *Instance) ([]ProfileProxyGroup, error) {
 	var cfg map[string]any
 	if err := yaml.Unmarshal([]byte(config), &cfg); err != nil {
@@ -507,6 +534,9 @@ func parseGlobalChainProxyGroups(config string, item *Instance) ([]ProfileProxyG
 		return nil, err
 	}
 	providerNames := proxyProviderNames(cfg["proxy-providers"])
+	if err := globalChainNameConflict(inlineNames, localNames); err != nil {
+		return nil, err
+	}
 	plan, err := buildGlobalChainPlan(item, inlineNames, localNames, providerNames)
 	if err != nil {
 		return nil, err

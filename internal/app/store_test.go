@@ -2516,3 +2516,35 @@ func TestStoreDeleteSucceedsWhenDirectoryRemovalFails(t *testing.T) {
 		t.Fatal("record still present")
 	}
 }
+
+// B4: a local proxy named like a profile proxy fails at start; it must be
+// refused at save time too, also when the chain is left empty.
+func TestStoreRejectsLocalProxyNameCollisionWithEmptyChain(t *testing.T) {
+	withPortFree(t, func(int) bool { return true })
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.CreateProfile("Sub", subscriptionConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	colliding := "- name: US-01\n  type: socks5\n  server: 127.0.0.1\n  port: 1080\n"
+	_, err = store.CreateWithOptions(createInstanceOptions{
+		Name: "A", ProfileID: profile.ID, MixedPort: 28151, ControllerPort: 29151,
+		Mode: InstanceModeGlobalChain, LocalProxies: colliding,
+	})
+	if err == nil || !strings.Contains(err.Error(), "conflicts with profile proxy") {
+		t.Fatalf("create with colliding local proxy: err = %v, want conflict", err)
+	}
+
+	item, err := store.CreateWithOptions(createInstanceOptions{
+		Name: "B", ProfileID: profile.ID, MixedPort: 28152, ControllerPort: 29152, Mode: InstanceModeGlobalChain,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateWithOptions(item.ID, updateInstanceOptions{LocalProxies: &colliding}); err == nil {
+		t.Fatal("update to a colliding local proxy was accepted")
+	}
+}
