@@ -26,6 +26,7 @@
 import { computed, reactive, ref, watch } from "vue";
 import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
+import type { CreateInstancePayload } from "../../bridge.ts";
 import { defaultProxyBind, instanceModes } from "../../constants.ts";
 import { profileReferenceCount } from "../../state.ts";
 import type { FleetProfile } from "../../state.ts";
@@ -34,36 +35,6 @@ import ChainOrderField from "../shared/ChainOrderField.vue";
 import LocalProxyField from "../shared/LocalProxyField.vue";
 import ProxyBindField from "../shared/ProxyBindField.vue";
 import { useChainCandidates } from "../shared/use-chain-candidates.ts";
-
-// Shape of the payload createInstanceFromForm() (pre-Vue app.ts) builds
-// and POSTs to /api/instances. Today that function reads these fields
-// straight off el.createName/el.createProfile/etc. -- once this component
-// owns that markup those DOM reads return nothing meaningful, so the
-// function needs to take the payload as a parameter instead.
-// `actions.createInstance` does not exist on FleetActions yet; reported to
-// the integrator (see the handoff report) with this exact shape.
-interface CreateInstancePayload {
-  name: string;
-  profileId: string;
-  mixedPort: number;
-  proxyBind: string;
-  controllerPort: number;
-  mode: string;
-  localProxies: string;
-  chain: string[];
-  autoRestart: boolean;
-}
-
-// Shape GET /api/ports/suggest resolves to (mirrors pre-Vue app.ts's
-// SuggestedPorts). fillSuggestedPorts() currently writes straight onto
-// el.createMixedPort.placeholder/el.createControllerPort.placeholder; this
-// component needs the value returned instead, so it can bind its own
-// placeholder refs. `actions.suggestPorts` does not exist on FleetActions
-// yet either -- same handoff.
-interface SuggestedPorts {
-  mixedPort?: number;
-  controllerPort?: number;
-}
 
 interface CreateFormState {
   name: string;
@@ -160,7 +131,7 @@ async function loadSuggestedPorts(): Promise<void> {
   // reset (both fields are cleared below before this runs) -- kept for
   // exact parity in case that ever stops being true.
   if (form.mixedPort && form.controllerPort) return;
-  const ports: SuggestedPorts = await actions.suggestPorts();
+  const ports = await actions.suggestPorts();
   mixedPortPlaceholder.value = ports.mixedPort ? `建议 ${ports.mixedPort}` : "自动";
   controllerPortPlaceholder.value = ports.controllerPort ? `建议 ${ports.controllerPort}` : "自动";
 }

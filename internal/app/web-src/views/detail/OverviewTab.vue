@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Vue replacement for #tab-overview's markup (index.html:207-276): the
-// read-only port/mode/chain summary panel and the "编辑基础信息" edit form.
+// "编辑基础信息" edit form, beside OverviewSummary's read-only panel.
 //
 // Ports four things from the pre-Vue app.ts: the edit-form half of
 // renderPanels() (`if ((!state.editDirty || state.editInstanceId !==
@@ -20,20 +20,12 @@ import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
 import { api } from "../../api.ts";
 import { activeInstance, profileReferenceCount } from "../../state.ts";
-import { defaultProxyBind, instanceModes, ipCheckPresets } from "../../constants.ts";
+import { defaultProxyBind, instanceModes } from "../../constants.ts";
 import { createActionGate, profileOptionLabel } from "../../app-logic.ts";
-import {
-  chainSummary,
-  instanceMode,
-  modeLabel,
-  proxyEndpointText,
-  restartEvidenceText,
-  selectionSummary,
-} from "../../format.ts";
 import { refreshInstancesList } from "./instance-refresh.ts";
 import { changedEditBody, editFieldLabel, editFieldsFromInstance, editPutBody, resyncEditFields } from "./edit-fields.ts";
 import type { EditFields } from "./edit-fields.ts";
-import { ipCheck, ipCheckPreset, ipCheckUrl, persistIpCheckUrl, pickIpCheckPreset } from "./ip-check.ts";
+import OverviewSummary from "./OverviewSummary.vue";
 import ChainOrderField from "../shared/ChainOrderField.vue";
 import InlineYamlEditor from "../shared/InlineYamlEditor.vue";
 import LocalProxyField from "../shared/LocalProxyField.vue";
@@ -199,81 +191,11 @@ async function saveBasics(): Promise<void> {
 function referenceCount(profileId: string): number {
   return profileReferenceCount(store, profileId);
 }
-
-// FleetInstance's optional overview fields fall back the same way
-// renderPanels() did (pre-Vue app.ts).
-const overviewMixed = computed(() => (selected.value ? proxyEndpointText(selected.value) : ""));
-const overviewProxyBind = computed(() => selected.value?.proxyBind || defaultProxyBind);
-const overviewController = computed(() => (selected.value ? `127.0.0.1:${selected.value.controllerPort}` : ""));
-const overviewMode = computed(() => (selected.value ? modeLabel(instanceMode(selected.value)) : ""));
-const overviewChain = computed(() => (selected.value ? chainSummary(selected.value) : ""));
-const overviewProfile = computed(() => selected.value?.profileName || selected.value?.profileId || "无");
-const overviewUserConfig = computed(() => selected.value?.profileConfigPath || selected.value?.userConfigPath || "");
-const overviewRuntimeConfig = computed(() => selected.value?.runtimeConfigPath || "");
-const overviewSelection = computed(() => (selected.value ? selectionSummary(selected.value) : ""));
-const overviewConfigOverride = computed(() => (selected.value?.configOverride?.trim() ? "已设置" : "无"));
-// Crash-watchdog status + evidence (#2): a short "开启/关闭" state plus --
-// only when there is anything to report -- restart count and last crash
-// reason, so the operator can tell "armed but never fired" apart from
-// "armed and it already saved this instance once".
-const overviewExitIp = computed(() => {
-  const id = selected.value?.id;
-  if (!id) return "";
-  if (ipCheck.running.has(id)) return "测试中…";
-  const result = ipCheck.results[id];
-  if (!result) return "未测试";
-  const at = new Date(result.at).toLocaleTimeString("zh-CN", { hour12: false });
-  if (result.error) return `测试失败（${at}）：${result.error}`;
-  return `${result.ip}（${at}，${result.elapsedMs} ms）`;
-});
-const overviewAutoRestart = computed(() => {
-  if (!selected.value) return "";
-  const base = selected.value.autoRestart ? "已开启" : "已关闭";
-  const evidence = restartEvidenceText(selected.value);
-  return evidence ? `${base} · ${evidence}` : base;
-});
 </script>
 
 <template>
   <div class="split">
-    <section class="panel">
-      <h3>端口</h3>
-      <dl class="kv">
-        <dt>本地代理</dt>
-        <dd id="overviewMixed">{{ overviewMixed }}</dd>
-        <dt>代理绑定</dt>
-        <dd id="overviewProxyBind">{{ overviewProxyBind }}</dd>
-        <dt>外部控制器</dt>
-        <dd id="overviewController">{{ overviewController }}</dd>
-        <dt>实例模式</dt>
-        <dd id="overviewMode">{{ overviewMode }}</dd>
-        <dt>生效链路</dt>
-        <dd id="overviewChain">{{ overviewChain }}</dd>
-        <dt>配置档</dt>
-        <dd id="overviewProfile">{{ overviewProfile }}</dd>
-        <dt>配置文件</dt>
-        <dd id="overviewUserConfig">{{ overviewUserConfig }}</dd>
-        <dt>运行配置</dt>
-        <dd id="overviewRuntimeConfig">{{ overviewRuntimeConfig }}</dd>
-        <dt>已保存节点</dt>
-        <dd id="overviewSelection">{{ overviewSelection }}</dd>
-        <dt>配置覆盖</dt>
-        <dd id="overviewConfigOverride">{{ overviewConfigOverride }}</dd>
-        <dt>崩溃自动重启</dt>
-        <dd id="overviewAutoRestart">{{ overviewAutoRestart }}</dd>
-        <dt>出口 IP</dt>
-        <dd id="overviewExitIp">{{ overviewExitIp }}</dd>
-      </dl>
-      <div class="ip-check-url">
-        <span>测试 IP 网址</span>
-        <select id="ipCheckPreset" :value="ipCheckPreset" @change="pickIpCheckPreset">
-          <option v-for="preset in ipCheckPresets" :key="preset" :value="preset">{{ preset }}</option>
-          <option value="">自定义…</option>
-        </select>
-        <input id="ipCheckUrl" v-model="ipCheckUrl" :placeholder="ipCheckPresets[0]" @change="persistIpCheckUrl">
-      </div>
-      <p class="field-note">点击标签行的“测试 IP”后，经这个实例的混合端口请求该网址，网址需返回纯文本 IP 或带 <code>ip</code> 字段的 JSON。</p>
-    </section>
+    <OverviewSummary />
     <section id="editForm" class="panel">
       <h3>编辑基础信息</h3>
       <label class="stacked">
