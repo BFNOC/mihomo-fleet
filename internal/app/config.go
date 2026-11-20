@@ -43,18 +43,44 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
+	cfg, parsed, err := buildRuntimeConfig(item, raw)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	// M4 (REVIEW-2026-07-04.md): this was the project's only non-atomic
+	// config write -- os.WriteFile can leave a truncated file behind if the
+	// process dies mid-write, which mihomo would then fail to start from.
+	// writeFileAtomic (util.go) writes to a temp file in the same directory
+	// and renames it into place, matching the 0600 permissions used here
+	// before (same-user child process, no other principals need read access).
+	if err := writeFileAtomic(item.RuntimeConfigPath, out, 0o600); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
+// buildRuntimeConfig is writeRuntimeConfig minus the file I/O: it returns the
+// generated runtime config and the pre-mutation snapshot described above.
+// Save-time validation (validatePortMappingTargets) runs it on a candidate
+// instance so it refuses exactly what start would refuse.
+func buildRuntimeConfig(item *Instance, raw []byte) (map[string]any, map[string]any, error) {
 	var cfg map[string]any
 	if len(raw) == 0 {
 		cfg = make(map[string]any)
 	} else if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return nil, fmt.Errorf("parse user config: %w", err)
+		return nil, nil, fmt.Errorf("parse user config: %w", err)
 	}
 	if cfg == nil {
 		cfg = make(map[string]any)
 	}
 	override, err := parseConfigOverride(item.ConfigOverride)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	applyConfigOverride(cfg, override)
 	parsed := make(map[string]any, len(cfg))
@@ -65,7 +91,7 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 	cleanRuntimeConfig(cfg)
 	if instanceMode(item.Mode) == InstanceModeGlobalChain {
 		if err := applyGlobalChainConfig(cfg, item); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Global-chain mode replaced "rules" wholesale (NETWORK,UDP,REJECT +
 		// MATCH), dropping whatever the override spliced in above. Re-splice
@@ -84,24 +110,22 @@ func writeRuntimeConfig(item *Instance, profile *Profile) (map[string]any, error
 			cfg["rule-providers"] = providers
 		}
 	}
+	// After the mode step, so the targets checked are the final proxies and
+	// groups (global-chain mode has merged the local proxies and replaced the
+	// groups by then).
+	if err := checkPortMappingTargets(cfg, item.PortMappings); err != nil {
+		return nil, nil, err
+	}
+	// Also at generation, not only on save: a stored instance (hand-edited, or
+	// written before this check existed) must not start with a bind its
+	// mappings would widen.
+	if err := checkPortMappingBind(instanceProxyBind(item.ProxyBind), item.PortMappings); err != nil {
+		return nil, nil, err
+	}
 	if err := applyRuntimeFields(cfg, item); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
-	out, err := yaml.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
-	// M4 (REVIEW-2026-07-04.md): this was the project's only non-atomic
-	// config write -- os.WriteFile can leave a truncated file behind if the
-	// process dies mid-write, which mihomo would then fail to start from.
-	// writeFileAtomic (util.go) writes to a temp file in the same directory
-	// and renames it into place, matching the 0600 permissions used here
-	// before (same-user child process, no other principals need read access).
-	if err := writeFileAtomic(item.RuntimeConfigPath, out, 0o600); err != nil {
-		return nil, err
-	}
-	return parsed, nil
+	return cfg, parsed, nil
 }
 
 // overrideNodeSetKeys are the profile keys that define the node set. The
@@ -277,9 +301,16 @@ func applyProxyBindFields(cfg map[string]any, item *Instance) error {
 	if err != nil {
 		return err
 	}
+	// Port mappings ride on the same bind addresses as the mixed port. With
+	// none, the output is exactly what it was before mappings existed.
+	mapped := portMappingListeners(item.PortMappings, addrs, portMappingUDP(item.Mode, item.ChainUDP))
 	if len(addrs) == 1 {
 		cfg["mixed-port"] = item.MixedPort
-		delete(cfg, "listeners")
+		if len(mapped) > 0 {
+			cfg["listeners"] = mapped
+		} else {
+			delete(cfg, "listeners")
+		}
 		addr := addrs[0]
 		if addr == defaultProxyBind {
 			cfg["allow-lan"] = false
@@ -294,7 +325,7 @@ func applyProxyBindFields(cfg map[string]any, item *Instance) error {
 	delete(cfg, "mixed-port")
 	delete(cfg, "bind-address")
 	cfg["allow-lan"] = true
-	listeners := make([]any, 0, len(addrs))
+	listeners := make([]any, 0, len(addrs)+len(mapped))
 	for index, addr := range addrs {
 		listeners = append(listeners, map[string]any{
 			"name":   fmt.Sprintf("fleet-mixed-%d", index+1),
@@ -304,7 +335,7 @@ func applyProxyBindFields(cfg map[string]any, item *Instance) error {
 			"udp":    true,
 		})
 	}
-	cfg["listeners"] = listeners
+	cfg["listeners"] = append(listeners, mapped...)
 	return nil
 }
 

@@ -164,3 +164,11 @@ test("shellQuote keeps a hostile value inside one shell word", async () => {
   assert.equal(out, hostile, "the shell must see exactly the original value, nothing executed");
   assert.equal(shellQuote("plain"), "'plain'");
 });
+
+test("port mapping lines follow every bind address of the instance", async () => {
+  const { portMappingLines } = await import("./format.ts");
+  assert.deepEqual(portMappingLines({ proxyBind: "127.0.0.1,::1", portMappings: [{ port: 10001, proxy: "us" }] }), [
+    "127.0.0.1:10001，[::1]:10001 → us",
+  ]);
+  assert.deepEqual(portMappingLines({ proxyBind: "", portMappings: undefined }), []);
+});

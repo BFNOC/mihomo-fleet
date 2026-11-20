@@ -53,7 +53,11 @@ type Instance struct {
 	// dialer-proxy chain) as TCP, and is still rejected if that target cannot
 	// carry UDP. Off by default because a middle hop that cannot relay UDP
 	// then fails those flows instead of rejecting them up front.
-	ChainUDP        bool              `json:"chainUdp,omitempty"`
+	ChainUDP bool `json:"chainUdp,omitempty"`
+	// PortMappings are extra inbound ports, each pinned to one proxy or group
+	// (port_mappings.go). Empty means off; the runtime config is then the
+	// same as before the field existed.
+	PortMappings    []PortMapping     `json:"portMappings,omitempty"`
 	SelectedProxies map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup   string            `json:"selectedGroup,omitempty"`
 	SelectedProxy   string            `json:"selectedProxy,omitempty"`
@@ -115,6 +119,7 @@ type InstanceView struct {
 	ConfigOverride    string            `json:"configOverride,omitempty"`
 	Chain             []string          `json:"chain,omitempty"`
 	ChainUDP          bool              `json:"chainUdp,omitempty"`
+	PortMappings      []PortMapping     `json:"portMappings,omitempty"`
 	SelectedProxies   map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup     string            `json:"selectedGroup,omitempty"`
 	SelectedProxy     string            `json:"selectedProxy,omitempty"`
@@ -205,6 +210,8 @@ type ChainCandidate struct {
 type ChainCandidatesResult struct {
 	Candidates    []ChainCandidate `json:"candidates"`
 	ProviderNames []string         `json:"providerNames,omitempty"`
+	GroupNames    []string         `json:"groupNames,omitempty"`
+	ProxyNames    []string         `json:"proxyNames,omitempty"`
 	LocalError    string           `json:"localError,omitempty"`
 	Truncated     bool             `json:"truncated,omitempty"`
 }
@@ -325,7 +332,8 @@ type ProxyInstanceOption struct {
 //   - 2: BundleInstance.ConfigOverride.
 //   - 3: BundleInstance.ChainUDP. Added in 1.7.0 without a bump, so 1.6.1
 //     accepted those bundles and dropped the field on re-export.
-const FleetBundleVersion = 3
+//   - 4: BundleInstance.PortMappings.
+const FleetBundleVersion = 4
 
 const fleetBundleMinVersion = 1
 
@@ -402,6 +410,7 @@ type BundleInstance struct {
 	ConfigOverride  string            `json:"configOverride,omitempty"`
 	Chain           []string          `json:"chain,omitempty"`
 	ChainUDP        bool              `json:"chainUdp,omitempty"`
+	PortMappings    []PortMapping     `json:"portMappings,omitempty"`
 	SelectedProxies map[string]string `json:"selectedProxies,omitempty"`
 	SelectedGroup   string            `json:"selectedGroup,omitempty"`
 	SelectedProxy   string            `json:"selectedProxy,omitempty"`
@@ -426,13 +435,14 @@ type BundleInstance struct {
 // makes a partial "some created, some skipped" result impossible in normal
 // operation.
 type ImportItemResult struct {
-	OriginalName    string `json:"originalName"`
-	Name            string `json:"name"`
-	ID              string `json:"id"`
-	Renamed         bool   `json:"renamed,omitempty"`
-	PortReallocated bool   `json:"portReallocated,omitempty"`
-	MixedPort       int    `json:"mixedPort,omitempty"`
-	ControllerPort  int    `json:"controllerPort,omitempty"`
+	OriginalName    string        `json:"originalName"`
+	Name            string        `json:"name"`
+	ID              string        `json:"id"`
+	Renamed         bool          `json:"renamed,omitempty"`
+	PortReallocated bool          `json:"portReallocated,omitempty"`
+	MixedPort       int           `json:"mixedPort,omitempty"`
+	ControllerPort  int           `json:"controllerPort,omitempty"`
+	PortMappings    []PortMapping `json:"portMappings,omitempty"`
 }
 
 // ImportResult is POST /api/import's response body: exactly what was

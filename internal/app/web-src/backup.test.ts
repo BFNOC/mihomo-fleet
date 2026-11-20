@@ -65,3 +65,10 @@ test("the backend's bundle-version error is localized", async () => {
   const { localizedMessage } = await import("./messages.ts");
   assert.equal(localizedMessage("unsupported bundle version 4 (expected 1 to 3)"), "备份文件版本 4 不受支持（当前程序支持版本 1–3）。");
 });
+
+test("an import that moved mapped ports reports where they went", () => {
+  const line = describeImportItem("instance", item({
+    portReallocated: true, mixedPort: 28002, controllerPort: 29002, portMappings: [{ port: 10007, proxy: "us" }],
+  }));
+  assert.equal(line, "HK（端口冲突，已重新分配为 28002/29002；端口映射现为 10007 → us）");
+});

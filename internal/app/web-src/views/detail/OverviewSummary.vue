@@ -15,6 +15,7 @@ import {
   restartEvidenceText,
   selectionSummary,
 } from "../../format.ts";
+import { portMappingSummary } from "../../port-mappings.ts";
 import { ipCheck, ipCheckPreset, ipCheckUrl, persistIpCheckUrl, pickIpCheckPreset } from "./ip-check.ts";
 
 const selected = computed(() => activeInstance(store));
@@ -30,6 +31,7 @@ const overviewProfile = computed(() => selected.value?.profileName || selected.v
 const overviewUserConfig = computed(() => selected.value?.profileConfigPath || selected.value?.userConfigPath || "");
 const overviewRuntimeConfig = computed(() => selected.value?.runtimeConfigPath || "");
 const overviewSelection = computed(() => (selected.value ? selectionSummary(selected.value) : ""));
+const overviewPortMappings = computed(() => portMappingSummary(selected.value?.portMappings));
 const overviewConfigOverride = computed(() => (selected.value?.configOverride?.trim() ? "已设置" : "无"));
 // Crash-watchdog status + evidence (#2): a short "开启/关闭" state plus --
 // only when there is anything to report -- restart count and last crash
@@ -61,6 +63,8 @@ const overviewAutoRestart = computed(() => {
       <dd id="overviewMixed">{{ overviewMixed }}</dd>
       <dt>代理绑定</dt>
       <dd id="overviewProxyBind">{{ overviewProxyBind }}</dd>
+      <dt>端口映射</dt>
+      <dd id="overviewPortMappings">{{ overviewPortMappings }}</dd>
       <dt>外部控制器</dt>
       <dd id="overviewController">{{ overviewController }}</dd>
       <dt>实例模式</dt>

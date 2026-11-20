@@ -86,13 +86,17 @@ func putMihomoProxy(ctx context.Context, item *Instance, group, proxy string) er
 //     first rather than trusting the stored string's shape.
 //   - No "force" query parameter is ever sent (force defaults to false).
 //     ApplyConfig(cfg, force) applies proxies/rules/DNS unconditionally
-//     either way; force only gates whether listener sockets (ports/binds)
-//     get torn down and recreated. Manager.ReloadContext already refuses to
-//     call this at all when the controller/mixed port or proxy bind changed,
-//     so there is never a listener change to force through here -- passing
-//     force=true would just add an unnecessary listener teardown/recreate
-//     (and a real chance of dropping the exact connections this feature
-//     exists to avoid dropping) to a request that never touches listeners.
+//     either way. force gates only the top-level listeners (port,
+//     mixed-port, socks-port, ...): updateListeners calls
+//     PatchInboundListeners for the named `listeners:` entries before its
+//     `if !force` return, so those are patched on every reload regardless.
+//     Manager.ReloadContext refuses to call this at all when the
+//     controller/mixed port, proxy bind or port mappings changed, so the
+//     named listeners it sends are always the ones already running and the
+//     patch leaves them alone. Passing force=true would just add an
+//     unnecessary teardown/recreate of the top-level listeners (and a real
+//     chance of dropping the exact connections this feature exists to avoid
+//     dropping).
 //   - PATCH /configs (mihomo's other /configs verb) is a different,
 //     narrower endpoint -- it patches a handful of in-memory fields
 //     (port, socks-port, mixed-port, tun, ...) without reloading from a

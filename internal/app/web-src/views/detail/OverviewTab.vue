@@ -29,8 +29,11 @@ import OverviewSummary from "./OverviewSummary.vue";
 import ChainOrderField from "../shared/ChainOrderField.vue";
 import InlineYamlEditor from "../shared/InlineYamlEditor.vue";
 import LocalProxyField from "../shared/LocalProxyField.vue";
+import PortMappingsField from "../shared/PortMappingsField.vue";
 import ProxyBindField from "../shared/ProxyBindField.vue";
 import { useChainCandidates } from "../shared/use-chain-candidates.ts";
+import { portMappingProblem, portMappingTargetOptions } from "../../port-mappings.ts";
+import type { PortMappingRow } from "../../port-mappings.ts";
 
 const selected = computed(() => activeInstance(store));
 
@@ -46,9 +49,12 @@ const editConfigOverride = ref("");
 // because a <textarea> could not hold anything else.
 const editChain = ref<string[]>([]);
 const editChainUdp = ref(false);
+const editPortMappings = ref<PortMappingRow[]>([]);
 const editAutoRestart = ref(false);
 
 const showChainFields = computed(() => editMode.value === instanceModes.globalChain);
+// Rule mode only needs the candidate request once mappings are in use.
+const needsCandidates = computed(() => showChainFields.value || editPortMappings.value.length > 0);
 
 // Declared after showChainFields on purpose: useChainCandidates() watches its
 // `active` getter with immediate: true, so it reads that computed during setup and
@@ -59,8 +65,11 @@ const showChainFields = computed(() => editMode.value === instanceModes.globalCh
 const chainCandidates = useChainCandidates(
   () => editProfile.value,
   () => editLocalProxies.value,
-  () => showChainFields.value && store.activeTab === "overview",
+  () => needsCandidates.value && store.activeTab === "overview",
 );
+const mappingOptions = computed(() =>
+  portMappingTargetOptions(editMode.value, chainCandidates.state.candidates, chainCandidates.state.groupNames, chainCandidates.state.proxyNames));
+const mappingUdp = computed(() => !showChainFields.value || editChainUdp.value);
 
 // Mirrors markEditFormDirty() (pre-Vue app.ts) exactly.
 function markDirty(): void {
@@ -86,6 +95,7 @@ function currentForm(): EditFields {
     configOverride: editConfigOverride.value,
     chain: [...editChain.value],
     chainUdp: editChainUdp.value,
+    portMappings: editPortMappings.value.map((row) => ({ ...row })),
     autoRestart: editAutoRestart.value,
   };
 }
@@ -101,6 +111,7 @@ function applyForm(fields: EditFields): void {
   editConfigOverride.value = fields.configOverride;
   editChain.value = [...fields.chain];
   editChainUdp.value = fields.chainUdp;
+  editPortMappings.value = fields.portMappings.map((row) => ({ ...row }));
   editAutoRestart.value = fields.autoRestart;
 }
 
@@ -156,6 +167,11 @@ async function saveBasics(): Promise<void> {
   // gets a reason instead of a bare 400.
   if (!editProfile.value) {
     actions.showMessage("请先创建配置档，再保存实例。", "error");
+    return;
+  }
+  const mappingProblem = portMappingProblem(editPortMappings.value, Number(editMixedPort.value), Number(editControllerPort.value));
+  if (mappingProblem) {
+    actions.showMessage(mappingProblem, "error");
     return;
   }
   // Only what differs from the server copy the form was seeded from, so an
@@ -251,6 +267,19 @@ function referenceCount(profileId: string): number {
           <input id="editChainUdp" v-model="editChainUdp" type="checkbox" @change="markDirty">
           <span>UDP 也走链路（默认拒绝 UDP；链路中各跳需支持 UDP）</span>
         </label>
+      </div>
+      <div class="stacked">
+        <span>端口映射</span>
+        <PortMappingsField
+          v-model="editPortMappings"
+          :options="mappingOptions"
+          :mixed-port="Number(editMixedPort)"
+          :controller-port="Number(editControllerPort)"
+          :udp="mappingUdp"
+          :chain-default="showChainFields && !editChain.length"
+          list-id="editPortMappingTargets"
+          @dirty="markDirty"
+        />
       </div>
       <div class="stacked">
         <span>配置覆盖 YAML</span>

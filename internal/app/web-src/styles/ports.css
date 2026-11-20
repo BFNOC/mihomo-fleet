@@ -97,6 +97,12 @@
   font: 12px/1.4 var(--mono);
 }
 
+/* A port mapping under its instance's main endpoint: same line shape, quieter. */
+.port-mapping-line {
+  margin-top: -6px;
+  color: var(--muted);
+}
+
 .copy-tools {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

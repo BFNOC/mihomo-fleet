@@ -26,6 +26,16 @@ export function localizedMessage(message: unknown): string {
   const text = String(message || "");
   const label = errorLabelMap[text];
   if (label) return label;
+  // Backup validation prefixes the instance an inner error belongs to
+  // (export.go validateBundle); translate the inner part like any other.
+  const nested = text.match(/^instance "(.+?)": (.+)$/s);
+  if (nested) return `实例 ${nested[1]}：${localizedMessage(nested[2])}`;
+  // An import failure wraps the real reason; translate that part too.
+  const created = text.match(/^create (instance|profile) "(.+?)": (.+)$/s);
+  if (created) return `创建${created[1] === "instance" ? "实例" : "配置档"} ${created[2]} 失败：${localizedMessage(created[3])}`;
+  // A shared-profile edit refused for another instance's port mapping.
+  const breaks = text.match(/^config would break instance "(.+?)": (.+)$/s);
+  if (breaks) return `这份配置会让实例 ${breaks[1]} 的端口映射失效，未保存：${localizedMessage(breaks[2])}`;
   for (const [pattern, render] of errorPatternList) {
     const match = text.match(pattern);
     if (match) return render(match);

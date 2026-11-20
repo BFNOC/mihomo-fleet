@@ -130,25 +130,47 @@ type createInstanceOptions struct {
 	ConfigOverride         string
 	Chain                  []string
 	ChainUDP               bool
-	SelectedProxies        map[string]string
-	SelectedGroup          string
-	SelectedProxy          string
-	AutoRestart            bool
+	PortMappings           []PortMapping
+	// ReallocatePortMappings moves a mapping whose port is taken to the next
+	// free one instead of failing: clone (the source holds every port) and the
+	// import retry use it. A plain create refuses, since the user typed it.
+	ReallocatePortMappings bool
+	// SkipPortMappingTargetCheck is for import: a fleet can legitimately hold
+	// a mapping whose target its profile has since lost (a subscription
+	// refresh dropped it), and refusing that bundle would make the backup
+	// unrestorable. Start reports the dangling target either way.
+	SkipPortMappingTargetCheck bool
+	// AvoidPorts are ports a reallocation should not move onto even though
+	// they are free right now: an import passes the other bundle instances'
+	// ports, so moving one instance's mapping cannot take a port another
+	// instance of the same bundle still needs. Mixed/controller auto
+	// allocation skips them too.
+	AvoidPorts      []int
+	SelectedProxies map[string]string
+	SelectedGroup   string
+	SelectedProxy   string
+	AutoRestart     bool
 }
 
 type updateInstanceOptions struct {
 	Name              string
 	ProfileID         string
 	ExpectedProfileID string
-	Config            string
-	MixedPort         int
-	ProxyBind         *string
-	ControllerPort    int
-	Mode              string
-	LocalProxies      *string
-	ConfigOverride    *string
-	Chain             *[]string
-	ChainUDP          *bool
+	// ExpectedPortMappings, when set, is the list the editor started from.
+	// The whole list is replaced on save, so a stale editor would otherwise
+	// silently restore a mapping another session just removed.
+	ExpectedPortMappings *[]PortMapping
+	Config               string
+	MixedPort            int
+	ProxyBind            *string
+	ControllerPort       int
+	Mode                 string
+	LocalProxies         *string
+	ConfigOverride       *string
+	Chain                *[]string
+	ChainUDP             *bool
+	// PortMappings: nil leaves them unchanged, an empty slice clears them.
+	PortMappings *[]PortMapping
 	// AutoRestart is a pointer (like ProxyBind/LocalProxies/Chain above)
 	// rather than a plain bool so UpdateWithOptions can tell "not present in
 	// this request" (nil, leave unchanged) apart from an explicit false --
@@ -496,6 +518,9 @@ func (s *Store) PatchProfile(id string, patch ProfilePatch) (*Profile, error) {
 		if patch.ExpectedConfig != nil && !bytes.Equal(previousConfig, []byte(*patch.ExpectedConfig)) {
 			return nil, conflictError{msg: "profile config changed since it was loaded"}
 		}
+		if err := s.checkDependentPortMappingsLocked(id, previousConfig, []byte(*patch.Config), ""); err != nil {
+			return nil, err
+		}
 		if err := writeFileAtomic(profile.ConfigPath, []byte(*patch.Config), 0o600); err != nil {
 			return nil, err
 		}
@@ -678,6 +703,11 @@ func (s *Store) ReplaceProfileSubscription(id, expectedURL, newURL string, fetch
 	originalProfile := cloneProfile(profile)
 	previousConfig, err := os.ReadFile(profile.ConfigPath)
 	if err != nil {
+		return nil, nil, err
+	}
+	// Replacing the URL is an explicit edit, unlike a scheduled refresh, so it
+	// can be refused when it would break another instance's port mappings.
+	if err := s.checkDependentPortMappingsLocked(id, previousConfig, []byte(fetched.Config), ""); err != nil {
 		return nil, nil, err
 	}
 	itemSnapshots := s.snapshotProfileInstancesLocked(id)
@@ -905,7 +935,13 @@ func (s *Store) Clone(id, name string, mixedPort, controllerPort int) (*Instance
 		ConfigOverride:  source.ConfigOverride,
 		Chain:           append([]string{}, source.Chain...),
 		ChainUDP:        source.ChainUDP,
-		AutoRestart:     source.AutoRestart,
+		// Same targets, new ports: the source still owns its own. Targets are
+		// copied as held, like an import: a target a refresh dropped fails
+		// the copy at start, the same as the source.
+		PortMappings:               clonePortMappings(source.PortMappings),
+		ReallocatePortMappings:     true,
+		SkipPortMappingTargetCheck: true,
+		AutoRestart:                source.AutoRestart,
 	})
 }
 
@@ -932,7 +968,29 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 	if _, err := parseConfigOverride(opts.ConfigOverride); err != nil {
 		return nil, err
 	}
+	mappings, err := normalizePortMappings(opts.PortMappings, opts.MixedPort, opts.ControllerPort)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkPortMappingBind(proxyBind, mappings); err != nil {
+		return nil, err
+	}
 	used := s.usedPortsLocked("")
+	// Mapping ports are claimed before the mixed/controller ports are
+	// auto-allocated, so an allocation can never land on a port the user
+	// explicitly mapped.
+	mappingUDP := portMappingUDP(mode, opts.ChainUDP)
+	// When reallocating, the scan also steers clear of where the mixed and
+	// controller ports are about to be allocated from (the bundle's or the
+	// clone source's numbers), so a moved mapping does not push those off too.
+	reserved := []int{opts.MixedPort, opts.ControllerPort}
+	if opts.ReallocatePortMappings {
+		reserved = append(reserved, opts.MixedStart, opts.ControllerStart)
+		reserved = append(reserved, opts.AvoidPorts...)
+	}
+	if err := s.claimPortMappingsLocked("", mappings, used, instanceProxyBind(proxyBind), mappingUDP, opts.ReallocatePortMappings, reserved...); err != nil {
+		return nil, err
+	}
 	if opts.MixedStart == 0 {
 		opts.MixedStart = 28000
 	}
@@ -962,13 +1020,14 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 			// only because mixed took it first.
 			mixedCandidates = markPortUsed(used, opts.ControllerStart)
 		}
+		mixedCandidates = withPortsUsed(mixedCandidates, opts.AvoidPorts)
 		opts.MixedPort = allocatePort(opts.MixedStart, mixedCandidates)
 	} else if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
 		return nil, portUnavailableError{msg: fmt.Sprintf("mixed proxy port %d is unavailable", opts.MixedPort)}
 	}
 	used[opts.MixedPort] = true
 	if opts.ControllerPort == 0 {
-		opts.ControllerPort = allocatePort(opts.ControllerStart, used)
+		opts.ControllerPort = allocatePort(opts.ControllerStart, withPortsUsed(used, opts.AvoidPorts))
 	} else if used[opts.ControllerPort] || !isPortFree(opts.ControllerPort) {
 		return nil, portUnavailableError{msg: fmt.Sprintf("controller port %d is unavailable", opts.ControllerPort)}
 	}
@@ -1016,6 +1075,28 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 			return nil, err
 		}
 	}
+	if len(mappings) > 0 && !opts.SkipPortMappingTargetCheck {
+		raw, err := os.ReadFile(profile.ConfigPath)
+		if err != nil {
+			cleanupCreatedProfile()
+			return nil, err
+		}
+		candidate := &Instance{
+			MixedPort:      opts.MixedPort,
+			ProxyBind:      proxyBind,
+			ControllerPort: opts.ControllerPort,
+			Mode:           mode,
+			LocalProxies:   opts.LocalProxies,
+			ConfigOverride: opts.ConfigOverride,
+			Chain:          opts.Chain,
+			ChainUDP:       opts.ChainUDP,
+			PortMappings:   mappings,
+		}
+		if err := validatePortMappingTargets(candidate, raw); err != nil {
+			cleanupCreatedProfile()
+			return nil, err
+		}
+	}
 	secret, err := randomToken()
 	if err != nil {
 		cleanupCreatedProfile()
@@ -1042,6 +1123,7 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		ConfigOverride:    opts.ConfigOverride,
 		Chain:             normalizeChainNames(opts.Chain),
 		ChainUDP:          opts.ChainUDP,
+		PortMappings:      mappings,
 		SelectedProxies:   cloneStringMap(opts.SelectedProxies),
 		SelectedGroup:     opts.SelectedGroup,
 		SelectedProxy:     opts.SelectedProxy,
@@ -1121,6 +1203,10 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	}
 	if opts.ExpectedProfileID != "" && item.ProfileID != opts.ExpectedProfileID {
 		return nil, conflictError{msg: "profile changed while configuration was being edited"}
+	}
+	if opts.ExpectedPortMappings != nil && !portMappingsEqual(*opts.ExpectedPortMappings, item.PortMappings) {
+		return nil, conflictError{msg: fmt.Sprintf("port mappings changed since they were loaded (now: %s; loaded: %s)",
+			describePortMappingsOrNone(item.PortMappings), describePortMappingsOrNone(*opts.ExpectedPortMappings))}
 	}
 	var profileItemSnapshots map[string]Instance
 	if opts.Config != "" {
@@ -1233,6 +1319,90 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	if opts.Chain != nil {
 		nextChain = normalizeChainNames(*opts.Chain)
 	}
+	nextChainUDP := item.ChainUDP
+	if opts.ChainUDP != nil {
+		nextChainUDP = *opts.ChainUDP
+	}
+	// Re-checked even when the request leaves the mappings alone: a new mixed
+	// or controller port may now collide with one of them.
+	nextMappings := item.PortMappings
+	if opts.PortMappings != nil {
+		nextMappings = *opts.PortMappings
+	}
+	nextMappings, err := normalizePortMappings(nextMappings, nextMixedPort, nextControllerPort)
+	if err != nil {
+		return nil, err
+	}
+	mappingsChanged := opts.PortMappings != nil && !portMappingsEqual(nextMappings, item.PortMappings)
+	if err := checkPortMappingBind(nextProxyBind, nextMappings); err != nil {
+		return nil, err
+	}
+	// A new bind or UDP setting changes what every mapping listener opens, so
+	// then all of them are probed, not only the added ports. (A running
+	// instance cannot get here with either change: the handler refuses it.)
+	endpointsChanged := len(nextMappings) > 0 && (nextProxyBind != instanceProxyBind(item.ProxyBind) ||
+		portMappingUDP(nextMode, nextChainUDP) != portMappingUDP(item.Mode, item.ChainUDP))
+	if mappingsChanged || endpointsChanged {
+		// Only ports the request adds are claimed and probed, for the same
+		// reason as the mixed port above: the instance's own mihomo may hold
+		// the ones it already had.
+		current := make(map[int]bool, len(item.PortMappings))
+		for _, m := range item.PortMappings {
+			current[m.Port] = true
+		}
+		var added []PortMapping
+		for _, m := range nextMappings {
+			if endpointsChanged || !current[m.Port] {
+				added = append(added, m)
+			}
+		}
+		if err := s.claimPortMappingsLocked(id, added, used, nextProxyBind, portMappingUDP(nextMode, nextChainUDP), false); err != nil {
+			return nil, err
+		}
+	}
+	// Anything that can change the proxy/group names a mapping resolves
+	// against re-runs the target check against the candidate config.
+	targetsAffected := mappingsChanged ||
+		(opts.ProfileID != "" && nextProfileID != item.ProfileID) ||
+		(opts.Mode != "" && nextMode != item.Mode) ||
+		opts.LocalProxies != nil || opts.Chain != nil || opts.ConfigOverride != nil || opts.Config != ""
+	if len(nextMappings) > 0 && targetsAffected {
+		raw := []byte(opts.Config)
+		if opts.Config == "" {
+			targetProfile, ok := s.profiles[nextProfileID]
+			if !ok {
+				return nil, profileNotFoundError{id: nextProfileID}
+			}
+			raw, err = os.ReadFile(targetProfile.ConfigPath)
+			if err != nil {
+				return nil, err
+			}
+		}
+		candidate := cloneInstance(item)
+		candidate.MixedPort = nextMixedPort
+		candidate.ProxyBind = nextProxyBind
+		candidate.ControllerPort = nextControllerPort
+		candidate.Mode = nextMode
+		candidate.LocalProxies = nextLocalProxies
+		candidate.ConfigOverride = nextConfigOverride
+		candidate.Chain = nextChain
+		candidate.ChainUDP = nextChainUDP
+		candidate.PortMappings = nextMappings
+		if err := validatePortMappingTargets(candidate, raw); err != nil {
+			return nil, err
+		}
+	}
+	if opts.Config != "" {
+		if sharedProfile, ok := s.profiles[nextProfileID]; ok {
+			current, err := os.ReadFile(sharedProfile.ConfigPath)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.checkDependentPortMappingsLocked(nextProfileID, current, []byte(opts.Config), id); err != nil {
+				return nil, err
+			}
+		}
+	}
 	// A non-empty chain is validated as before; an edit to the local proxies
 	// is too, even with an empty chain, for the name-collision check (B4).
 	chainInputsChanged := len(nextChain) > 0 || opts.LocalProxies != nil
@@ -1271,7 +1441,8 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		(opts.LocalProxies != nil && nextLocalProxies != item.LocalProxies) ||
 		(opts.ConfigOverride != nil && nextConfigOverride != item.ConfigOverride) ||
 		(opts.Chain != nil && !slices.Equal(nextChain, item.Chain)) ||
-		(opts.ChainUDP != nil && *opts.ChainUDP != item.ChainUDP)
+		(opts.ChainUDP != nil && *opts.ChainUDP != item.ChainUDP) ||
+		mappingsChanged
 	snapshot := *cloneInstance(item)
 	item.Name = nextName
 	if clearSelection {
@@ -1292,6 +1463,9 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 	}
 	if opts.ChainUDP != nil {
 		item.ChainUDP = *opts.ChainUDP
+	}
+	if opts.PortMappings != nil {
+		item.PortMappings = nextMappings
 	}
 	if opts.AutoRestart != nil {
 		// Deliberately outside configChanged above: AutoRestart is a
@@ -1515,6 +1689,7 @@ func cloneInstance(in *Instance) *Instance {
 	out := *in
 	out.ProxyBind = instanceProxyBind(in.ProxyBind)
 	out.Chain = append([]string{}, in.Chain...)
+	out.PortMappings = clonePortMappings(in.PortMappings)
 	out.SelectedProxies = cloneStringMap(in.SelectedProxies)
 	return &out
 }
@@ -1587,6 +1762,21 @@ func validateChainStaticRaw(raw []byte, localProxies string, chain []string) err
 // this to keep an explicitly-given port out of the *other* port's
 // auto-allocation candidate set (L5) without polluting the map that port's
 // own later availability check reads.
+// withPortsUsed is markPortUsed for a batch, copying the map once.
+func withPortsUsed(used map[int]bool, ports []int) map[int]bool {
+	if len(ports) == 0 {
+		return used
+	}
+	out := make(map[int]bool, len(used)+len(ports))
+	for k, v := range used {
+		out[k] = v
+	}
+	for _, port := range ports {
+		out[port] = true
+	}
+	return out
+}
+
 func markPortUsed(used map[int]bool, port int) map[int]bool {
 	out := make(map[int]bool, len(used)+1)
 	for k, v := range used {
@@ -1749,6 +1939,110 @@ func (s *Store) usedPortsLocked(exceptID string) map[int]bool {
 		}
 		used[item.MixedPort] = true
 		used[item.ControllerPort] = true
+		for _, m := range item.PortMappings {
+			used[m.Port] = true
+		}
 	}
 	return used
+}
+
+// portOwnerLocked names what holds port among the instances other than
+// exceptID, for a conflict message; "" when nothing in the store does.
+func (s *Store) portOwnerLocked(exceptID string, port int) string {
+	for _, item := range s.items {
+		if item.ID == exceptID {
+			continue
+		}
+		switch port {
+		case item.MixedPort:
+			return fmt.Sprintf("instance %q mixed proxy port", item.Name)
+		case item.ControllerPort:
+			return fmt.Sprintf("instance %q controller port", item.Name)
+		}
+		for _, m := range item.PortMappings {
+			if m.Port == port {
+				return fmt.Sprintf("instance %q port mapping %d -> %q", item.Name, m.Port, m.Proxy)
+			}
+		}
+	}
+	return ""
+}
+
+// claimPortMappingsLocked reserves every mapping's port in used, probing each
+// on bind. A taken port fails with what holds it, or -- when reallocate is set
+// -- moves to the next free port after it. reserved are ports this same
+// instance is about to use (its explicit mixed/controller ports) that used
+// does not know about yet.
+func (s *Store) claimPortMappingsLocked(exceptID string, mappings []PortMapping, used map[int]bool, bind string, udp, reallocate bool, reserved ...int) error {
+	taken := func(port int) bool {
+		return used[port] || slices.Contains(reserved, port)
+	}
+	// The mappings' own original ports stay off-limits while one of them is
+	// moved, so moving one never pushes a free sibling off its port in turn.
+	own := make(map[int]bool, len(mappings))
+	for _, m := range mappings {
+		own[m.Port] = true
+	}
+	// A bind address this host does not have (a backup from another machine)
+	// fails every probe, and scanning would turn that into a misleading
+	// "unable to allocate" that rolls back the whole import. Clone and import
+	// then keep only fleet-wide uniqueness and leave the address to start,
+	// which reports it as what it is; a plain create reports it right away.
+	probeBind := bind
+	if reallocate {
+		probeBind = onHostBindAddresses(bind)
+	}
+	probe := func(m PortMapping) error {
+		if probeBind == "" {
+			return nil
+		}
+		return checkPortMappingAvailable(probeBind, m, udp)
+	}
+	for i := range mappings {
+		m := mappings[i]
+		var reason string
+		if taken(m.Port) {
+			reason = s.portOwnerLocked(exceptID, m.Port)
+			if reason == "" {
+				reason = "another port of this instance"
+			}
+			reason = "held by " + reason
+		} else if err := probe(m); err != nil {
+			if !reallocate {
+				// Already names the port, target, address and cause.
+				return portUnavailableError{msg: err.Error()}
+			}
+			reason = err.Error()
+		} else {
+			used[m.Port] = true
+			continue
+		}
+		if !reallocate {
+			return portUnavailableError{msg: fmt.Sprintf("port mapping port %d (-> %q) is unavailable: %s", m.Port, m.Proxy, reason)}
+		}
+		next := 0
+		// The whole unprivileged range once: known-taken ports are skipped
+		// without a probe, so only free-looking candidates cost a bind.
+		for step := 1; step <= 65535-1024; step++ {
+			// Past 65535 the scan wraps to the low end of the unprivileged
+			// range rather than giving up on a mapping at the top.
+			port := m.Port + step
+			if port > 65535 {
+				port = 1024 + port - 65536
+			}
+			if taken(port) || own[port] {
+				continue
+			}
+			if probe(PortMapping{Port: port, Proxy: m.Proxy}) == nil {
+				next = port
+				break
+			}
+		}
+		if next == 0 {
+			return portUnavailableError{msg: fmt.Sprintf("unable to allocate a port for port mapping %d -> %q (%s)", m.Port, m.Proxy, reason)}
+		}
+		mappings[i].Port = next
+		used[next] = true
+	}
+	return nil
 }

@@ -25,22 +25,23 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			Name                  string   `json:"name"`
-			ProfileID             string   `json:"profileId"`
-			ProfileName           string   `json:"profileName"`
-			Config                string   `json:"config"`
-			SubscriptionURL       string   `json:"subscriptionUrl"`
-			AutoUpdate            *bool    `json:"autoUpdate"`
-			UpdateIntervalMinutes int      `json:"updateIntervalMinutes"`
-			MixedPort             int      `json:"mixedPort"`
-			ProxyBind             string   `json:"proxyBind"`
-			ControllerPort        int      `json:"controllerPort"`
-			Mode                  string   `json:"mode"`
-			LocalProxies          string   `json:"localProxies"`
-			ConfigOverride        string   `json:"configOverride"`
-			Chain                 []string `json:"chain"`
-			ChainUDP              bool     `json:"chainUdp"`
-			AutoRestart           bool     `json:"autoRestart"`
+			Name                  string        `json:"name"`
+			ProfileID             string        `json:"profileId"`
+			ProfileName           string        `json:"profileName"`
+			Config                string        `json:"config"`
+			SubscriptionURL       string        `json:"subscriptionUrl"`
+			AutoUpdate            *bool         `json:"autoUpdate"`
+			UpdateIntervalMinutes int           `json:"updateIntervalMinutes"`
+			MixedPort             int           `json:"mixedPort"`
+			ProxyBind             string        `json:"proxyBind"`
+			ControllerPort        int           `json:"controllerPort"`
+			Mode                  string        `json:"mode"`
+			LocalProxies          string        `json:"localProxies"`
+			ConfigOverride        string        `json:"configOverride"`
+			Chain                 []string      `json:"chain"`
+			ChainUDP              bool          `json:"chainUdp"`
+			PortMappings          []PortMapping `json:"portMappings"`
+			AutoRestart           bool          `json:"autoRestart"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -91,6 +92,7 @@ func (c *Controller) handleInstances(w http.ResponseWriter, r *http.Request) {
 			ConfigOverride:         req.ConfigOverride,
 			Chain:                  req.Chain,
 			ChainUDP:               req.ChainUDP,
+			PortMappings:           req.PortMappings,
 			AutoRestart:            req.AutoRestart,
 		})
 		if err != nil {
@@ -216,19 +218,22 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, view)
 	case http.MethodPut:
 		var req struct {
-			Name              string    `json:"name"`
-			ProfileID         string    `json:"profileId"`
-			ExpectedProfileID string    `json:"expectedProfileId"`
-			Config            string    `json:"config"`
-			MixedPort         int       `json:"mixedPort"`
-			ProxyBind         *string   `json:"proxyBind"`
-			ControllerPort    int       `json:"controllerPort"`
-			Mode              string    `json:"mode"`
-			LocalProxies      *string   `json:"localProxies"`
-			ConfigOverride    *string   `json:"configOverride"`
-			Chain             *[]string `json:"chain"`
-			ChainUDP          *bool     `json:"chainUdp"`
-			AutoRestart       *bool     `json:"autoRestart"`
+			Name              string `json:"name"`
+			ProfileID         string `json:"profileId"`
+			ExpectedProfileID string `json:"expectedProfileId"`
+			// The list the editor loaded; see updateInstanceOptions.
+			ExpectedPortMappings *[]PortMapping `json:"expectedPortMappings"`
+			Config               string         `json:"config"`
+			MixedPort            int            `json:"mixedPort"`
+			ProxyBind            *string        `json:"proxyBind"`
+			ControllerPort       int            `json:"controllerPort"`
+			Mode                 string         `json:"mode"`
+			LocalProxies         *string        `json:"localProxies"`
+			ConfigOverride       *string        `json:"configOverride"`
+			Chain                *[]string      `json:"chain"`
+			ChainUDP             *bool          `json:"chainUdp"`
+			PortMappings         *[]PortMapping `json:"portMappings"`
+			AutoRestart          *bool          `json:"autoRestart"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -277,6 +282,35 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 				return
 			}
 		}
+		// Any mapping change needs a stopped instance, target included: the
+		// listeners are recreated, and a hot reload that fails to bind one only
+		// logs it inside mihomo. An echo of the current list passes.
+		if c.manager.Busy(id) && req.PortMappings != nil && !portMappingsEqual(*req.PortMappings, current.PortMappings) {
+			writeError(w, http.StatusConflict, fmt.Errorf("stop the instance before changing port mappings (running: %s; requested: %s)",
+				describePortMappingsOrNone(current.PortMappings), describePortMappingsOrNone(*req.PortMappings)))
+			return
+		}
+		// A mode or ChainUDP edit flips the mapping listeners' udp flag; that is
+		// a listener change too, so it waits for a stopped instance as well.
+		if c.manager.Busy(id) && len(current.PortMappings) > 0 && (req.Mode != "" || req.ChainUDP != nil) {
+			nextMode, nextChainUDP := current.Mode, current.ChainUDP
+			if req.Mode != "" {
+				mode, err := normalizeInstanceMode(req.Mode)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				nextMode = mode
+			}
+			if req.ChainUDP != nil {
+				nextChainUDP = *req.ChainUDP
+			}
+			was, now := portMappingUDP(current.Mode, current.ChainUDP), portMappingUDP(nextMode, nextChainUDP)
+			if was != now {
+				writeError(w, http.StatusConflict, fmt.Errorf("stop the instance before changing port mapping udp (running udp=%t, requested udp=%t)", was, now))
+				return
+			}
+		}
 		if c.manager.Busy(id) && req.ProfileID != "" && current.ProfileID != req.ProfileID {
 			writeError(w, http.StatusConflict, errors.New("stop the instance before changing profile"))
 			return
@@ -297,19 +331,21 @@ func (c *Controller) handleInstanceRoot(w http.ResponseWriter, r *http.Request, 
 			}
 		}
 		item, err := c.store.UpdateWithOptions(id, updateInstanceOptions{
-			Name:              req.Name,
-			ProfileID:         req.ProfileID,
-			ExpectedProfileID: req.ExpectedProfileID,
-			Config:            req.Config,
-			MixedPort:         req.MixedPort,
-			ProxyBind:         req.ProxyBind,
-			ControllerPort:    req.ControllerPort,
-			Mode:              req.Mode,
-			LocalProxies:      req.LocalProxies,
-			ConfigOverride:    req.ConfigOverride,
-			Chain:             req.Chain,
-			ChainUDP:          req.ChainUDP,
-			AutoRestart:       req.AutoRestart,
+			Name:                 req.Name,
+			ProfileID:            req.ProfileID,
+			ExpectedProfileID:    req.ExpectedProfileID,
+			ExpectedPortMappings: req.ExpectedPortMappings,
+			Config:               req.Config,
+			MixedPort:            req.MixedPort,
+			ProxyBind:            req.ProxyBind,
+			ControllerPort:       req.ControllerPort,
+			Mode:                 req.Mode,
+			LocalProxies:         req.LocalProxies,
+			ConfigOverride:       req.ConfigOverride,
+			Chain:                req.Chain,
+			ChainUDP:             req.ChainUDP,
+			PortMappings:         req.PortMappings,
+			AutoRestart:          req.AutoRestart,
 		})
 		if err != nil {
 			status := http.StatusBadRequest
@@ -445,7 +481,11 @@ func (c *Controller) handleSelection(w http.ResponseWriter, r *http.Request, id 
 	// this also completes the "apply before persist" ordering L4 left
 	// unfinished (a failed persist no longer diverges from a live mihomo
 	// state that already moved).
-	if ps := c.manager.state(id); ps != nil {
+	// Starting is checked before the process: a start with port mappings has
+	// registered its process but stays starting for up to its readiness wait,
+	// and its controller may not be serving yet.
+	starting := c.manager.isStarting(id)
+	if ps := c.manager.state(id); ps != nil && !starting {
 		if req.Apply {
 			if err := ps.applyUserSelection(r.Context(), item, req.Group, req.Proxy); err != nil {
 				// mihomo's own rejection (unknown group/node, or any other
@@ -457,7 +497,7 @@ func (c *Controller) handleSelection(w http.ResponseWriter, r *http.Request, id 
 				return
 			}
 		}
-	} else if c.manager.isStarting(id) {
+	} else if starting {
 		// The instance is mid-launch: there is no controller port to push to
 		// yet, and pushing the selection now (instead of rejecting) would let
 		// it silently persist without ever reaching the process that is about

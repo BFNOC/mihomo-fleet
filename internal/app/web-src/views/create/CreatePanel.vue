@@ -26,29 +26,18 @@
 import { computed, reactive, ref, watch } from "vue";
 import { store } from "../../store.ts";
 import { actions } from "../../bridge.ts";
-import type { CreateInstancePayload } from "../../bridge.ts";
-import { defaultProxyBind, instanceModes } from "../../constants.ts";
+import { instanceModes } from "../../constants.ts";
 import { profileReferenceCount } from "../../state.ts";
 import type { FleetProfile } from "../../state.ts";
 import { profileOptionLabel } from "../../app-logic.ts";
 import ChainOrderField from "../shared/ChainOrderField.vue";
 import LocalProxyField from "../shared/LocalProxyField.vue";
+import PortMappingsField from "../shared/PortMappingsField.vue";
 import ProxyBindField from "../shared/ProxyBindField.vue";
 import { useChainCandidates } from "../shared/use-chain-candidates.ts";
-
-interface CreateFormState {
-  name: string;
-  profileId: string;
-  mode: string;
-  mixedPort: string;
-  proxyBind: string;
-  controllerPort: string;
-  localProxies: string;
-  // The chain is the array the payload sends, not text: it used to be a
-  // newline-delimited <textarea> that chainFromText() had to reparse.
-  chain: string[];
-  autoRestart: boolean;
-}
+import { portMappingProblem, portMappingTargetOptions } from "../../port-mappings.ts";
+import { blankCreateForm, createPayload } from "./create-form.ts";
+import type { CreateFormState } from "./create-form.ts";
 
 const mixedPortPlaceholder = ref("自动");
 const controllerPortPlaceholder = ref("自动");
@@ -58,17 +47,7 @@ const controllerPortPlaceholder = ref("自动");
 // content is never visible until the watcher below has already run a reset
 // against real data). The watcher, not these initializers, is what "resets
 // the form" from here on.
-const form = reactive<CreateFormState>({
-  name: "",
-  profileId: "",
-  mode: instanceModes.rule,
-  mixedPort: "",
-  proxyBind: defaultProxyBind,
-  controllerPort: "",
-  localProxies: "",
-  chain: [],
-  autoRestart: false,
-});
+const form = reactive<CreateFormState>(blankCreateForm(""));
 
 // Mirrors updateCreateProfileControls()'s hasProfiles-derived disables
 // (pre-Vue app.ts).
@@ -91,8 +70,10 @@ const isChainMode = computed(() => form.mode === instanceModes.globalChain);
 const chainCandidates = useChainCandidates(
   () => form.profileId,
   () => form.localProxies,
-  () => store.creating && isChainMode.value,
+  () => store.creating && (isChainMode.value || form.portMappings.length > 0),
 );
+const mappingOptions = computed(() =>
+  portMappingTargetOptions(form.mode, chainCandidates.state.candidates, chainCandidates.state.groupNames, chainCandidates.state.proxyNames));
 
 // Mirrors the pre-Vue renderProfileOptions(), as consumed for the create
 // select specifically. The options list itself is
@@ -152,15 +133,7 @@ watch(
     // wherever it originates, routes through this watcher.
     store.createDirty = false;
     if (!creating) return;
-    form.name = "";
-    form.profileId = store.profiles[0]?.id ?? "";
-    form.mode = instanceModes.rule;
-    form.mixedPort = "";
-    form.proxyBind = defaultProxyBind;
-    form.controllerPort = "";
-    form.localProxies = "";
-    form.chain = [];
-    form.autoRestart = false;
+    Object.assign(form, blankCreateForm(store.profiles[0]?.id ?? ""));
     mixedPortPlaceholder.value = "自动";
     controllerPortPlaceholder.value = "自动";
     void loadSuggestedPorts();
@@ -183,21 +156,16 @@ async function submit(): Promise<void> {
     actions.showMessage("请先创建并选择配置档。", "error");
     return;
   }
+  // Blank ports are auto-allocated, so only a typed one can collide here.
+  const mappingProblem = portMappingProblem(form.portMappings, Number(form.mixedPort) || 0, Number(form.controllerPort) || 0);
+  if (mappingProblem) {
+    actions.showMessage(mappingProblem, "error");
+    return;
+  }
   if (submitting.value) return;
   submitting.value = true;
   try {
-    const payload: CreateInstancePayload = {
-      name: form.name.trim(),
-      profileId: form.profileId,
-      mixedPort: Number(form.mixedPort) || 0,
-      proxyBind: form.proxyBind.trim(),
-      controllerPort: Number(form.controllerPort) || 0,
-      mode: form.mode,
-      localProxies: isChainMode.value ? form.localProxies : "",
-      chain: isChainMode.value ? [...form.chain] : [],
-      autoRestart: form.autoRestart,
-    };
-    await actions.createInstance(payload);
+    await actions.createInstance(createPayload(form));
   } finally {
     submitting.value = false;
   }
@@ -280,6 +248,19 @@ function cancel(): void {
       <span>链路顺序</span>
       <ChainOrderField v-model="form.chain" :candidates="chainCandidates.state" @dirty="markCreateDirty" @retry="chainCandidates.refresh()" />
     </div>
+  </div>
+  <div class="stacked">
+    <span>端口映射</span>
+    <PortMappingsField
+      v-model="form.portMappings"
+      :options="mappingOptions"
+      :mixed-port="Number(form.mixedPort) || 0"
+      :controller-port="Number(form.controllerPort) || 0"
+      :udp="!isChainMode"
+      :chain-default="isChainMode && !form.chain.length"
+      list-id="createPortMappingTargets"
+      @dirty="markCreateDirty"
+    />
   </div>
   <div class="actions">
     <button id="createSubmit" class="primary" type="button" :disabled="submitting || !hasProfiles" @click="submit">创建</button>

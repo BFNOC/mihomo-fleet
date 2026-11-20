@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -92,6 +93,13 @@ func (c *Controller) handleMihomoProxy(w http.ResponseWriter, r *http.Request) {
 	// strip list), whose per-process, never-reused addresses would remove the
 	// reused-port hazard entirely. That migration is deliberately deferred --
 	// see docs/known-limitations.md for the full assessment and plan.
+	// A start with port mappings registers its process before its readiness
+	// wait ends; until then the controller may not be serving and a PATCH
+	// could even flip the very fields that wait reads.
+	if c.manager.isStarting(id) {
+		writeError(w, http.StatusConflict, errors.New("instance is starting; retry once it finishes starting"))
+		return
+	}
 	if c.manager.state(id) == nil {
 		writeError(w, http.StatusConflict, fmt.Errorf("instance %q is not running", id))
 		return
@@ -99,6 +107,15 @@ func (c *Controller) handleMihomoProxy(w http.ResponseWriter, r *http.Request) {
 	targetPath := "/"
 	if len(parts) == 2 {
 		targetPath = "/" + parts[1]
+	}
+	// PUT /configs replaces the whole runtime config, named listeners
+	// included, so a panel could re-point a fleet-managed port mapping live
+	// while the fleet still shows the old target. With mappings, config
+	// changes go through the fleet (save, then reload or restart).
+	// PATCH /configs only touches general fields and stays allowed.
+	if len(item.PortMappings) > 0 && r.Method == http.MethodPut && strings.TrimRight(targetPath, "/") == "/configs" {
+		writeError(w, http.StatusConflict, fmt.Errorf("instance %q has port mappings managed by the fleet; change its config through the fleet instead of PUT /configs", item.Name))
+		return
 	}
 	proxy := c.mihomoProxyFor(item.ControllerPort)
 	info := mihomoProxyRequestInfo{targetPath: targetPath, rawQuery: r.URL.RawQuery, secret: item.Secret}

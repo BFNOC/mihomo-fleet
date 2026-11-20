@@ -1,6 +1,8 @@
 import { defaultProxyBind, instanceModes } from "../../constants.ts";
 import { instanceMode } from "../../format.ts";
 import type { FleetInstance } from "../../state.ts";
+import { mappingsFromRows, rowsFromMappings } from "../../port-mappings.ts";
+import type { PortMappingRow } from "../../port-mappings.ts";
 
 // The 概况 edit form as plain data, plus the two rules that keep it from writing
 // stale values back:
@@ -28,6 +30,7 @@ export interface EditFields {
   configOverride: string;
   chain: string[];
   chainUdp: boolean;
+  portMappings: PortMappingRow[];
   autoRestart: boolean;
 }
 
@@ -35,7 +38,7 @@ export type EditFieldKey = keyof EditFields;
 
 const fieldKeys: EditFieldKey[] = [
   "name", "profileId", "mode", "mixedPort", "proxyBind", "controllerPort",
-  "localProxies", "configOverride", "chain", "chainUdp", "autoRestart",
+  "localProxies", "configOverride", "chain", "chainUdp", "portMappings", "autoRestart",
 ];
 
 /** The instance exactly as the backend holds it -- the baseline, no fallbacks. */
@@ -51,14 +54,16 @@ export function editFieldsFromInstance(instance: FleetInstance): EditFields {
     configOverride: instance.configOverride || "",
     chain: Array.isArray(instance.chain) ? [...instance.chain] : [],
     chainUdp: Boolean(instance.chainUdp),
+    portMappings: rowsFromMappings(instance.portMappings),
     autoRestart: Boolean(instance.autoRestart),
   };
 }
 
+// Arrays compare by content, not identity: every poll delivers fresh objects,
+// and portMappings holds objects, which `===` would always call different --
+// the field would look edited forever and be resent on every save.
 function sameValue(a: unknown, b: unknown): boolean {
-  return Array.isArray(a) && Array.isArray(b)
-    ? a.length === b.length && a.every((item, index) => item === b[index])
-    : a === b;
+  return Array.isArray(a) && Array.isArray(b) ? JSON.stringify(a) === JSON.stringify(b) : a === b;
 }
 
 export interface ResyncResult {
@@ -94,6 +99,7 @@ export function editPutBody(fields: EditFields): Record<string, unknown> {
     mode: fields.mode,
     configOverride: fields.configOverride,
     chainUdp: fields.chainUdp,
+    portMappings: mappingsFromRows(fields.portMappings),
     autoRestart: fields.autoRestart,
   };
   if (fields.mode === instanceModes.globalChain) {
@@ -117,6 +123,10 @@ export function changedEditBody(form: EditFields, base: EditFields): Record<stri
     const was = key in original ? original[key] : (base as unknown as Record<string, unknown>)[key];
     if (!sameValue(value, was)) body[key] = value;
   }
+  // The mapping list is sent whole, so the server checks it still holds the
+  // list this form started from; otherwise a stale form would silently bring
+  // back a mapping another session removed.
+  if ("portMappings" in body) body.expectedPortMappings = mappingsFromRows(base.portMappings);
   return body;
 }
 
@@ -131,6 +141,7 @@ const fieldLabels: Record<EditFieldKey, string> = {
   configOverride: "配置覆盖",
   chain: "链路顺序",
   chainUdp: "UDP 走链路",
+  portMappings: "端口映射",
   autoRestart: "崩溃自动重启",
 };
 

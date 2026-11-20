@@ -23,6 +23,10 @@ const debounceMs = 400;
 export interface ChainCandidatesState {
   candidates: ChainCandidate[];
   providerNames: string[];
+  /** The profile's own proxy-groups: rule-mode port mapping targets. */
+  groupNames: string[];
+  /** The profile's proxies with their names exactly as written (port mapping targets). */
+  proxyNames: string[];
   /** A parse/collision problem in the draft local YAML. Already localized. */
   localError: string;
   /** The request itself failed. Already localized. */
@@ -34,6 +38,8 @@ export interface ChainCandidatesState {
 interface ChainCandidatesResponse {
   candidates?: ChainCandidate[];
   providerNames?: string[];
+  groupNames?: string[];
+  proxyNames?: string[];
   localError?: string;
   truncated?: boolean;
 }
@@ -46,6 +52,8 @@ export function useChainCandidates(
   const state: ChainCandidatesState = reactive<ChainCandidatesState>({
     candidates: [],
     providerNames: [],
+    groupNames: [],
+    proxyNames: [],
     localError: "",
     error: "",
     loading: false,
@@ -64,6 +72,8 @@ export function useChainCandidates(
     if (!profile) {
       state.candidates = [];
       state.providerNames = [];
+      state.groupNames = [];
+      state.proxyNames = [];
       state.localError = "";
       state.error = "";
       state.loading = false;
@@ -78,6 +88,8 @@ export function useChainCandidates(
       if (id !== requestId) return;
       state.candidates = Array.isArray(body?.candidates) ? body.candidates : [];
       state.providerNames = Array.isArray(body?.providerNames) ? body.providerNames : [];
+      state.groupNames = Array.isArray(body?.groupNames) ? body.groupNames : [];
+      state.proxyNames = Array.isArray(body?.proxyNames) ? body.proxyNames : [];
       state.localError = body?.localError ? localizedMessage(body.localError) : "";
       state.truncated = Boolean(body?.truncated);
       state.error = "";

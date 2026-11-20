@@ -56,6 +56,34 @@ test("the full body matches the pre-change PUT shape", () => {
   assert.deepEqual(editPutBody(base), {
     name: "A", profileId: "p1", mixedPort: 7890, proxyBind: "127.0.0.1", controllerPort: 9090,
     mode: "global-chain", localProxies: "- {name: a}", configOverride: "", chain: ["a", "节点选择"],
-    chainUdp: false, autoRestart: true,
+    chainUdp: false, portMappings: [], autoRestart: true,
   });
+});
+
+const mapped = {
+  ...instance, portMappings: [{ port: 10001, proxy: "us" }, { port: 10002, proxy: "sg" }],
+} as unknown as FleetInstance;
+const mappedBase: EditFields = editFieldsFromInstance(mapped);
+
+test("port mappings: a fresh poll copy is not an edit, a changed row is", () => {
+  // Same content, new objects -- what every poll delivers.
+  const polled = editFieldsFromInstance({ ...mapped, portMappings: [{ port: 10001, proxy: "us" }, { port: 10002, proxy: "sg" }] } as FleetInstance);
+  assert.deepEqual(changedEditBody(polled, mappedBase), {});
+  assert.deepEqual(resyncEditFields(polled, mappedBase, polled).conflicts, []);
+  const edited = { ...mappedBase, portMappings: [{ port: "10001", proxy: "jp" }, { port: "10002", proxy: "sg" }] };
+  const loaded = [{ port: 10001, proxy: "us" }, { port: 10002, proxy: "sg" }];
+  // The list is sent whole, with the list it was based on for the server to check.
+  assert.deepEqual(changedEditBody(edited, mappedBase), {
+    portMappings: [{ port: 10001, proxy: "jp" }, { port: 10002, proxy: "sg" }],
+    expectedPortMappings: loaded,
+  });
+  assert.deepEqual(changedEditBody({ ...mappedBase, portMappings: [] }, mappedBase), { portMappings: [], expectedPortMappings: loaded });
+  assert.deepEqual(changedEditBody({ ...mappedBase, name: "B" }, mappedBase), { name: "B" }, "no expectation without a mapping change");
+});
+
+test("port mappings: resync follows the server when untouched and flags a double edit", () => {
+  const server = { ...mappedBase, portMappings: [{ port: "10001", proxy: "uk" }] };
+  assert.deepEqual(resyncEditFields({ ...mappedBase }, mappedBase, server).form.portMappings, server.portMappings);
+  const mine = { ...mappedBase, portMappings: [{ port: "10003", proxy: "nz" }] };
+  assert.deepEqual(resyncEditFields(mine, mappedBase, server).conflicts, ["portMappings"]);
 });

@@ -1,3 +1,4 @@
+import type { PortMapping } from "./port-mappings.ts";
 import { latencyKeySeparator } from "./constants.ts";
 import type { InstanceMode, InstanceStatus, LatencyKind } from "./constants.ts";
 
@@ -59,6 +60,8 @@ export interface FleetInstance {
   chain?: string[];
   /** Global-chain mode only: UDP follows the chain instead of being rejected. */
   chainUdp?: boolean;
+  /** Extra inbound ports, each pinned to one proxy or group (port-mappings.ts). */
+  portMappings?: PortMapping[];
   selectedProxies?: Record<string, string>;
   selectedGroup?: string;
   selectedProxy?: string;
@@ -184,6 +187,8 @@ export interface FleetImportItemResult {
   portReallocated?: boolean;
   mixedPort?: number;
   controllerPort?: number;
+  /** The mappings as created; ports move when the bundle's were taken here. */
+  portMappings?: PortMapping[];
 }
 
 /** Mirrors internal/app/types.go's ImportResult (POST /api/import's response). */

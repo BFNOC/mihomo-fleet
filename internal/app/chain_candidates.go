@@ -50,6 +50,27 @@ func chainCandidates(profileConfig, localProxies string) (ChainCandidatesResult,
 	providerNames := proxyProviderNames(cfg["proxy-providers"])
 
 	result := ChainCandidatesResult{ProviderNames: providerNames}
+	// Rule-mode port mappings may also target the profile's own groups; the
+	// global-chain picker ignores these, since that mode replaces the groups.
+	// Raw names too for the profile's proxies: the chain picker above trims
+	// them (as the chain plan does), but a mapping matches mihomo's exact name.
+	if proxies, ok := cfg["proxies"].([]any); ok {
+		for _, proxy := range proxies {
+			entry, _ := proxy.(map[string]any)
+			if name, _ := entry["name"].(string); strings.TrimSpace(name) != "" && len(result.ProxyNames) < chainCandidatesMax {
+				result.ProxyNames = append(result.ProxyNames, name)
+			}
+		}
+	}
+	if groups, ok := cfg["proxy-groups"].([]any); ok {
+		for _, group := range groups {
+			// The raw name: port mappings match it exactly, as mihomo does.
+			entry, _ := group.(map[string]any)
+			if name, _ := entry["name"].(string); strings.TrimSpace(name) != "" && len(result.GroupNames) < chainCandidatesMax {
+				result.GroupNames = append(result.GroupNames, name)
+			}
+		}
+	}
 
 	_, localNames, localErr := parseLocalProxyItems(localProxies)
 	if localErr != nil {

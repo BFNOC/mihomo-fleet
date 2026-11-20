@@ -1,3 +1,4 @@
+import type { PortMapping } from "./port-mappings.ts";
 import { reactive } from "vue";
 import { dismissAllNotices, pushNotice } from "./notifications.ts";
 import type { NoticeTone } from "./notifications.ts";
@@ -48,6 +49,7 @@ export interface CreateInstancePayload {
   mode: string;
   localProxies: string;
   chain: string[];
+  portMappings: PortMapping[];
   autoRestart: boolean;
 }
 

@@ -23,7 +23,7 @@ import { store } from "../store.ts";
 import { actions, chrome } from "../bridge.ts";
 import { activeInstance } from "../state.ts";
 import type { FleetInstance } from "../state.ts";
-import { proxyCopyActionGroups, proxyEndpointText, proxyPort, proxyPortLabel, selectionSummary } from "../format.ts";
+import { portMappingLines, proxyCopyActionGroups, proxyEndpointText, proxyPort, proxyPortLabel, selectionSummary } from "../format.ts";
 import { statusClass, statusText } from "../messages.ts";
 
 // Mirrors render()'s `selected` argument, computed the same way app.ts does
@@ -61,7 +61,9 @@ function confirmStopAll(): void {
 }
 
 // Mirrors renderPortMatrix()'s #portMatrixCount text (pre-Vue app.ts).
-const portMatrixCountText = computed(() => `${store.instances.length} 个出口`);
+// Each port mapping is an exit of its own, so it counts too.
+const portMatrixCountText = computed(() =>
+  `${store.instances.reduce((total, item) => total + 1 + (item.portMappings?.length ?? 0), 0)} 个出口`);
 
 // Mirrors renderList()'s inline profile/selection text (pre-Vue app.ts).
 function profileLabel(item: FleetInstance): string {
@@ -84,7 +86,8 @@ const instanceSearch = ref("");
 // who remembers "the stopped one" or "port 7890" shouldn't have to remember
 // the name too.
 function instanceHaystack(item: FleetInstance): string {
-  return [item.name, profileLabel(item), statusText(item.status), proxyPortLabel(item.mixedPort)]
+  const mapped = (item.portMappings ?? []).flatMap((m) => [String(m.port), m.proxy]);
+  return [item.name, profileLabel(item), statusText(item.status), proxyPortLabel(item.mixedPort), ...mapped]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -213,6 +216,7 @@ function copyUnavailableSuffix(value: string): string {
             <span class="status" :class="statusClass(item.status)">{{ statusText(item.status) }}</span>
           </span>
           <span class="port-address">{{ proxyEndpointText(item) }}</span>
+          <span v-for="line in portMappingLines(item)" :key="line" class="port-address port-mapping-line">{{ line }}</span>
         </button>
         <div class="copy-tools">
           <select

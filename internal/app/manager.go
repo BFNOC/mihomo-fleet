@@ -33,6 +33,15 @@ type processState struct {
 	controllerPort int
 	mixedPort      int
 	proxyBind      string
+	// portMappings/portMappingUDP snapshot the mapping listeners this process
+	// was launched with, for the same reload check as the three above.
+	portMappings   []PortMapping
+	portMappingUDP bool
+	// awaitingMappings is true from launch until startContext has seen every
+	// mapped port listening. An exit inside that window belongs to the start
+	// that is still running -- it fails that start -- so the wait goroutine
+	// leaves the crash watchdog out of it. Guarded by m.mu.
+	awaitingMappings bool
 
 	// stopRequested marks that this exact process was asked to exit by
 	// StopContext -- a direct Stop, the Stop half of Restart (Stop then
@@ -79,6 +88,9 @@ func (ps *processState) applyUserSelection(ctx context.Context, item *Instance, 
 type startAttempt struct {
 	cancel context.CancelFunc
 	done   chan struct{} // closed when the StartContext call that owns it returns
+	// err is that call's result, written before done closes, so a concurrent
+	// Start that found this attempt in flight can report the same outcome.
+	err error
 }
 
 // watchdogState holds the crash watchdog's per-instance bookkeeping
@@ -165,6 +177,13 @@ var backoffSleep = sleepWithContext
 // resetWatchdogLocked call already reset out from under it (crash-watchdog
 // concurrency review, fix #4's related nit).
 var errAlreadyRunning = errors.New("instance already running or starting")
+
+// alreadyStartingError is errAlreadyRunning (errors.Is matches) for an
+// instance with a start in flight, carrying that start's attempt.
+type alreadyStartingError struct{ attempt *startAttempt }
+
+func (e alreadyStartingError) Error() string        { return errAlreadyRunning.Error() }
+func (e alreadyStartingError) Is(target error) bool { return target == errAlreadyRunning }
 
 // errWatchdogUserStopped is startContext's internal signal that the crash
 // watchdog's own relaunch (runScheduledRestart, resetWatchdog=false) found
@@ -471,6 +490,7 @@ func viewFor(item *Instance, profile *Profile, status string, pid int) InstanceV
 		ConfigOverride:    item.ConfigOverride,
 		Chain:             append([]string{}, item.Chain...),
 		ChainUDP:          item.ChainUDP,
+		PortMappings:      clonePortMappings(item.PortMappings),
 		SelectedProxies:   cloneStringMap(item.SelectedProxies),
 		SelectedGroup:     item.SelectedGroup,
 		SelectedProxy:     item.SelectedProxy,
@@ -519,7 +539,24 @@ func (m *Manager) StartContext(ctx context.Context, id string) error {
 		// successful no-op, matching runBatch's documented idempotent-start
 		// semantics -- only runScheduledRestart needs to tell this apart
 		// from an actual fresh launch (errAlreadyRunning's doc comment).
-		return nil
+		//
+		// "Starting", though, is not yet a success: a start with port
+		// mappings can still fail its readiness check. Wait for the start in
+		// flight and report its outcome rather than claiming success early.
+		var starting alreadyStartingError
+		if !errors.As(err, &starting) {
+			return nil
+		}
+		attempt := starting.attempt
+		select {
+		case <-attempt.done:
+			if errors.Is(attempt.err, errAlreadyRunning) {
+				return nil
+			}
+			return attempt.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return err
 }
@@ -531,7 +568,7 @@ func (m *Manager) StartContext(ctx context.Context, id string) error {
 // consecutive backoff attempts (resetWatchdogLocked), but the watchdog's own
 // relaunch call must not reset the very counter it just incremented to
 // decide this relaunch should happen at all.
-func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog bool) error {
+func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog bool) (retErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -566,7 +603,13 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		return fmt.Errorf("instance %q is being deleted", id)
 	}
 	if m.procs[id] != nil || m.starting[id] {
+		attempt := m.starts[id]
 		m.mu.Unlock()
+		if attempt != nil {
+			// Carried out so StartContext waits on this very attempt, read in
+			// the same critical section that saw it starting.
+			return alreadyStartingError{attempt: attempt}
+		}
 		return errAlreadyRunning
 	}
 	if resetWatchdog {
@@ -601,11 +644,24 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		m.log(id).Add("start failed: " + err.Error())
 		return err
 	}
+	for _, mapping := range item.PortMappings {
+		if owner := m.reservedPorts[mapping.Port]; owner != "" && owner != id {
+			m.mu.Unlock()
+			err := fmt.Errorf("port mapping port %d (-> %q) is already in use by starting instance %q", mapping.Port, mapping.Proxy, owner)
+			m.store.SetError(id, err.Error())
+			m.log(id).Add("start failed: " + err.Error())
+			return err
+		}
+	}
 	attempt := &startAttempt{cancel: cancel, done: make(chan struct{})}
 	m.starting[id] = true
 	m.starts[id] = attempt
 	m.reservedPorts[item.ControllerPort] = id
 	m.reservedPorts[item.MixedPort] = id
+	reservedMappings := clonePortMappings(item.PortMappings)
+	for _, mapping := range reservedMappings {
+		m.reservedPorts[mapping.Port] = id
+	}
 	m.mu.Unlock()
 	// Captured before the cleanup defer below is installed. The defer's
 	// closure captures variables, not the values they held at defer time --
@@ -629,7 +685,13 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		if m.reservedPorts[reservedMixed] == id {
 			delete(m.reservedPorts, reservedMixed)
 		}
+		for _, mapping := range reservedMappings {
+			if m.reservedPorts[mapping.Port] == id {
+				delete(m.reservedPorts, mapping.Port)
+			}
+		}
 		m.mu.Unlock()
+		attempt.err = retErr
 		close(attempt.done)
 	}()
 
@@ -686,8 +748,12 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 	// rather than silently launching against ports that differ from the
 	// ones reserved in m.reservedPorts (and that the cleanup defer above
 	// will un-reserve).
-	if item.ControllerPort != reservedController || item.MixedPort != reservedMixed {
-		return fmt.Errorf("instance %q ports changed while starting", id)
+	if item.ControllerPort != reservedController || item.MixedPort != reservedMixed || !portMappingsEqual(item.PortMappings, reservedMappings) {
+		err := fmt.Errorf("instance %q ports changed while starting (reserved mixed %d, controller %d, mappings %s; now mixed %d, controller %d, mappings %s)",
+			id, reservedMixed, reservedController, describePortMappingsOrNone(reservedMappings),
+			item.MixedPort, item.ControllerPort, describePortMappingsOrNone(item.PortMappings))
+		m.log(id).Add("start failed: " + err.Error())
+		return err
 	}
 
 	if m.mihomoPath == "" {
@@ -713,6 +779,7 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		m.log(id).Add("start failed: " + err.Error())
 		return err
 	}
+	mappingUDP := portMappingUDP(item.Mode, item.ChainUDP)
 	parsedConfig, err := writeRuntimeConfig(item, profile)
 	if err != nil {
 		m.store.SetError(id, err.Error())
@@ -758,6 +825,16 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		m.log(id).Add("start aborted: " + err.Error())
 		return err
 	}
+	// Probed as late as possible -- after the config test, right before the
+	// launch -- to keep the window in which another process can take a mapped
+	// port short (the post-launch check covers the rest).
+	for _, mapping := range item.PortMappings {
+		if err := checkPortMappingAvailable(instanceProxyBind(item.ProxyBind), mapping, mappingUDP); err != nil {
+			m.store.SetError(id, err.Error())
+			m.log(id).Add("start failed: " + err.Error())
+			return err
+		}
+	}
 
 	m.store.SetError(id, "")
 
@@ -787,27 +864,51 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		// runtime config from, so a later ReloadContext call can tell whether
 		// item's stored fields have since drifted from what this process is
 		// actually listening on (see processState's doc comment).
-		controllerPort: item.ControllerPort,
-		mixedPort:      item.MixedPort,
-		proxyBind:      instanceProxyBind(item.ProxyBind),
+		controllerPort:   item.ControllerPort,
+		mixedPort:        item.MixedPort,
+		proxyBind:        instanceProxyBind(item.ProxyBind),
+		portMappings:     clonePortMappings(item.PortMappings),
+		portMappingUDP:   mappingUDP,
+		awaitingMappings: len(item.PortMappings) > 0,
 	}
 	m.mu.Lock()
 	m.procs[id] = ps
 	m.mu.Unlock()
 
 	buf.Add(fmt.Sprintf("started mihomo pid=%d", cmd.Process.Pid))
+	if len(item.PortMappings) > 0 {
+		buf.Add(fmt.Sprintf("port mappings (udp=%t): %s", mappingUDP, describePortMappings(item.PortMappings)))
+		for _, line := range portMappingRuntimeNotes(item.RuntimeConfigPath, item.PortMappings) {
+			buf.Add(line)
+		}
+	}
 	// os/exec: Wait closes the pipes once the process exits, so it must not
 	// run before the readers are done -- otherwise the last lines a crashing
 	// mihomo prints (usually the reason) can be cut off.
 	var readers sync.WaitGroup
 	readers.Add(2)
-	go func() { defer readers.Done(); captureLines(buf, "stdout", stdout) }()
-	go func() { defer readers.Done(); captureLines(buf, "stderr", stderr) }()
+	// The first mapping bind error is kept apart from the log ring buffer,
+	// which a chatty startup could otherwise rotate it out of before the
+	// readiness check reads it. Only this launch's output reaches here.
+	var bindErrMu sync.Mutex
+	bindErrLine := ""
+	watch := func(line string) {
+		if isPortMappingBindError(line) {
+			bindErrMu.Lock()
+			if bindErrLine == "" {
+				bindErrLine = line
+			}
+			bindErrMu.Unlock()
+		}
+	}
+	go func() { defer readers.Done(); captureLines(buf, "stdout", stdout, watch) }()
+	go func() { defer readers.Done(); captureLines(buf, "stderr", stderr, watch) }()
 	go func() {
 		readers.Wait()
 		err := cmd.Wait()
 		m.mu.Lock()
 		stopRequested := ps.stopRequested
+		awaitingMappings := ps.awaitingMappings
 		if m.procs[id] == ps {
 			delete(m.procs, id)
 		}
@@ -832,16 +933,93 @@ func (m *Manager) startContext(ctx context.Context, id string, resetWatchdog boo
 		// user Stop/Restart/delete) and, if so, whether id's AutoRestart
 		// flag calls for a relaunch. See maybeAutoRestart's doc comment for
 		// the exact gating.
-		m.maybeAutoRestart(id, err, stopRequested)
+		if !awaitingMappings {
+			m.maybeAutoRestart(id, err, stopRequested)
+		}
 	}()
 	// m.ctx (not startCtx) bounds this goroutine: startCtx is cancelled by the
 	// deferred cancel() as soon as StartContext itself returns, moments after
 	// this line runs, which would abort restoreSelection immediately. m.ctx
 	// instead lives for the Manager's whole lifetime and is only cancelled by
 	// Shutdown (conc L-3).
+	if len(item.PortMappings) > 0 {
+		bindFailure := func() string {
+			bindErrMu.Lock()
+			defer bindErrMu.Unlock()
+			return bindErrLine
+		}
+		applied := func(ctx context.Context) (bool, string, error) { return mihomoListenersApplied(ctx, item) }
+		if err := waitPortMappingsReady(startCtx, instanceProxyBind(item.ProxyBind), item.PortMappings, ps.done, bindFailure, applied); err != nil {
+			m.abortStartedProcess(id, ps, err)
+			return err
+		}
+		// Checked together with clearing the flag: an exit landing between the
+		// last successful dial and here was skipped by the watchdog (the flag
+		// was still set), so this start must not report success for it.
+		m.mu.Lock()
+		exited := m.procs[id] != ps
+		ps.awaitingMappings = false
+		m.mu.Unlock()
+		if exited {
+			// After the wait goroutine has recorded the exit, so its own
+			// SetError cannot overwrite this one.
+			<-ps.done
+			status := "unknown exit status"
+			if ps.cmd.ProcessState != nil {
+				status = ps.cmd.ProcessState.String()
+			}
+			err := fmt.Errorf("mihomo exited right after its port mappings came up (pid %d, %s; mappings %s)", cmd.Process.Pid, status, describePortMappings(item.PortMappings))
+			m.store.SetError(id, err.Error())
+			buf.Add("start failed: " + err.Error())
+			return err
+		}
+		buf.Add("port mappings listening")
+	}
 	go m.restoreSelection(m.ctx, item, ps, buf)
 
 	return nil
+}
+
+// abortStartedProcess tears down a process startContext launched but then
+// found unusable (a mapped port never came up). It must not go through Stop:
+// the caller holds id's lifecycle lock. Marking stopRequested first keeps the
+// crash watchdog from relaunching it; the error is recorded after the wait
+// goroutine has finished, since that goroutine clears LastError on a
+// requested stop.
+func (m *Manager) abortStartedProcess(id string, ps *processState, cause error) {
+	m.mu.Lock()
+	ps.stopRequested = true
+	m.mu.Unlock()
+	select {
+	case <-ps.done:
+		// Already exited on its own; its wait goroutine logged why.
+	default:
+		// The whole process group: a child that inherited mihomo's stdout or
+		// stderr would otherwise keep the log readers -- and so ps.done --
+		// open forever while the caller holds the lifecycle lock.
+		if err := killProcess(ps.cmd); err != nil {
+			m.log(id).Add(fmt.Sprintf("start aborted: kill pid %d failed: %v", ps.cmd.Process.Pid, err))
+		}
+		select {
+		case <-ps.done:
+		case <-time.After(5 * time.Second):
+			m.log(id).Add(fmt.Sprintf("start aborted: pid %d not confirmed exited after kill; a later stop will retry", ps.cmd.Process.Pid))
+			// The wait goroutine clears LastError when this requested stop
+			// finally completes; record the cause again after it does.
+			go func() {
+				<-ps.done
+				if !errors.Is(cause, context.Canceled) {
+					m.store.SetError(id, cause.Error())
+				}
+			}()
+		}
+	}
+	m.log(id).Add("start failed: " + cause.Error())
+	// A Stop cancelled the wait: the instance is meant to be stopped, which
+	// is not an error worth keeping on the record.
+	if !errors.Is(cause, context.Canceled) {
+		m.store.SetError(id, cause.Error())
+	}
 }
 
 func (m *Manager) Stop(id string) error {
@@ -877,9 +1055,23 @@ func (m *Manager) StopContext(ctx context.Context, id string) error {
 	// own late, process-registering phase (see its doc comment), precisely
 	// so this cancellation path is never stuck queued behind a whole
 	// in-flight start it is trying to cancel.
-	ps := m.state(id)
-	if ps == nil {
-		settled, err := m.cancelAndAwaitStart(ctx, id)
+	// Read together so the attempt is the start that registered ps: while ps
+	// is registered no new start can begin (startContext refuses a running
+	// id), so a later start can never be cancelled by mistake.
+	m.mu.Lock()
+	ps := m.procs[id]
+	attempt := m.starts[id]
+	m.mu.Unlock()
+	if attempt != nil {
+		// A start is in flight -- before launch, or launched and still in its
+		// post-launch port-mapping wait, holding the lifecycle lock this call
+		// needs below. Cancel it and wait until it has fully returned (its
+		// starting flag and port reservations cleared), so a Restart's Start
+		// right after this does not find it still "starting". The attempt read
+		// above, not a fresh lookup: if that start finished in between, a
+		// second lookup would find nothing and this Stop would return with the
+		// process it just launched still running.
+		settled, err := m.cancelAndAwaitStart(ctx, id, attempt)
 		if err != nil {
 			return err
 		}
@@ -935,6 +1127,14 @@ func (m *Manager) StopContext(ctx context.Context, id string) error {
 		// before it ever registered a process).
 		return nil
 	}
+	// The start this call cancelled above may have killed and reaped ps
+	// itself while this call waited for the lock. Signalling it now would
+	// target a PID the OS may already have reused.
+	select {
+	case <-ps.done:
+		return nil
+	default:
+	}
 
 	// Re-check after the wait: acquiring the lock above can block for as long
 	// as a concurrent reload or start takes, and a caller whose deadline
@@ -988,18 +1188,11 @@ func (m *Manager) StopContext(ctx context.Context, id string) error {
 	}
 }
 
-// cancelAndAwaitStart cancels an in-flight StartContext call for id, if any,
-// and waits (bounded) for it to settle. It returns the processState if the
-// start won the race and registered a running process despite being
-// cancelled (StopContext must then proceed to stop it), or nil if nothing
-// was starting or the start aborted before launching a process.
-func (m *Manager) cancelAndAwaitStart(ctx context.Context, id string) (*processState, error) {
-	m.mu.Lock()
-	attempt, ok := m.starts[id]
-	m.mu.Unlock()
-	if !ok {
-		return nil, nil
-	}
+// cancelAndAwaitStart cancels attempt -- the in-flight StartContext call the
+// caller read for id -- waits (bounded) for it to return, and hands back
+// whatever process that start left registered (nil if it aborted before
+// launching), which StopContext must then stop.
+func (m *Manager) cancelAndAwaitStart(ctx context.Context, id string, attempt *startAttempt) (*processState, error) {
 	attempt.cancel()
 	select {
 	case <-attempt.done:
@@ -1385,6 +1578,14 @@ func (m *Manager) watchHealthyRun(id string, wd *watchdogState, attempt int, hea
 // reports that a restart is required -- never that the change hot-applied.
 var errReloadNetworkChanged = errors.New("reload cannot apply a port or proxy bind change; restart the instance instead")
 
+// reloadMappingsChangedError is errReloadNetworkChanged (errors.Is matches,
+// so handleReload answers the same 409) with a message naming what changed
+// in the port mappings, which the generic text would not tell the user.
+type reloadMappingsChangedError struct{ msg string }
+
+func (e reloadMappingsChangedError) Error() string        { return e.msg }
+func (e reloadMappingsChangedError) Is(target error) bool { return target == errReloadNetworkChanged }
+
 // reloadGenerationError wraps a failure regenerating id's runtime config
 // locally (writeRuntimeConfig, prepareGeodata) -- before ReloadContext ever
 // contacts mihomo. handleReload (controller.go) tells this apart from
@@ -1529,6 +1730,15 @@ func (m *Manager) ReloadContext(ctx context.Context, id string) error {
 	}
 	if item.ControllerPort != ps.controllerPort || item.MixedPort != ps.mixedPort || instanceProxyBind(item.ProxyBind) != ps.proxyBind {
 		return errReloadNetworkChanged
+	}
+	// A mode or ChainUDP edit flips the mapping listeners' udp flag, so it
+	// counts as a listener change too whenever mappings exist.
+	if !portMappingsEqual(item.PortMappings, ps.portMappings) {
+		return reloadMappingsChangedError{msg: fmt.Sprintf("reload cannot apply a port mapping change (running: %s; saved: %s); restart the instance instead",
+			describePortMappingsOrNone(ps.portMappings), describePortMappingsOrNone(item.PortMappings))}
+	}
+	if udp := portMappingUDP(item.Mode, item.ChainUDP); len(item.PortMappings) > 0 && udp != ps.portMappingUDP {
+		return reloadMappingsChangedError{msg: fmt.Sprintf("reload cannot apply a port mapping udp change (running udp=%t, saved udp=%t); restart the instance instead", ps.portMappingUDP, udp)}
 	}
 
 	// Re-verify id's process hasn't been swapped out from under this call.
@@ -1879,11 +2089,15 @@ func (m *Manager) log(id string) *logBuffer {
 	return buf
 }
 
-func captureLines(buf *logBuffer, name string, stream io.Reader) {
+func captureLines(buf *logBuffer, name string, stream io.Reader, watch func(string)) {
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		buf.Add(name + ": " + scanner.Text())
+		line := name + ": " + scanner.Text()
+		buf.Add(line)
+		if watch != nil {
+			watch(line)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		buf.Add(name + " log scan failed: " + err.Error())

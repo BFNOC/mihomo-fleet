@@ -117,6 +117,13 @@ func (c *Controller) handleIPCheck(w http.ResponseWriter, r *http.Request, id st
 		http.NotFound(w, r)
 		return
 	}
+	// A start with port mappings registers its process before its readiness
+	// wait ends; until then the controller may not be serving and a PATCH
+	// could even flip the very fields that wait reads.
+	if c.manager.isStarting(id) {
+		writeError(w, http.StatusConflict, errors.New("instance is starting; retry once it finishes starting"))
+		return
+	}
 	if c.manager.state(id) == nil {
 		writeError(w, http.StatusConflict, errors.New("instance must be running to check ip"))
 		return

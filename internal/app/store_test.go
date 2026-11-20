@@ -1775,6 +1775,7 @@ func TestCloneInstanceDeepCopiesReferenceFields(t *testing.T) {
 		ProfileID:       "profile",
 		ProxyBind:       "127.0.0.1",
 		Chain:           []string{"a", "b"},
+		PortMappings:    []PortMapping{{Port: 10001, Proxy: "p"}},
 		SelectedProxies: map[string]string{"g": "p"},
 	}
 	clone := cloneInstance(original)
@@ -1803,9 +1804,13 @@ func TestCloneInstanceDeepCopiesReferenceFields(t *testing.T) {
 	// Belt-and-suspenders: mutate through the original's reference fields
 	// and confirm the clone (and vice versa) is unaffected.
 	original.Chain[0] = "mutated"
+	original.PortMappings[0].Proxy = "mutated"
 	original.SelectedProxies["g"] = "mutated"
 	if clone.Chain[0] == "mutated" {
 		t.Fatal("cloneInstance aliased Chain with the original")
+	}
+	if clone.PortMappings[0].Proxy == "mutated" {
+		t.Fatal("cloneInstance aliased PortMappings with the original")
 	}
 	if clone.SelectedProxies["g"] == "mutated" {
 		t.Fatal("cloneInstance aliased SelectedProxies with the original")

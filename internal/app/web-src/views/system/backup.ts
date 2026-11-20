@@ -2,6 +2,7 @@
 // docs/feature-roadmap-post-1.3.md #7: fleet backup / export-import).
 // Framework-free -- no vue, no store.ts -- so it can be unit-tested with
 // plain node:test, matching system-update.ts's rationale for the same split.
+import { portMappingSummary } from "../../port-mappings.ts";
 import type { FleetImportItemResult, FleetImportResult } from "../../state.ts";
 
 function pad(value: number): string {
@@ -33,6 +34,7 @@ export function describeImportItem(kind: "profile" | "instance", item: FleetImpo
   if (item.renamed) notes.push(`原名“${item.originalName}”重名，已重命名`);
   if (kind === "instance" && item.portReallocated) {
     notes.push(`端口冲突，已重新分配为 ${item.mixedPort}/${item.controllerPort}`);
+    if (item.portMappings?.length) notes.push(`端口映射现为 ${portMappingSummary(item.portMappings)}`);
   }
   return notes.length ? `${item.name}（${notes.join("；")}）` : item.name;
 }

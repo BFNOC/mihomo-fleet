@@ -63,7 +63,9 @@ const startDisabled = computed(() => {
   );
 });
 const stopDisabled = computed(
-  () => store.bulkRunning || !selected.value || selected.value.status !== "running" || pendingActions.value.has("stop"),
+  // Starting counts too: a start with port mappings can wait up to 15s for
+  // them, and Stop cancels that wait.
+  () => store.bulkRunning || !selected.value || !["running", "starting"].includes(selected.value.status) || pendingActions.value.has("stop"),
 );
 const restartDisabled = computed(() => store.bulkRunning || pendingActions.value.has("restart"));
 const deleteDisabled = computed(() => store.bulkRunning || pendingActions.value.has("delete"));

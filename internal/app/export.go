@@ -67,6 +67,7 @@ func ExportBundle(store *Store) (*FleetBundle, error) {
 			ConfigOverride:  item.ConfigOverride,
 			Chain:           append([]string{}, item.Chain...),
 			ChainUDP:        item.ChainUDP,
+			PortMappings:    clonePortMappings(item.PortMappings),
 			SelectedProxies: cloneStringMap(item.SelectedProxies),
 			SelectedGroup:   item.SelectedGroup,
 			SelectedProxy:   item.SelectedProxy,
@@ -194,6 +195,14 @@ func validateBundle(bundle *FleetBundle) error {
 		if _, err := parseConfigOverride(inst.ConfigOverride); err != nil {
 			return err
 		}
+		// Shape only; targets are not checked (see SkipPortMappingTargetCheck).
+		mappings, err := normalizePortMappings(inst.PortMappings, inst.MixedPort, inst.ControllerPort)
+		if err != nil {
+			return validationError{msg: fmt.Sprintf("instance %q: %v", label, err)}
+		}
+		if err := checkPortMappingBind(inst.ProxyBind, mappings); err != nil {
+			return validationError{msg: fmt.Sprintf("instance %q: %v", label, err)}
+		}
 		if instanceMode(inst.Mode) == InstanceModeGlobalChain {
 			if _, _, err := parseLocalProxyItems(inst.LocalProxies); err != nil {
 				return err
@@ -274,8 +283,18 @@ func createBundle(store *Store, bundle *FleetBundle) (*ImportResult, error) {
 		})
 	}
 
+	// Every port the bundle asks for, by instance: a reallocation in one
+	// instance must not land on a port a later instance of the same bundle
+	// still expects to keep.
+	bundlePorts := make([][]int, len(bundle.Instances))
+	for i, bi := range bundle.Instances {
+		bundlePorts[i] = append(bundlePorts[i], bi.MixedPort, bi.ControllerPort)
+		for _, m := range bi.PortMappings {
+			bundlePorts[i] = append(bundlePorts[i], m.Port)
+		}
+	}
 	instanceResults := make([]ImportItemResult, 0, len(bundle.Instances))
-	for _, bi := range bundle.Instances {
+	for index, bi := range bundle.Instances {
 		name := strings.TrimSpace(bi.Name)
 		if name == "" {
 			name = "Imported instance"
@@ -284,20 +303,28 @@ func createBundle(store *Store, bundle *FleetBundle) (*ImportResult, error) {
 		existingInstanceNames[dedupedName] = true
 
 		opts := createInstanceOptions{
-			Name:            dedupedName,
-			ProfileID:       profileIDMap[bi.ProfileID],
-			MixedPort:       bi.MixedPort,
-			ProxyBind:       bi.ProxyBind,
-			ControllerPort:  bi.ControllerPort,
-			Mode:            bi.Mode,
-			LocalProxies:    bi.LocalProxies,
-			ConfigOverride:  bi.ConfigOverride,
-			Chain:           append([]string{}, bi.Chain...),
-			ChainUDP:        bi.ChainUDP,
-			SelectedProxies: cloneStringMap(bi.SelectedProxies),
-			SelectedGroup:   bi.SelectedGroup,
-			SelectedProxy:   bi.SelectedProxy,
-			AutoRestart:     bi.AutoRestart,
+			Name:           dedupedName,
+			ProfileID:      profileIDMap[bi.ProfileID],
+			MixedPort:      bi.MixedPort,
+			ProxyBind:      bi.ProxyBind,
+			ControllerPort: bi.ControllerPort,
+			Mode:           bi.Mode,
+			LocalProxies:   bi.LocalProxies,
+			ConfigOverride: bi.ConfigOverride,
+			Chain:          append([]string{}, bi.Chain...),
+			ChainUDP:       bi.ChainUDP,
+			PortMappings:   clonePortMappings(bi.PortMappings),
+			// A backup restores what the fleet held, dangling targets included.
+			SkipPortMappingTargetCheck: true,
+			SelectedProxies:            cloneStringMap(bi.SelectedProxies),
+			SelectedGroup:              bi.SelectedGroup,
+			SelectedProxy:              bi.SelectedProxy,
+			AutoRestart:                bi.AutoRestart,
+		}
+		for other, ports := range bundlePorts {
+			if other != index {
+				opts.AvoidPorts = append(opts.AvoidPorts, ports...)
+			}
 		}
 		item, reallocated, err := createImportedInstance(store, opts)
 		if err != nil {
@@ -313,6 +340,7 @@ func createBundle(store *Store, bundle *FleetBundle) (*ImportResult, error) {
 			PortReallocated: reallocated,
 			MixedPort:       item.MixedPort,
 			ControllerPort:  item.ControllerPort,
+			PortMappings:    clonePortMappings(item.PortMappings),
 		})
 	}
 
@@ -339,11 +367,19 @@ func createImportedInstance(store *Store, opts createInstanceOptions) (*Instance
 	retry.ControllerStart = opts.ControllerPort
 	retry.MixedPort = 0
 	retry.ControllerPort = 0
+	// Mapping ports keep their numbers when free and move only when taken,
+	// like the two ports above.
+	retry.PortMappings = clonePortMappings(opts.PortMappings)
+	retry.ReallocatePortMappings = true
 	item, err = store.CreateWithOptions(retry)
 	if err != nil {
 		return nil, false, err
 	}
-	return item, true, nil
+	// The retry can keep every port (its first failure may have been a bind
+	// address this host lacks), so report what actually moved.
+	moved := item.MixedPort != opts.MixedPort || item.ControllerPort != opts.ControllerPort ||
+		!portMappingsEqual(item.PortMappings, opts.PortMappings)
+	return item, moved, nil
 }
 
 // rollbackImport undoes a partially-completed createBundle: instances first

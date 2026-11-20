@@ -239,6 +239,12 @@ export function proxyEndpointText(
   return endpoints.length ? endpoints.join("，") : "端口未分配";
 }
 
+/** One "endpoint → target" line per port mapping; they listen on the instance's bind addresses. */
+export function portMappingLines(item: Pick<FleetInstance, "proxyBind" | "portMappings">): string[] {
+  return (item.portMappings ?? []).map((m) =>
+    `${proxyEndpointText({ mixedPort: m.port, proxyBind: item.proxyBind })} → ${m.proxy}`);
+}
+
 // POSIX single-quoting: close, emit an escaped quote, reopen. The backend now
 // refuses unsafe IPv6 zones, but a value already stored (or arriving some other
 // way) must still never be able to end the quoted string in a pasted command.
