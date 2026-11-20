@@ -956,6 +956,11 @@ func (s *Store) createInstanceLocked(opts createInstanceOptions) (*Instance, err
 		mixedCandidates := used
 		if opts.ControllerPort > 0 {
 			mixedCandidates = markPortUsed(used, opts.ControllerPort)
+		} else if opts.ControllerStart > 0 {
+			// Auto-allocating both (an import retry): keep the mixed scan off
+			// the controller's own start port, or a free controller port moves
+			// only because mixed took it first.
+			mixedCandidates = markPortUsed(used, opts.ControllerStart)
 		}
 		opts.MixedPort = allocatePort(opts.MixedStart, mixedCandidates)
 	} else if used[opts.MixedPort] || !isPortFree(opts.MixedPort) {
@@ -1241,7 +1246,13 @@ func (s *Store) UpdateWithOptions(id string, opts updateInstanceOptions) (*Insta
 		if !ok {
 			return nil, profileNotFoundError{id: nextProfileID}
 		}
-		if err := validateChainStatic(chainProfile.ConfigPath, nextLocalProxies, nextChain); err != nil {
+		var err error
+		if opts.Config != "" {
+			err = validateChainStaticRaw([]byte(opts.Config), nextLocalProxies, nextChain)
+		} else {
+			err = validateChainStatic(chainProfile.ConfigPath, nextLocalProxies, nextChain)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -1549,6 +1560,13 @@ func validateChainStatic(configPath, localProxies string, chain []string) error 
 	if err != nil {
 		return err
 	}
+	return validateChainStaticRaw(raw, localProxies, chain)
+}
+
+// validateChainStaticRaw is validateChainStatic against config bytes the
+// caller already holds -- a PUT that also replaces the profile config must be
+// checked against that new config, not the file it is about to overwrite.
+func validateChainStaticRaw(raw []byte, localProxies string, chain []string) error {
 	// An empty chain means "use the default chain"; whether that plan works is
 	// still left to start. A local proxy named like a profile proxy breaks
 	// start whatever the chain, so that collision is refused at save time.
